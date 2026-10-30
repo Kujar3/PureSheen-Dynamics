@@ -461,16 +461,47 @@ void showMenu (juce::PopupMenu& menu, juce::Component& target, std::function<voi
 void promptForText (juce::Component& parent, const juce::String& title, const juce::String& message,
                     const juce::String& initial, std::function<void (juce::String)> done)
 {
-    auto* window = new juce::AlertWindow (title, message, juce::MessageBoxIconType::NoIcon, &parent);
+    // AlertWindow is a separate desktop window, so the panel's destruction does not destroy it. Cancel it before
+    // the panel's callbacks or its editor-owned look-and-feel can outlive their owners.
+    class Prompt final : public juce::AlertWindow, private juce::ComponentListener
+    {
+    public:
+        Prompt (juce::Component& p, const juce::String& t, const juce::String& m)
+            : juce::AlertWindow (t, m, juce::MessageBoxIconType::NoIcon, &p), owner (&p)
+        {
+            owner->addComponentListener (this);
+        }
+
+        ~Prompt() override
+        {
+            if (owner != nullptr)
+                owner->removeComponentListener (this);
+            setLookAndFeel (nullptr);
+        }
+
+    private:
+        void componentBeingDeleted (juce::Component&) override
+        {
+            owner = nullptr;
+            setLookAndFeel (nullptr);
+            exitModalState (0);
+            setVisible (false);
+        }
+
+        juce::Component* owner;
+    };
+
+    auto* window = new Prompt (parent, title, message);
     window->setLookAndFeel (&parent.getLookAndFeel());
     window->addTextEditor ("text", initial);
     window->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
     window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-    window->enterModalState (true, juce::ModalCallbackFunction::create ([window, done] (int result)
+    window->enterModalState (true, juce::ModalCallbackFunction::create (
+        [window, safe = juce::Component::SafePointer<juce::Component> (&parent), done = std::move (done)] (int result)
     {
         const auto text = window->getTextEditorContents ("text").trim();
 
-        if (result == 1 && text.isNotEmpty() && done != nullptr)
+        if (safe != nullptr && result == 1 && text.isNotEmpty() && done != nullptr)
             done (text);
     }), true);
 }

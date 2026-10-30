@@ -94,7 +94,7 @@ public:
     void acceptChange();
 
     // ---- reference file loader
-    bool startFile (const juce::File&, int part);
+    bool startFile (const juce::File&, int part, bool linkedParts = false);
     void cancelFile();
     float getFileProgress() const;                       // 0..1 while loading, -1 when idle (any thread)
     juce::String getFileError() const;
@@ -103,7 +103,7 @@ public:
 
 private:
     ps::MatchEq& module (int part) const;
-    bool applyToModules (const MatchSpectraSet&);        // only the spectra that differ; returns true if any did
+    bool applyToModules (const MatchSpectraSet&, bool stopCaptures = true); // returns true if any spectra changed
     void noteModuleGenerations();
     void prune (const UndoHistory&);
 

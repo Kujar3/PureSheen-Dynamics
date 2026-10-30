@@ -218,7 +218,7 @@ public:
     Loader() : juce::Thread ("PureSheen Match EQ reference file") { formats.registerBasicFormats(); }
     ~Loader() override { cancel(); }
 
-    bool start (const juce::File& file, int part)
+    bool start (const juce::File& file, int part, bool linked)
     {
         cancel();
         state.store (kIdle);
@@ -235,6 +235,7 @@ public:
 
         reader = std::move (r);
         targetPart = juce::jlimit (0, 1, part);
+        linkedParts = linked;
         name = file.getFileNameWithoutExtension();
         progress.store (0.0f);
         state.store (kRunning);
@@ -257,7 +258,7 @@ public:
         setError ({});
     }
 
-    bool takeResult (int& part, ps::MatchSpectrum& out)
+    bool takeResult (int& part, bool& linked, ps::MatchSpectrum& out)
     {
         if (state.load() != kDone)
             return false;
@@ -267,6 +268,7 @@ public:
             out = result;
         }
         part = targetPart;
+        linked = linkedParts;
         state.store (kIdle);
         progress.store (-1.0f);
         return true;
@@ -350,6 +352,7 @@ private:
     std::unique_ptr<juce::AudioFormatReader> reader;
     ps::MatchAnalyser analyser;
     int targetPart = 0;
+    bool linkedParts = false;
     juce::String name;
     std::atomic<int> state { kIdle };
     std::atomic<float> progress { -1.0f };
@@ -395,10 +398,15 @@ void MatchEqState::noteModuleGenerations()
         seenGeneration[part] = module (part).getSpectrumGeneration();
 }
 
-bool MatchEqState::applyToModules (const MatchSpectraSet& target)
+bool MatchEqState::applyToModules (const MatchSpectraSet& target, bool stopCaptures)
 {
     bool changed = false;
     for (int part = 0; part < 2; ++part)
+    {
+        // A restored project, snapshot or history entry replaces the whole capture context. Stop before comparing
+        // spectra, so even an unchanged stored spectrum cannot later be overwritten by audio from the old context.
+        if (stopCaptures)
+            module (part).stopCapture();
         for (int role = 0; role < 2; ++role)
         {
             auto& m = module (part);
@@ -411,6 +419,7 @@ bool MatchEqState::applyToModules (const MatchSpectraSet& target)
                 m.clearSpectrum (r);
             changed = true;
         }
+    }
     noteModuleGenerations();
     return changed;
 }
@@ -567,7 +576,15 @@ bool MatchEqState::applyPendingPreset()
     MatchSpectraSet target = *readModules();
     for (int part = 0; part < 2; ++part)
         target.spectra[part][0] = presetSpectra.spectra[part][0];
-    const bool changed = applyToModules (target);
+    // Presets replace references only. A Current capture remains useful, but an in-progress Reference capture must
+    // not overwrite the explicitly selected preset later.
+    for (int part = 0; part < 2; ++part)
+    {
+        ps::MatchRole role = ps::MatchRole::Reference;
+        if (module (part).isCapturing (&role) && role == ps::MatchRole::Reference)
+            module (part).stopCapture();
+    }
+    const bool changed = applyToModules (target, false);
     accepted = readModules();
     pendingChange.reset();
     return changed;
@@ -628,9 +645,19 @@ bool MatchEqState::checkChange (juce::String& description)
 {
     const juce::ScopedLock sl (lock);
     int part = 0;
+    bool linked = false;
     ps::MatchSpectrum loaded;
-    if (loader->takeResult (part, loaded))
-        module (part).setSpectrum (ps::MatchRole::Reference, loaded);
+    if (loader->takeResult (part, linked, loaded))
+    {
+        for (int p = 0; p < 2; ++p)
+            if (p == part || linked)
+            {
+                ps::MatchRole role = ps::MatchRole::Reference;
+                if (module (p).isCapturing (&role) && role == ps::MatchRole::Reference)
+                    module (p).stopCapture();
+                module (p).setSpectrum (ps::MatchRole::Reference, loaded);
+            }
+    }
 
     bool moved = false;
     for (int p = 0; p < 2; ++p)
@@ -661,10 +688,10 @@ void MatchEqState::acceptChange()
 }
 
 //==============================================================================
-bool MatchEqState::startFile (const juce::File& file, int part)
+bool MatchEqState::startFile (const juce::File& file, int part, bool linkedParts)
 {
     const juce::ScopedLock sl (lock);
-    return loader->start (file, part);
+    return loader->start (file, part, linkedParts);
 }
 void MatchEqState::cancelFile()
 {

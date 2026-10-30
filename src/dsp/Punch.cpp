@@ -995,6 +995,12 @@ void Punch::process (float* const* channels, int numSamples, const ProcessContex
 }
 
 int Punch::getLatencySamples() const noexcept { return impl->latency.load (std::memory_order_relaxed); }
+int Punch::getLatencySamplesForParams (ParamValues values) const noexcept
+{
+    PunchParams params;
+    readPunchParams (values, params);
+    return impl->prepared ? impl->crossover.getLatencySamples (params.crossoverType) : getLatencySamples();
+}
 const PunchMeters& Punch::getMeters() const noexcept { return impl->meters; }
 PunchMeters& Punch::getMeters() noexcept { return impl->meters; }
 } // namespace ps

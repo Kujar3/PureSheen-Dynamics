@@ -71,6 +71,7 @@ public:
     void setMonitor (const ModuleMonitor&) noexcept override;
     void process (float* const* channels, int numSamples, const ProcessContext&) noexcept override;
     int getLatencySamples() const noexcept override;
+    int getLatencySamplesForParams (ParamValues) const noexcept override;
 
     const PunchMeters& getMeters() const noexcept;
     // (added by dsp-punch) Non-const access for the UI: gainMinDb / gainMaxDb are read with exchange (+200 / -200).

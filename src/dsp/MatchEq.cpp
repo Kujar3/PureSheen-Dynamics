@@ -814,6 +814,13 @@ void MatchEq::setMonitor (const ModuleMonitor& monitor) noexcept
     impl->monitor = monitor;
 }
 
+int MatchEq::getLatencySamplesForParams (ParamValues values) const noexcept
+{
+    MatchEqParams params;
+    readMatchEqParams (values, params);
+    return impl->prepared ? impl->latencyFor (Impl::configOf (params)) : getLatencySamples();
+}
+
 void MatchEq::process (float* const* channels, int numSamples, const ProcessContext& ctx) noexcept
 {
     auto& m = *impl;

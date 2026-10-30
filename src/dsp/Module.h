@@ -51,7 +51,7 @@ struct ProcessContext
 struct ModuleMonitor
 {
     int soloBand = -1;              // multiband modules: only this band is heard (-1 = off)
-    int soloChannelSet = -1;        // T/S band solo: -1 = both parts, 0/1 = only that part (other modes ignore it)
+    int soloChannelSet = -1;        // T/S band / region solo: -1 = both parts, 0/1 = only that part (other modes ignore it)
     bool auditionOn = false;        // EQ "Alt-solo": band-pass audition around auditionHz
     float auditionHz = 1000.0f;
     float auditionQ = 4.0f;         // 0.2..12
@@ -83,6 +83,11 @@ public:
 
     // Latency of the current settings (after the last setParams). Must be identical for both channels.
     virtual int getLatencySamples() const noexcept = 0;
+
+    // Audio thread, before setParams: predict a latency-changing configuration without mutating DSP or publishing
+    // worker requests. The chain can then fade every aligned path before committing the change. Modules with
+    // fixed latency use the default; variable-latency modules may override this with their shared-parameter rule.
+    virtual int getLatencySamplesForParams (ParamValues) const noexcept { return getLatencySamples(); }
 
     // true: the module computes its own Delta signal into ProcessContext::deltaOut (the Maximizer excludes Gain and
     // Output Level from Delta: delta = what the limiting stages removed / added). Its normal output is unaffected.

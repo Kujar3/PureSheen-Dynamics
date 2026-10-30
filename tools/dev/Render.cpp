@@ -17,6 +17,7 @@
 // its length). Options:
 //   --preset <name>                 global preset (factory or user), case-insensitive
 //   --module-preset <prefix>:<name> module preset, e.g. "max:Loud Modern"
+//   --chain <prefix,prefix,...>     chain order after the presets, e.g. "--chain deq" or "--chain eq1,lowc,max"
 //   --bits 16|24|32                 output format (default 32 = float)
 //   --block <n>                     host block size (default 512)
 //   id=value                        parameter override after the presets, plain value; choices also by label
@@ -144,7 +145,8 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
 
     // Options
     int bits = 32, block = 512;
-    juce::String globalPreset, modulePreset;
+    juce::String globalPreset, modulePreset, chainText;
+    bool setChain = false;
     juce::StringArray overrides;
     for (int i = 0; i < options.size(); ++i)
     {
@@ -153,6 +155,11 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
             globalPreset = options[++i];
         else if (o == "--module-preset" && i + 1 < options.size())
             modulePreset = options[++i];
+        else if (o == "--chain" && i + 1 < options.size())
+        {
+            chainText = options[++i];
+            setChain = true;
+        }
         else if (o == "--bits" && i + 1 < options.size())
             bits = options[++i].getIntValue();
         else if (o == "--block" && i + 1 < options.size())
@@ -203,6 +210,25 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
             return 2;
         }
         std::cout << "module preset: " << prefix << " / " << info.name << "\n";
+    }
+
+    if (setChain)
+    {
+        std::vector<ps::ModuleType> order;
+        for (const auto& token : juce::StringArray::fromTokens (chainText, ",", {}))
+        {
+            int type = -1;
+            for (int t = 0; t < ps::kNumModuleTypes; ++t)
+                if (token.trim() == ps::moduleInfo ((ps::ModuleType) t).idPrefix)
+                    type = t;
+            if (type < 0)
+            {
+                std::cout << "render: unknown module \"" << token << "\" in --chain\n";
+                return 2;
+            }
+            order.push_back ((ps::ModuleType) type);
+        }
+        proc.setChainOrder (order);
     }
 
     for (const auto& o : overrides)
@@ -301,8 +327,12 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
               << "  chain:";
     for (auto t : proc.getChainOrder())
         std::cout << " " << ps::moduleInfo (t).shortName;
-    std::cout << "\n"
-              << "  input : integrated " << db (mi.integrated, "LUFS") << ", LRA " << std::setprecision (2) << mi.lra
+    std::cout << "\n";
+    if (proc.isModuleInChain (ps::ModuleType::Maximizer) && proc.getParameterValue ("max.on") > 0.5f)
+        std::cout << "  maximizer output level " << std::fixed << std::setprecision (2)
+                  << proc.getParameterValue ("max.ceiling") << " dB, true peak "
+                  << (proc.getParameterValue ("max.truePeak") > 0.5f ? "on" : "off") << "\n";
+    std::cout << "  input : integrated " << db (mi.integrated, "LUFS") << ", LRA " << std::setprecision (2) << mi.lra
               << " LU, true peak " << db (mi.truePeak, "dBTP") << ", sample peak " << db (mi.samplePeak, "dBFS") << "\n"
               << "  output: integrated " << db (mo.integrated, "LUFS") << ", LRA " << mo.lra << " LU, true peak "
               << db (mo.truePeak, "dBTP") << ", sample peak " << db (mo.samplePeak, "dBFS") << "\n"

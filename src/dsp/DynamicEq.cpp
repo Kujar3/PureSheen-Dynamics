@@ -1988,6 +1988,16 @@ void DynamicEq::process (float* const* channels, int numSamples, const ProcessCo
 
 int DynamicEq::getLatencySamples() const noexcept { return impl->latency.load (std::memory_order_relaxed); }
 
+int DynamicEq::getLatencySamplesForParams (ParamValues values) const noexcept
+{
+    DynamicEqParams params;
+    readDynamicEqParams (values, params);
+    auto config = impl->target;
+    config.mode = params.filterMode;
+    config.firIdx = std::clamp (params.firSizeIndex, 0, kNumFirSizes - 1);
+    return impl->prepared ? impl->latencyOf (config, impl->lookaheadSamples (params.lookaheadMs)) : getLatencySamples();
+}
+
 const DynamicEqMeters& DynamicEq::getMeters() const noexcept { return impl->meters; }
 
 bool DynamicEq::isDesignPending() const noexcept

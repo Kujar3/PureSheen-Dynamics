@@ -3,6 +3,7 @@
 #include "core/TruePeak.h"
 #include "dsp/Maximizer.h"
 #include "dsp/TransientSplit.h"
+#include "dsp/BassShaper.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/MatchEqState.h"
 #include "plugin/PluginProcessor.h"
@@ -10,6 +11,17 @@
 #include "ui/ImagerPanel.h"
 #include "ui/ExciterPanel.h"
 #include "ui/MultibandDisplay.h"
+#include "ui/DynamicEqDisplay.h"
+#include "ui/DynamicEqPanel.h"
+#include "ui/LowContrastPanel.h"
+#include "ui/LowRegionDisplay.h"
+#include "ui/SpectralDisplay.h"
+#include "ui/PunchViews.h"
+#include "ui/PunchPanel.h"
+#include "ui/MatchDisplay.h"
+#include "ui/MatchEqPanel.h"
+#include "ui/BassScope.h"
+#include "ui/Controls.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -35,6 +47,11 @@
 // Checks marked [dsp] in their name measure the real DSP modules / chain (null tests, latency, Maximizer ceiling,
 // learn, delta); each "is neutral" check has a counterpart that proves the path does audible work when it should.
 // Every other check tests the processor itself.
+
+namespace juce::detail
+{
+bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
+}
 
 namespace
 {
@@ -863,6 +880,7 @@ void testRealtime()
 //==============================================================================
 // Phase 2: the new modules, the Transient/Sustain channel mode, realtime safety of both.
 std::vector<float> currentValues (const PureSheenProcessor& p);
+int countDifferences (const std::vector<float>& a, const std::vector<float>& b, std::string* first = nullptr);
 void setStateXml (PureSheenProcessor& p, const juce::String& xmlText);
 
 std::vector<ps::ModuleType> phase2Types()
@@ -1025,6 +1043,95 @@ void testPhase2()
                "T/S: back to Stereo, latency 0 again");
     }
 
+    // Every phase 2 module alone, in every channel mode it offers, at neutral settings: the output is the input delayed
+    // by the reported latency (Stereo, M/S, L/R, T/S), and the reported latency includes the T/S splitter.
+    {
+        std::string failures, latencies;
+        bool allNull = true;
+        const long long n = 48000;
+        const auto quiet = recordInput (n, noiseInput (0.05f, 41));
+        for (auto t : phase2Types())
+        {
+            for (auto mode : ps::supportedChannelModes (t))
+            {
+                Host h;
+                h.prepare();
+                h.proc.setChainOrder ({ t });
+                for (const auto& [id, v] : channelModeConfig (t, mode))
+                    h.set (id, v);
+                h.stream (8192, replay (quiet));
+                h.proc.flushPendingChanges (true);
+                const auto out = h.stream (n, replay (quiet));
+                const int lat = h.proc.getCurrentLatencySamples();
+                const float d = nullDb (quiet, out, lat, 8192);
+                if (! (d < -120.0f) || h.proc.getLatencySamples() != lat)
+                {
+                    allNull = false;
+                    failures += str (ps::moduleInfo (t).idPrefix, " mode ", (int) mode, ": ", d, " dBFS (lat ", lat, ") ");
+                }
+                static const char* const modeNames[] { "St", "MS", "LR", "TS" };
+                latencies += str (ps::moduleInfo (t).idPrefix, ".", modeNames[(int) mode & 3], "=", lat, " ");
+            }
+        }
+        check (allNull, "[dsp] null: every phase 2 module alone in every channel mode at neutral settings (latency "
+                        "reported to the host)", failures.empty() ? latencies : failures);
+    }
+
+    // State round trip with all 14 modules, every T/S-capable one in Transient/Sustain and random values everywhere:
+    // the restored processor holds the same values, chain and channel modes and plays finite audio.
+    {
+        Host a;
+        a.prepare();
+        Lcg lcg { 977 };
+        const auto& specs = ps::paramSpecs();
+        for (size_t i = 0; i < specs.size(); ++i)
+        {
+            const auto& s = specs[i];
+            const float u = 0.5f * (lcg.next() + 1.0f);
+            a.set (s.id, psplug::sanitiseValue ((int) i, s.minValue + u * (s.maxValue - s.minValue)));
+        }
+        std::vector<ps::ModuleType> order;
+        for (int t = ps::kNumModuleTypes - 1; t >= 0; --t)
+            order.push_back ((ps::ModuleType) t);
+        a.proc.setChainOrder (order);
+        for (int t = 0; t < ps::kNumModuleTypes; ++t)
+            if (ps::supportsTransientSustain ((ps::ModuleType) t))
+                for (const auto& [id, v] : channelModeConfig ((ps::ModuleType) t, ps::ChannelMode::TransientSustain))
+                    a.set (id, v);
+        a.proc.flushPendingChanges (true);
+        const auto values = currentValues (a.proc);
+        juce::MemoryBlock blob;
+        a.proc.getStateInformation (blob);
+
+        Host b;
+        b.prepare();
+        b.proc.setStateInformation (blob.getData(), (int) blob.getSize());
+        b.proc.flushPendingChanges (true);
+        std::string first;
+        const int diffs = countDifferences (values, currentValues (b.proc), &first);
+        bool tsKept = true;
+        const auto restored = currentValues (b.proc);
+        for (int t = 0; t < ps::kNumModuleTypes; ++t)
+            if (ps::supportsTransientSustain ((ps::ModuleType) t))
+            {
+                ps::SlotParams slot;
+                ps::readSlotParams (restored.data(), (ps::ModuleType) t, slot);
+                tsKept = tsKept && slot.channelMode == ps::ChannelMode::TransientSustain;
+            }
+        check (diffs == 0 && b.proc.getChainOrder() == order && tsKept,
+               "state: 14 modules in T/S with random values round trip (values, chain, channel modes)",
+               str (diffs, " differ, e.g. ", first, "; chain ", chainText (b.proc.getChainOrder())));
+        const auto out = b.stream (24000, musicLikeInput (0.2f));
+        b.proc.flushPendingChanges (true);
+        a.stream (24000, musicLikeInput (0.2f));
+        a.proc.flushPendingChanges (true);
+        check (allFinite (out), str ("state: the restored 14-module T/S chain plays finite audio"));
+        check (b.proc.getLatencySamples() == b.proc.getCurrentLatencySamples()
+                   && b.proc.getLatencySamples() == a.proc.getCurrentLatencySamples(),
+               "state: the restored 14-module T/S chain reports the same latency to the host",
+               str (b.proc.getLatencySamples(), " / ", b.proc.getCurrentLatencySamples(), " / ", a.proc.getCurrentLatencySamples()));
+    }
+
     // A 0.1.x state (six module types, only the 479 parameters of 0.1.1) loads unchanged: listed values applied, every
     // phase 2 parameter at its default, the chain as stored.
     {
@@ -1078,7 +1185,7 @@ std::vector<float> currentValues (const PureSheenProcessor& p)
     return v;
 }
 
-int countDifferences (const std::vector<float>& a, const std::vector<float>& b, std::string* first = nullptr)
+int countDifferences (const std::vector<float>& a, const std::vector<float>& b, std::string* first)
 {
     int n = 0;
     for (size_t i = 0; i < a.size() && i < b.size(); ++i)
@@ -1629,10 +1736,9 @@ void testPresets()
         {
             const auto n = p.getPresets (t).size();
             counts += str (ps::moduleInfo ((ps::ModuleType) t).idPrefix, "=", n, " ");
-            // (phase 2 modules get their factory presets with their dedicated panels)
-            perModule = perModule && (t >= ps::kNumCoreModuleTypes || (n >= 2 && n <= 6));
+            perModule = perModule && n >= 2 && n <= 6;
         }
-        check (perModule, "presets: 2-4 factory presets per Core module (EQ 1 / EQ 2 share theirs)", counts);
+        check (perModule, "presets: 2-6 factory presets per module, phase 2 included (EQ 1 / EQ 2 share theirs)", counts);
 
         // Every factory preset loads and produces finite audio.
         bool allLoad = true, finite = true;
@@ -1643,6 +1749,50 @@ void testPresets()
                 finite = finite && allFinite (h.stream (2048, musicLikeInput (0.2f)));
             }
         check (allLoad && finite, "presets: every factory preset loads and plays finite audio");
+    }
+
+    // Every phase 2 module preset, with its module in the chain: it loads as one step, moves at least one of the
+    // module's parameters off its default, and the module plays finite audio with it (in its preset channel mode).
+    {
+        Host m;
+        m.prepare();
+        for (auto t : phase2Types())
+            m.proc.addModule (t);
+        m.proc.flushPendingChanges (true);
+        const auto defaults = currentValues (m.proc);
+        bool ok = true;
+        int count = 0;
+        std::string bad;
+        for (auto t : phase2Types())
+            for (const auto& info : m.proc.getPresets ((int) t))
+            {
+                if (! info.factory)
+                    continue;
+                ++count;
+                const bool loaded = m.proc.loadPreset ((int) t, info);
+                m.proc.flushPendingChanges (true);
+                const auto v = currentValues (m.proc);
+                bool moved = false;
+                const auto& specs = ps::paramSpecs();
+                for (size_t i = 0; i < specs.size(); ++i)
+                    if (specs[i].module == (int) t && ! psplug::sameValue ((int) i, v[i], defaults[i]))
+                        moved = true;
+                const bool finiteOut = allFinite (m.stream (12000, musicLikeInput (0.2f)));
+                const bool oneStep = m.proc.getHistory().back().description.startsWith ("Loaded ")
+                                     && m.proc.getHistoryPosition() + 1 == (int) m.proc.getHistory().size();
+                if (! (loaded && moved && finiteOut && oneStep))
+                {
+                    ok = false;
+                    bad += str (ps::moduleInfo (t).idPrefix, ":", info.name.toStdString(), " ");
+                }
+                m.proc.loadPreset (-1, m.proc.getPresets (-1)[0]);   // Default: back to neutral
+                for (auto t2 : phase2Types())
+                    m.proc.addModule (t2);
+                m.proc.flushPendingChanges (true);
+            }
+        check (ok && count >= 4 * (int) phase2Types().size(),
+               str ("presets: all ", count, " phase 2 module presets load, change their module and play finite audio"),
+               bad);
     }
 
     // Load a factory preset
@@ -1931,6 +2081,348 @@ void testTsPanelBindings()
            "UI: Exciter band solo targets the selected Sustain part");
 }
 
+template <typename Component>
+Component* findPanelComponent (juce::Component& parent)
+{
+    if (auto* found = dynamic_cast<Component*> (&parent))
+        return found;
+    for (auto* child : parent.getChildren())
+        if (auto* found = findPanelComponent<Component> (*child))
+            return found;
+    return nullptr;
+}
+
+void testPhase2PanelRouting()
+{
+    struct Services final : ps::ui::EditorServices
+    {
+        ps::ui::UiOptions options;
+        ps::ui::SpectrumAnalyser spectrum;
+        const ps::ui::UiOptions& getOptions() const override { return options; }
+        ps::ui::SpectrumAnalyser& getModulePreSpectrum() override { return spectrum; }
+        ps::ui::SpectrumAnalyser& getModulePostSpectrum() override { return spectrum; }
+        ps::ui::SpectrumAnalyser& getOutputSpectrum() override { return spectrum; }
+        void showHint (const juce::String&) override {}
+    } services;
+    const auto eventAt = [] (juce::Component& c, juce::Point<float> pos,
+                            int modifiers = juce::ModifierKeys::leftButtonModifier)
+    {
+        return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), pos,
+                                juce::ModifierKeys (modifiers),
+                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, juce::Time(), pos, juce::Time(), 1, false);
+    };
+
+    PureSheenProcessor p;
+    for (const auto type : { ps::ModuleType::Definition, ps::ModuleType::Smoother, ps::ModuleType::LowContrast })
+    {
+        for (const auto& [id, value] : ps::channelModeParamValues (type, ps::ChannelMode::TransientSustain))
+            p.setParameterValue (id, value);
+        auto panel = ps::ui::createModulePanel (p, services, type);
+        panel->setSize (1000, 500);
+        panel->setChannelSet (1);
+        bool found = false;
+        if (auto* spectral = findPanelComponent<ps::ui::SpectralDisplay> (*panel))
+        {
+            const auto e = eventAt (*spectral, spectral->getSoloButtonArea().getCentre());
+            spectral->mouseDown (e);
+            spectral->mouseUp (e);
+            found = true;
+        }
+        else if (auto* low = findPanelComponent<ps::ui::LowRegionDisplay> (*panel))
+        {
+            low->setRegionSolo (true);
+            found = true;
+        }
+        const auto sustain = p.getMonitor (type);
+        panel->setChannelSet (0);
+        const auto transient = p.getMonitor (type);
+        panel.reset();
+        check (found && sustain.soloRegion && sustain.soloChannelSet == 1
+                   && transient.soloRegion && transient.soloChannelSet == 0 && ! p.getMonitor (type).soloRegion,
+               str ("UI: ", ps::moduleInfo (type).name,
+                    " region solo follows the selected T/S part and clears when the panel closes"));
+    }
+
+    struct Gestures final : juce::AudioProcessorParameter::Listener
+    {
+        int begins = 0, ends = 0;
+        void parameterValueChanged (int, float) override {}
+        void parameterGestureChanged (int, bool starting) override
+        {
+            if (starting) ++begins;
+            else ++ends;
+        }
+    } a, b;
+    p.setParameterValues ({ { "deq.chMode", 1.0f }, { "deq.link", 0.0f },
+                           { "deq.a.b1.on", 1.0f }, { "deq.b.b1.on", 1.0f },
+                           { "deq.a.b1.freq", 1000.0f }, { "deq.b.b1.freq", 1000.0f },
+                           { "deq.a.b1.q", 1.0f }, { "deq.b.b1.q", 5.0f } }, "Routing setup");
+    auto* pa = p.getParameter ("deq.a.b1.q");
+    auto* pb = p.getParameter ("deq.b.b1.q");
+    pa->addListener (&a);
+    pb->addListener (&b);
+    bool wheelRouting = false;
+    {
+        ps::ui::DynamicEqPanel panel (p, services);
+        panel.setSize (1000, 500);
+        if (auto* display = findPanelComponent<ps::ui::DynamicEqDisplay> (panel))
+        {
+            juce::MouseWheelDetails wheel {};
+            wheel.deltaY = 0.2f;
+            display->mouseWheelMove (eventAt (*display, display->getNodePosition (0)), wheel);
+            const float first = p.getParameterValue ("deq.a.b1.q");
+            panel.setChannelSet (1);
+            display->mouseWheelMove (eventAt (*display, display->getNodePosition (0)), wheel);
+            wheelRouting = first > 1.0f && p.getParameterValue ("deq.a.b1.q") == first
+                           && p.getParameterValue ("deq.b.b1.q") > 5.0f
+                           && a.begins == 1 && a.ends == 1 && b.begins == 1;
+            p.setParameterValue ("deq.link", 1.0f);
+            panel.refresh();
+            wheelRouting = wheelRouting && b.ends == 1;
+        }
+    }
+    check (wheelRouting && a.begins == a.ends && b.begins == b.ends,
+           "UI: Dynamic EQ wheel bursts close on channel or Link changes and start from the new set's Q",
+           str ("A Q=", p.getParameterValue ("deq.a.b1.q"), " B Q=", p.getParameterValue ("deq.b.b1.q"),
+                " gestures=", a.begins, "/", a.ends, " ", b.begins, "/", b.ends));
+    pa->removeListener (&a);
+    pb->removeListener (&b);
+
+    p.setParameterValues ({ { "pnch.a.b1.amount", 10.0f }, { "pnch.a.b2.amount", -10.0f },
+                           { "pnch.b.b1.amount", 40.0f }, { "pnch.b.b2.amount", -40.0f } }, "Punch setup");
+    a.begins = a.ends = b.begins = b.ends = 0;
+    pa = p.getParameter ("pnch.a.b1.amount");
+    pb = p.getParameter ("pnch.b.b1.amount");
+    pa->addListener (&a);
+    pb->addListener (&b);
+    bool punchRouting = false;
+    {
+        ps::ui::PunchBandCard card (p, 0, ps::ui::Colours::accent);
+        card.setSize (200, 200);
+        card.bind (0, -1, ps::ui::Colours::accent);
+        auto& knob = card.getKnob();
+        knob.getGroup = [&] (std::vector<juce::String>& ids, std::vector<juce::String>& twins)
+        {
+            const auto prefix = knob.getParamId().startsWith ("pnch.a.") ? "pnch.a." : "pnch.b.";
+            ids = { juce::String (prefix) + "b1.amount", juce::String (prefix) + "b2.amount" };
+            twins.resize (ids.size());
+        };
+        juce::MouseWheelDetails wheel {};
+        wheel.deltaY = 0.2f;
+        const auto e = eventAt (knob, knob.getLocalBounds().toFloat().getCentre());
+        knob.mouseWheelMove (e, wheel);
+        const float first = p.getParameterValue ("pnch.a.b1.amount");
+        const float second = p.getParameterValue ("pnch.a.b2.amount");
+        card.bind (1, -1, ps::ui::Colours::sideChannel);
+        knob.mouseWheelMove (e, wheel);
+        punchRouting = first > 10.0f && p.getParameterValue ("pnch.a.b1.amount") == first
+                       && p.getParameterValue ("pnch.a.b2.amount") == second
+                       && p.getParameterValue ("pnch.b.b1.amount") > 40.0f
+                       && p.getParameterValue ("pnch.b.b2.amount") > -40.0f
+                       && a.begins == 1 && a.ends == 1 && b.begins == 1;
+    }
+    check (punchRouting && a.begins == a.ends && b.begins == b.ends,
+           "UI: Punch linked-band wheel edits close on channel changes and edit only the new set",
+           str ("A=", p.getParameterValue ("pnch.a.b1.amount"), " B=", p.getParameterValue ("pnch.b.b1.amount"),
+                " gestures=", a.begins, "/", a.ends, " ", b.begins, "/", b.ends));
+    pa->removeListener (&a);
+    pb->removeListener (&b);
+
+    p.setParameterValues ({ { "meq.chMode", 1.0f }, { "meq.link", 0.0f },
+                           { "meq.a.lo", 100.0f }, { "meq.b.lo", 500.0f } }, "Match setup");
+    const float originalSideLow = p.getParameterValue ("meq.b.lo");
+    bool cutoffRouting = false;
+    {
+        ps::ui::MatchEqPanel panel (p, services);
+        panel.setSize (1000, 500);
+        if (auto* display = findPanelComponent<ps::ui::MatchDisplay> (panel))
+        {
+            const juce::Point<float> start (display->getCutoffX (false), display->getPlotArea().getCentreY());
+            display->mouseDown (eventAt (*display, start));
+            display->mouseDrag (eventAt (*display, start.translated (20.0f, 0.0f)));
+            const float first = p.getParameterValue ("meq.a.lo");
+            panel.setChannelSet (1);
+            display->mouseDrag (eventAt (*display, start.translated (50.0f, 0.0f)));
+            display->mouseUp (eventAt (*display, start.translated (50.0f, 0.0f)));
+            cutoffRouting = first > 100.0f && p.getParameterValue ("meq.a.lo") == first
+                            && p.getParameterValue ("meq.b.lo") == originalSideLow;
+        }
+    }
+    check (cutoffRouting, "UI: switching Match EQ channel tabs cancels an active cutoff drag",
+           str ("A low=", p.getParameterValue ("meq.a.lo"), " B low=", p.getParameterValue ("meq.b.lo")));
+
+    for (const auto type : { ps::ModuleType::LowContrast, ps::ModuleType::Punch })
+    {
+        auto panel = ps::ui::createModulePanel (p, services, type);
+        panel->setSize (1000, 500);
+        ps::ModuleMonitor monitor;
+        monitor.soloRegion = type == ps::ModuleType::LowContrast;
+        monitor.soloBand = type == ps::ModuleType::Punch ? 0 : -1;
+        p.setMonitor (type, monitor);
+        const int alt = juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::altModifier;
+        bool auditioned = false;
+        if (auto* low = findPanelComponent<ps::ui::LowRegionDisplay> (*panel))
+        {
+            low->mouseDown (eventAt (*low, low->getPlotArea().getCentre(), alt));
+            auditioned = true;
+        }
+        else if (auto* bands = findPanelComponent<ps::ui::MultibandDisplay> (*panel))
+        {
+            bands->mouseDown (eventAt (*bands, bands->getBandArea (0).getCentre(), alt));
+            auditioned = true;
+        }
+        panel.reset();
+        const auto after = p.getMonitor (type);
+        check (auditioned && ! after.soloRegion && after.soloBand < 0,
+               str ("UI: closing ", ps::moduleInfo (type).name,
+                    " during Alt audition cannot restore a previously latched solo"));
+    }
+}
+
+void testBassScopeFeed()
+{
+    PureSheenProcessor p;
+    auto& bass = static_cast<ps::BassShaper&> (p.getChain().getModule (ps::ModuleType::BassShaper));
+    bass.getScopeFifo().prepare (65536);
+    bass.getMaskFifo().prepare (65536);
+    ps::ui::BassScope scope (p);
+    scope.setSize (400, 200);
+    scope.update();
+    ps::ui::BassScope shared (p);
+    shared.setSize (400, 200);
+    std::vector<float> lo (65537, -0.1f), hi (65537, 0.1f), mask (65536, 0.2f);
+    lo[65536] = -0.7f;
+    hi[65536] = 0.7f;
+    // The audio producer can push a new scope frame between the two UI pulls.
+    bass.getScopeFifo().push (lo.data(), hi.data(), 65537);
+    bass.getMaskFifo().push (mask.data(), mask.data(), 65536);
+    scope.update();
+    float mn = 0.0f, mx = 0.0f, weight = 0.0f;
+    check (scope.getLatestValues (mn, mx, weight) && mn == -0.1f && mx == 0.1f && weight == 0.2f,
+           "UI: Bass Scope aligns independently overrun scope and mask FIFOs by sequence");
+    const float lastMask = 0.9f;
+    bass.getMaskFifo().push (&lastMask, &lastMask, 1);
+    shared.update();
+    check (scope.getLatestValues (mn, mx, weight) && mn == -0.7f && mx == 0.7f && weight == 0.9f,
+           "UI: shared Bass Scopes retain an unmatched trailing frame until its mask arrives");
+}
+
+void testPromptLifetime()
+{
+    const auto pump = []
+    {
+       #if JUCE_WINDOWS || JUCE_LINUX
+        const auto end = juce::Time::getMillisecondCounter() + 50u;
+        while (juce::Time::getMillisecondCounter() < end)
+            if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
+                juce::Thread::sleep (1);
+       #endif
+    };
+    int calls = 0;
+    auto parent = std::make_unique<juce::Component>();
+    parent->setSize (400, 200);
+    ps::ui::promptForText (*parent, "Value", "Enter a value", "12", [&] (juce::String) { ++calls; });
+    auto* modalManager = juce::ModalComponentManager::getInstance();
+    juce::Component::SafePointer<juce::Component> prompt (modalManager->getModalComponent (0));
+    const bool opened = prompt != nullptr && prompt->isCurrentlyModal();
+    parent.reset();
+    const bool cancelled = prompt == nullptr || (! prompt->isCurrentlyModal() && ! prompt->isVisible());
+    pump();
+    check (opened && cancelled && calls == 0 && prompt == nullptr,
+           "UI: closing a prompt's parent cancels the modal window and drops its callback");
+
+    parent = std::make_unique<juce::Component>();
+    parent->setSize (400, 200);
+    ps::ui::promptForText (*parent, "Value", "Enter a value", "12", [&] (juce::String text)
+    {
+        if (text == "12") ++calls;
+    });
+    prompt = modalManager->getModalComponent (0);
+    if (prompt != nullptr)
+        prompt->exitModalState (1);
+    pump();
+    check (calls == 1 && prompt == nullptr, "UI: accepting a prompt with a live parent calls back once");
+}
+
+void testPanelGestures()
+{
+    struct Gestures final : juce::AudioProcessorParameter::Listener
+    {
+        int begins = 0, ends = 0;
+        void parameterValueChanged (int, float) override {}
+        void parameterGestureChanged (int, bool starting) override
+        {
+            if (starting) ++begins;
+            else ++ends;
+        }
+    } a, b;
+
+    PureSheenProcessor p;
+    auto* pa = p.getParameter ("lowc.a.contrast");
+    auto* pb = p.getParameter ("lowc.b.contrast");
+    pa->addListener (&a);
+    pb->addListener (&b);
+    const auto eventAt = [] (juce::Component& c, float y)
+    {
+        const juce::Point<float> pos (40.0f, y);
+        return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), pos,
+                                juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, juce::Time(),
+                                { 40.0f, 70.0f }, juce::Time(), 1, true);
+    };
+    {
+        ps::ui::ParamKnob knob (p, "lowc.a.contrast");
+        knob.setSize (80, 100);
+        knob.setLinkedParamId ("lowc.b.contrast");
+        knob.mouseDown (eventAt (knob, 70.0f));
+        knob.mouseDrag (eventAt (knob, 60.0f));
+        // Panel refreshes reapply these bindings after unrelated processor notifications.
+        knob.setParamId ("lowc.a.contrast");
+        knob.setLinkedParamId ("lowc.b.contrast");
+        p.flushPendingChanges (true);
+        const bool stillDragging = p.getHistory().size() == 1 && a.ends == 0 && b.ends == 0;
+        knob.mouseDrag (eventAt (knob, 40.0f));
+        knob.mouseUp (eventAt (knob, 40.0f));
+        p.flushPendingChanges (true);
+        const float edited = p.getParameterValue ("lowc.a.contrast");
+        check (stillDragging && a.begins == 1 && a.ends == 1 && b.begins == 1 && b.ends == 1
+                   && p.getHistory().size() == 2 && edited > 0.0f
+                   && p.getParameterValue ("lowc.b.contrast") == edited,
+               "UI: refreshing a linked knob during a drag keeps one host gesture and one undo step");
+        p.undo();
+        check (p.getParameterValue ("lowc.a.contrast") == 0.0f
+                   && p.getParameterValue ("lowc.b.contrast") == 0.0f,
+               "UI: one undo restores both sets after a refreshed linked drag");
+
+        knob.mouseDown (eventAt (knob, 70.0f));
+        knob.mouseDrag (eventAt (knob, 60.0f));
+        knob.setLinkedParamId ({});
+        check (a.begins == a.ends && b.begins == b.ends,
+               "UI: removing Link during a drag closes both original host gestures");
+        knob.mouseUp (eventAt (knob, 60.0f));
+
+        knob.mouseDown (eventAt (knob, 70.0f));
+        knob.mouseDrag (eventAt (knob, 60.0f));
+        knob.setParamId ("lowc.b.contrast");
+        knob.setLinkedParamId ({});
+        const float sideBefore = p.getParameterValue ("lowc.b.contrast");
+        knob.mouseDrag (eventAt (knob, 30.0f));
+        knob.mouseUp (eventAt (knob, 30.0f));
+        check (p.getParameterValue ("lowc.b.contrast") == sideBefore
+                   && a.begins == a.ends && b.begins == b.ends,
+               "UI: rebinding a knob cancels the previous drag before it can edit the new channel set");
+
+        knob.setParamId ("lowc.a.contrast");
+        knob.setLinkedParamId ("lowc.b.contrast");
+        knob.mouseDown (eventAt (knob, 70.0f));
+        knob.mouseDrag (eventAt (knob, 50.0f));
+    }
+    check (a.begins == a.ends && b.begins == b.ends,
+           "UI: destroying a linked knob mid drag closes both host gestures");
+    pa->removeListener (&a);
+    pb->removeListener (&b);
+}
+
 void testThreads()
 {
     std::cout << "\n-- Threads\n";
@@ -2014,6 +2506,10 @@ int runSelfTest()
     testPresets();
     testMonitoring();
     testTsPanelBindings();
+    testPhase2PanelRouting();
+    testPanelGestures();
+    testBassScopeFeed();
+    testPromptLifetime();
     testThreads();
 
     std::cout << "\n-- Match EQ state, undo and file loader\n";

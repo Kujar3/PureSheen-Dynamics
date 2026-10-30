@@ -167,41 +167,11 @@ Values harshValues (float amount, SmootherMode mode, float lowHz = 2000.0f, floa
     return v;
 }
 
-// The UI's Learn rule (Smoother.h): smallest contiguous span holding 75 % of the score, widened by half a band.
+// The UI's Learn rule: the shared helper of Smoother.h (smootherLearnedRegion), as the panel uses it.
 void learnedRegion (const SmootherMeters& m, int set, double& lowHz, double& highHz)
 {
-    double sc[kSmootherBands], total = 0.0;
-    for (int b = 0; b < kSmootherBands; ++b)
-        total += (sc[b] = std::max (0.0f, m.learnScore[set][b].load()));
-    int bestLo = 0, bestHi = kSmootherBands - 1;
-    for (int lo = 0; lo < kSmootherBands; ++lo)
-    {
-        double acc = 0.0;
-        for (int hi = lo; hi < kSmootherBands; ++hi)
-        {
-            acc += sc[hi];
-            if (acc >= 0.75 * total)
-            {
-                if (hi - lo < bestHi - bestLo)
-                {
-                    bestLo = lo;
-                    bestHi = hi;
-                }
-                break;
-            }
-        }
-    }
-    // half a band beyond the span: the geometric mean of the edge band's centre and its outer neighbour's
-    auto outer = [] (int b, int dir)
-    {
-        const double c = smootherBandHz (b, kSr);
-        const int nb = b + dir;
-        if (nb >= 0 && nb < kSmootherBands)
-            return std::sqrt (c * smootherBandHz (nb, kSr));
-        return c * std::sqrt (c / smootherBandHz (b - dir, kSr));
-    };
-    lowHz = outer (bestLo, -1);
-    highHz = outer (bestHi, 1);
+    const bool learned = smootherLearnedRegion (m, set, kSr, lowHz, highHz);
+    CHECK (learned);
 }
 
 double meanGr (const std::vector<double>& v) { double s = 0.0; for (double x : v) s += x; return v.empty() ? 0.0 : s / (double) v.size(); }
@@ -1312,4 +1282,33 @@ TEST_CASE ("smth. cpu (x realtime, 48 kHz stereo)")
         note (std::string (c.name) + ": x realtime", rt);
         CHECK (rt >= 80.0);
     }
+}
+
+TEST_CASE ("smth. learned region helper: empty scores, a single band, the 75 % span")
+{
+    SmootherMeters m;
+    double lo = -1.0, hi = -1.0;
+    CHECK (! smootherLearnedRegion (m, 0, kSr, lo, hi));   // nothing learned: unchanged
+    CHECK_EQ (lo, -1.0);
+    CHECK_EQ (hi, -1.0);
+
+    // One band: its centre +- half a band (geometric means with the neighbours)
+    m.learnScore[1][20].store (3.0f);
+    CHECK (smootherLearnedRegion (m, 1, kSr, lo, hi));
+    CHECK (std::abs (lo - (std::sqrt (smootherBandHz (19, kSr) * smootherBandHz (20, kSr)))) < 1.0e-6);
+    CHECK (std::abs (hi - (std::sqrt (smootherBandHz (20, kSr) * smootherBandHz (21, kSr)))) < 1.0e-6);
+    CHECK (! smootherLearnedRegion (m, 0, kSr, lo, hi));   // the other set is still empty
+
+    // 80 % of the score in bands 10..12, the rest spread: the span is 10..12; the top band mirrors its ratio
+    for (int b = 0; b < kSmootherBands; ++b)
+        m.learnScore[0][b].store (b >= 10 && b <= 12 ? 8.0f : 6.0f / 29.0f);
+    CHECK (smootherLearnedRegion (m, 0, kSr, lo, hi));
+    CHECK (std::abs (lo - (std::sqrt (smootherBandHz (9, kSr) * smootherBandHz (10, kSr)))) < 1.0e-6);
+    CHECK (std::abs (hi - (std::sqrt (smootherBandHz (12, kSr) * smootherBandHz (13, kSr)))) < 1.0e-6);
+
+    SmootherMeters top;
+    top.learnScore[0][kSmootherBands - 1].store (1.0f);
+    CHECK (smootherLearnedRegion (top, 0, kSr, lo, hi));
+    const double c = smootherBandHz (kSmootherBands - 1, kSr), below = smootherBandHz (kSmootherBands - 2, kSr);
+    CHECK (std::abs (hi - (c * std::sqrt (c / below))) < 1.0e-6);
 }

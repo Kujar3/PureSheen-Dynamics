@@ -64,6 +64,7 @@ public:
     DbAxis getLevelAxis() const noexcept;            // that scale over the plot area (for overlays in dB)
     juce::Rectangle<float> getBandHeaderArea (int band) const noexcept;   // the band's header strip
     int getSoloBand() const noexcept;                // -1 = none
+    void clearSolo();                               // end temporary / latched monitoring before panel teardown
     int getHoverBand() const noexcept;               // band under the mouse in the plot, -1 = none
 
     // Mouse moves over the plot (band -1: the mouse left the plot or is over a crossover line). For hover effects.

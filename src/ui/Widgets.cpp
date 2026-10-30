@@ -121,7 +121,13 @@ public:
 
     void bind (const juce::String& newId)
     {
+        // Panel refreshes also run during edits (for example when another module finishes a file load).
+        // Reattaching an unchanged parameter would end the current drag halfway through its host gesture.
+        if (newId == id && attachment != nullptr)
+            return;
+
         endIfActive();
+        ++targetGeneration;
         attachment.reset();
         id = newId;
         param = processor.getParameter (id);
@@ -145,7 +151,13 @@ public:
 
     void link (const juce::String& linkedParamId)
     {
-        linked = linkedParamId.isNotEmpty() && linkedParamId != id ? processor.getParameter (linkedParamId) : nullptr;
+        auto* next = linkedParamId.isNotEmpty() && linkedParamId != id ? processor.getParameter (linkedParamId) : nullptr;
+        if (next == linked)
+            return;
+
+        endIfActive();   // close the original linked parameter before replacing the pointer
+        linked = next;
+        ++targetGeneration;
     }
 
     bool isValid() const noexcept { return param != nullptr && spec != nullptr; }
@@ -170,6 +182,7 @@ public:
     juce::String hostName() const { return spec != nullptr ? juce::String (spec->name) : id; }
     const ps::ParamSpec* getSpec() const noexcept { return spec; }
     const juce::String& getId() const noexcept { return id; }
+    unsigned getTargetGeneration() const noexcept { return targetGeneration; }
 
     void begin()
     {
@@ -242,6 +255,7 @@ private:
     std::unique_ptr<juce::ParameterAttachment> attachment;
     float value = 0.0f;
     bool active = false;
+    unsigned targetGeneration = 0;
 };
 
 //==============================================================================
@@ -270,6 +284,7 @@ public:
             return;
 
         dragging = true;
+        dragGeneration = binding.getTargetGeneration();
         dragNorm = binding.toNorm (binding.get());
         lastPos = e.position;
     }
@@ -278,6 +293,12 @@ public:
     {
         if (! dragging || ! isLeftClick (e))
             return;
+
+        if (dragGeneration != binding.getTargetGeneration())
+        {
+            dragging = false;
+            return;   // the original gesture was closed by bind / link; a new target requires a new press
+        }
 
         const auto d = e.position - lastPos;
         lastPos = e.position;
@@ -367,6 +388,7 @@ private:
     juce::Component& owner;
     Binding& binding;
     bool dragging = false;
+    unsigned dragGeneration = 0;
     float dragNorm = 0.0f, wheelNorm = 0.0f;
     juce::Point<float> lastPos;
 };

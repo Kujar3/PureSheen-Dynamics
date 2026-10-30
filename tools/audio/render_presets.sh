@@ -11,7 +11,7 @@ mkdir -p out/renders
 printf "%-22s %9s %9s %7s %6s  %s\n" preset "LUFS-I" "TP dBTP" "LRA" "lat" "check"
 for P in "Default" "Soft Sheen" "Streaming Ready" "Loud and Clear" "Club Loud" "Wide Supersaw Master" \
          "Deep Bass Anchor" "Acoustic Air" "Warm Glue" "Limit Only" "Radio Pop" "Rock Drive" "Hip-Hop Knock" \
-         "Mid-Side Detail"; do
+         "Mid-Side Detail" "Modern Loud Balance" "Gentle Acoustic Master" "Heavy Low End Master"          "Clean Vocal Pop"; do
     F="out/renders/$(echo "$P" | tr ' ' '_').wav"
     LOG=$("$D" render "$IN" "$F" --preset "$P" 2>&1)
     OUTL=$(echo "$LOG" | grep "output:")

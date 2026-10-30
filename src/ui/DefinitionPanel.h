@@ -2,20 +2,39 @@
 
 #include "ui/ModulePanel.h"
 
-// Definition panel. Owner: ui-spectral. Implementation: DefinitionPanel.cpp.
+#include <memory>
+
+// Definition panel. Owner: ui-spectral. Implementation: DefinitionPanel.cpp (+ SpectralDisplay, SpectralWidgets).
 // Contract: the editor creates it through createModulePanel (ModulePanels.cpp) for ps::ModuleType::Definition; it is a
-// ModulePanel (the base draws the header: name, presets, channel modes, channel tabs, Learn, Delta, Reset).
-// For now it is the GenericModulePanel (every parameter as a control, built from ps::paramSpecs()). The dedicated
-// panel replaces the body: a SpectralDisplay (input / output spectra, pink + tilt target line, correction curve, region
-// handles, the veil below 300 Hz) with boost / cut activity bars, then Amount, Tilt, Attack, Release and the region
-// values.
-// It may stop deriving from GenericModulePanel (derive from ModulePanel directly) as long as the constructor stays.
+// ModulePanel (the base draws the header: name, presets, channel modes, channel tabs, Delta, Reset).
+//
+//   top left  : SpectralDisplay: input (pre tap, grey) and output (post tap) spectra on the left level scale, the
+//               target line (pink + Tilt, dashed) laid through the input level inside the region, the live lift curve
+//               (gainDb, bold, filled to zero) on the right +-6 dB scale, the veil below 300 Hz (not processed), and
+//               the action region: shaded outside, low / high handles ("defn.<set>.low/high", one gesture per drag),
+//               the header pill (drag = move both) with its S button (ModuleMonitor::soloRegion).
+//   top right : the Activity meter (the curve's max boost / max cut).
+//   bottom    : Amount card (Amount, Tilt), Timing card (Attack, Release), Region card (Low, High).
+// Per-set controls and curves follow the header's A/B tab (set B in the side-channel colour); with Link on every edit
+// applies to both sets. Never takes keyboard focus; left-click-only edits.
 namespace ps::ui
 {
-class DefinitionPanel : public GenericModulePanel
+class DefinitionPanel : public ModulePanel
 {
 public:
     DefinitionPanel (PureSheenProcessor&, EditorServices&);
     ~DefinitionPanel() override;
+
+    void tick() override;
+    void frameTick() override;
+    void refresh() override;
+    void channelSetChanged() override;
+
+protected:
+    void layoutContent (juce::Rectangle<int> contentArea) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
 };
 } // namespace ps::ui

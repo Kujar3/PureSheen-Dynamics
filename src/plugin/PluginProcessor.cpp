@@ -441,9 +441,14 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     void goTo (int index)
     {
         const juce::ScopedLock editSl (editLock);   // Match EQ: restore parameters and spectra as one host-save transaction
+        const int selectedId = index >= 0 && index < history.size() ? history[index].id : -1;
         commitGesture (true);
         matchEqHousekeeping();   // Match EQ: a pending spectrum change becomes its own step first
-        if (index < 0 || index >= history.size() || index == history.getPosition())
+        index = -1;
+        for (int i = 0; i < history.size(); ++i)
+            if (history[i].id == selectedId)
+                index = i;
+        if (index < 0 || index == history.getPosition())
             return;
         history.setPosition (index);
         applyState (history.current().state, true);
@@ -831,6 +836,8 @@ void PureSheenProcessor::setParameterValue (const juce::String& id, float plainV
     if (i < 0)
         return;
 
+    const juce::ScopedLock editSl (d.editLock);
+    d.matchEqHousekeeping();   // keep an earlier spectrum edit before this parameter step
     d.commitGesture (true);
     const bool was = d.applying.exchange (true);
     d.setParam (i, plainValue);
@@ -842,6 +849,8 @@ void PureSheenProcessor::setParameterValues (const std::vector<std::pair<juce::S
                                              const juce::String& undoDescription)
 {
     auto& d = *impl;
+    const juce::ScopedLock editSl (d.editLock);
+    d.matchEqHousekeeping();
     d.commitGesture (true);
 
     int first = -1;
@@ -874,6 +883,8 @@ std::vector<ps::ModuleType> PureSheenProcessor::getChainOrder() const { return i
 void PureSheenProcessor::setChainOrder (const std::vector<ps::ModuleType>& requested)
 {
     auto& d = *impl;
+    const juce::ScopedLock editSl (d.editLock);
+    d.matchEqHousekeeping();
     d.commitGesture (true);
 
     const auto before = d.chain.getOrder();
@@ -911,6 +922,8 @@ void PureSheenProcessor::addModule (ps::ModuleType type, int insertIndex)
     if (! validModule ((int) type) || isModuleInChain (type))
         return;
 
+    const juce::ScopedLock editSl (d.editLock);
+    d.matchEqHousekeeping();
     d.commitGesture (true);
     auto order = getChainOrder();
     if (insertIndex < 0 || insertIndex > (int) order.size())
@@ -941,6 +954,8 @@ void PureSheenProcessor::resetModule (ps::ModuleType type)
     auto& d = *impl;
     if (! validModule ((int) type))
         return;
+    const juce::ScopedLock editSl (d.editLock);
+    d.matchEqHousekeeping();
     d.commitGesture (true);
     const auto defaults = psplug::defaultValues();
     const int scope = (int) type;
@@ -1106,6 +1121,7 @@ void PureSheenProcessor::storeSnapshot (int slot)
     const juce::ScopedLock editSl (impl->editLock);   // Match EQ: a host state restore cannot split the stored parameter/spectrum pair
     if (slot < 0 || slot >= kNumSnapshots)
         return;
+    impl->matchEqHousekeeping();
     impl->commitGesture (true);
     {
         const juce::ScopedLock sl (impl->extrasLock);
@@ -1119,16 +1135,20 @@ void PureSheenProcessor::storeSnapshot (int slot)
 void PureSheenProcessor::storeSnapshotFromHistory (int slot, int historyIndex)
 {
     const juce::ScopedLock editSl (impl->editLock);   // Match EQ: hold the history entry and its spectra stable while storing
-    if (slot < 0 || slot >= kNumSnapshots)
+    if (slot < 0 || slot >= kNumSnapshots || historyIndex < 0 || historyIndex >= impl->history.size())
         return;
-    impl->commitGesture (true);
-    if (historyIndex < 0 || historyIndex >= impl->history.size())
-        return;
+    // Pending edits may append and trim the history. Preserve the entry the user selected before its index moves.
+    const int selectedId = impl->history[historyIndex].id;
     {
         const juce::ScopedLock sl (impl->extrasLock);
         impl->snapshots[(size_t) slot] = impl->history[historyIndex].state;
-        impl->activeSnapshot = historyIndex == impl->history.getPosition() ? slot : -1;
         impl->matchEq->storeSnapshotFromHistory (slot, impl->history, historyIndex);   // Match EQ
+    }
+    impl->matchEqHousekeeping();
+    impl->commitGesture (true);
+    {
+        const juce::ScopedLock sl (impl->extrasLock);
+        impl->activeSnapshot = selectedId == impl->history.current().id ? slot : -1;
     }
     sendChangeMessage();
 }
@@ -1400,7 +1420,11 @@ juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 // flushPendingChanges) applies the result and records the undo step.
 bool PureSheenProcessor::startMatchReferenceFile (const juce::File& file, int part)
 {
-    return impl->matchEq->startFile (file, part);
+    return startMatchReferenceFile (file, part, false);
+}
+bool PureSheenProcessor::startMatchReferenceFile (const juce::File& file, int part, bool linkedParts)
+{
+    return impl->matchEq->startFile (file, part, linkedParts);
 }
 void PureSheenProcessor::cancelMatchReferenceFile() { impl->matchEq->cancelFile(); }
 float PureSheenProcessor::getMatchReferenceFileProgress() const { return impl->matchEq->getFileProgress(); }

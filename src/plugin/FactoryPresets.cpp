@@ -7,12 +7,29 @@
 // "Streaming Ready" lands at about -14 LUFS, "Loud and Clear" about -9.5, "Club Loud" about -8 (-0.5 dBTP), the
 // Pop / Rock / Hip-Hop / EDM styles at -11..-15, and the Gentle presets stay within 1-2 LU of the input. Every preset that
 // pushes loudness sets the Learn target to its intended level, so Learn Input Gain adapts it to other mixes.
+//
+// Phase 2:
+// - Module presets of the eight phase 2 modules (proposed by their DSP owners, checked against ParamTable.cpp). In
+//   Stereo presets set B gets the same values as set A, so a later switch to M/S or T/S starts linked; presets whose
+//   sets differ turn the channel Link off.
+// - The Match EQ presets "Pink Balance", "Warm Tilt" and "Bright Tilt" carry a synthesised reference: the preset
+//   format holds no spectrum, MatchEqState::beginPresetLoad attaches it by name (factoryMatchReference), so these
+//   names must stay exactly as they are. "Low End Only" carries none and leaves the References alone.
+// - Transient/Sustain presets of the Core modules ("Transient/Sustain" category): set A = Transient, set B = Sustain.
+//   The channel-mode values come from ps::channelModeParamValues (the EQ's chMode index, the Exciter's exc.ts.on).
+// - Global presets with phase 2 modules in their chains, tuned like the Core ones on the -20 LUFS premaster:
+//   "Modern Loud Balance" about -10 LUFS, "Clean Vocal Pop" -11, "Heavy Low End Master" -12 (all -1 dBTP),
+//   "Gentle Acoustic Master" within 1.5 LU of the input.
+// - Module preset names are unique across all scopes (the DSP owners' "Soft Sheen" / "Air Lift" proposals became
+//   "Gentle Balance" / "Airy Detail", since a global and an EQ preset already carry those names).
 namespace psplug
 {
 namespace
 {
 using ps::EqShape;
 using ps::ModuleType;
+using ps::ChannelMode;
+using ps::DynEqShape;
 
 constexpr float kMidSide = (float) ps::ChannelMode::MidSide;
 constexpr float kSlope12 = (float) ps::EqSlope::Db12, kSlope24 = (float) ps::EqSlope::Db24;
@@ -97,6 +114,128 @@ struct Builder
         set ("max.truePeak", 1.0f);
         set ("max.character", character);
         return *this;
+    }
+
+    // (phase 2) The values that select a channel mode (from the parameter table). `placeholder` replaces the module
+    // prefix (the shared EQ presets are written with "eq.").
+    Builder& channelMode (ModuleType type, ChannelMode m, const std::string& placeholder = {})
+    {
+        const auto modeValues = ps::channelModeParamValues (type, m);
+        jassert (! modeValues.empty());   // the module does not offer this mode
+        for (const auto& [id, v] : modeValues)
+            set (placeholder.empty() ? id : placeholder + id.substr (id.find ('.')), v);
+        return *this;
+    }
+
+    // "<prefix>.a.<name>" and "<prefix>.b.<name>" (both channel sets).
+    Builder& both (const std::string& prefix, const std::string& name, float v)
+    {
+        set (prefix + ".a." + name, v);
+        return set (prefix + ".b." + name, v);
+    }
+
+    // Dynamic EQ band on the channel sets listed in `sets` ("a", "b" or "ab"); knee 6 dB.
+    Builder& dynEq (const std::string& sets, int band, DynEqShape s, float freq, float gain, float q, float thr,
+                    float ratio, float att, float rel, bool autoScale = true,
+                    ps::DynEqDirection dir = ps::DynEqDirection::Down)
+    {
+        for (const char c : sets)
+        {
+            const auto p = std::string ("deq.") + c + ".b" + std::to_string (band) + ".";
+            set (p + "on", 1.0f);
+            set (p + "shape", (float) s);
+            set (p + "freq", freq);
+            set (p + "gain", gain);
+            set (p + "q", q);
+            set (p + "dir", (float) dir);
+            set (p + "thr", thr);
+            set (p + "ratio", ratio);
+            set (p + "knee", 6.0f);
+            set (p + "auto", autoScale ? 1.0f : 0.0f);
+            set (p + "att", att);
+            set (p + "rel", rel);
+        }
+        return *this;
+    }
+
+    // Tone Balance on both sets: target, mode and the set controls.
+    Builder& tone (ps::ToneTarget target, ps::ToneBalanceMode m, float amount, float speed, float smooth,
+                   float cutSpeed = 50.0f, float sens = 50.0f, bool tame = false, float low = 100.0f,
+                   float mid = 100.0f, float high = 100.0f)
+    {
+        set ("tbal.target", (float) target);
+        set ("tbal.mode", (float) m);
+        both ("tbal", "amount", amount);
+        both ("tbal", "speed", speed);
+        both ("tbal", "smooth", smooth);
+        both ("tbal", "cutSpeed", cutSpeed);
+        both ("tbal", "sens", sens);
+        both ("tbal", "tame", tame ? 1.0f : 0.0f);
+        both ("tbal", "low", low);
+        both ("tbal", "mid", mid);
+        return both ("tbal", "high", high);
+    }
+
+    // Definition set ("a" / "b" / "ab").
+    Builder& definition (const std::string& sets, float amount, float tilt, float att, float rel, float low, float high)
+    {
+        for (const char c : sets)
+        {
+            const auto p = std::string ("defn.") + c + ".";
+            set (p + "amount", amount);
+            set (p + "tilt", tilt);
+            set (p + "att", att);
+            set (p + "rel", rel);
+            set (p + "low", low);
+            set (p + "high", high);
+        }
+        return *this;
+    }
+
+    // Smoother set ("a" / "b" / "ab").
+    Builder& smoother (const std::string& sets, float amount, ps::SmootherMode m, float att, float rel, float tone,
+                       float low, float high)
+    {
+        for (const char c : sets)
+        {
+            const auto p = std::string ("smth.") + c + ".";
+            set (p + "amount", amount);
+            set (p + "mode", (float) m);
+            set (p + "att", att);
+            set (p + "rel", rel);
+            set (p + "tone", tone);
+            set (p + "low", low);
+            set (p + "high", high);
+        }
+        return *this;
+    }
+
+    // Punch band amount on both sets.
+    Builder& punch (int band, float amount)
+    {
+        return both ("pnch", "b" + std::to_string (band) + ".amount", amount);
+    }
+
+    // Low Contrast set ("a" / "b" / "ab").
+    Builder& lowContrast (const std::string& sets, ps::LowContrastMode m, float contrast, float gain)
+    {
+        for (const char c : sets)
+        {
+            const auto p = std::string ("lowc.") + c + ".";
+            set (p + "mode", (float) m);
+            set (p + "contrast", contrast);
+            set (p + "gain", gain);
+        }
+        return *this;
+    }
+
+    // Match EQ set controls on both sets.
+    Builder& match (float amount, float smooth, float boost, float cut)
+    {
+        both ("meq", "amount", amount);
+        both ("meq", "smooth", smooth);
+        both ("meq", "boost", boost);
+        return both ("meq", "cut", cut);
     }
 };
 
@@ -289,6 +428,64 @@ std::vector<FactoryPreset> build()
             .maximizer (MM::Transparent, 7.0f, -1.0f, 4.0f)
             .set ("max.learnTarget", -15.5f)));
 
+    // (phase 2) Global presets with the phase 2 modules.
+    using TT = ps::ToneTarget;
+    using TM = ps::ToneBalanceMode;
+    using SM = ps::SmootherMode;
+    using LM = ps::LowContrastMode;
+
+    all.push_back (global ("Modern Loud Balance", "Start Here",
+        Builder()
+            .eq1 ('a', 1, EqShape::HighPassFlat, 28.0f, 0.0f, 0.707f, kSlope24)
+            .tone (TT::Pop, TM::Shape, 30.0f, 40.0f, 70.0f)
+            .comp (1, -20.0f, 1.8f, 30.0f, 150.0f, 10.0f)
+            .bands ("pnch", 2, 200.0f).punch (1, 15.0f).punch (2, 20.0f)
+            .set ("pnch.env", 60.0f).set ("pnch.stLink", 1.0f).set ("pnch.autoGain", 1.0f)
+            .bands ("img", 2, 150.0f).width (1, -30.0f).width (2, 8.0f)
+            .maximizer (MM::Transparent, 13.5f, -1.0f, 3.0f)
+            .set ("max.learnTarget", -10.0f),
+        { ModuleType::Equalizer1, ModuleType::ToneBalance, ModuleType::Dynamics, ModuleType::Punch, ModuleType::Imager,
+          ModuleType::Maximizer }));
+
+    all.push_back (global ("Gentle Acoustic Master", "Gentle",
+        Builder()
+            .eq1 ('a', 1, EqShape::HighPassFlat, 30.0f, 0.0f, 0.707f, kSlope12)
+            .eq1 ('a', 2, EqShape::HighShelfBaxandall, 12000.0f, 1.0f)
+            .definition ("ab", 25.0f, 0.0f, 150.0f, 150.0f, 300.0f, 20000.0f)
+            .smoother ("ab", 25.0f, SM::Gentle, 10.0f, 50.0f, 0.0f, 2500.0f, 10000.0f)
+            .comp (1, -24.0f, 1.3f, 50.0f, 300.0f, 15.0f)
+            .maximizer (MM::Transparent, 4.0f, -1.0f, 6.0f),
+        { ModuleType::Equalizer1, ModuleType::Definition, ModuleType::Smoother, ModuleType::Dynamics,
+          ModuleType::Maximizer }));
+
+    all.push_back (global ("Heavy Low End Master", "Hip-Hop",
+        Builder()
+            .eq1 ('a', 1, EqShape::HighPassFlat, 22.0f, 0.0f, 0.707f, kSlope24)
+            .set ("lowc.low", 30.0f).set ("lowc.high", 120.0f)
+            .lowContrast ("ab", LM::Punchy, 30.0f, 0.0f)
+            .set ("bass.punch", 2.0f)
+            .set ("bass.peak.on", 1.0f).set ("bass.peak.thr", -8.0f).set ("bass.peak.char", 100.0f)
+            .comp (1, -20.0f, 1.8f, 30.0f, 150.0f, 10.0f)
+            .bands ("img", 2, 140.0f).width (1, -100.0f).width (2, 5.0f)
+            .maximizer (MM::Smooth, 10.5f, -1.0f, 5.0f)
+            .set ("max.learnTarget", -12.0f),
+        { ModuleType::Equalizer1, ModuleType::LowContrast, ModuleType::BassShaper, ModuleType::Dynamics,
+          ModuleType::Imager, ModuleType::Maximizer }));
+
+    all.push_back (global ("Clean Vocal Pop", "Pop and Rock",
+        Builder()
+            .eq1 ('a', 1, EqShape::HighPassFlat, 30.0f, 0.0f, 0.707f, kSlope24)
+            .dynEq ("ab", 3, DynEqShape::Bell, 280.0f, -2.5f, 1.2f, -32.0f, 2.0f, 8.0f, 120.0f)
+            .dynEq ("ab", 5, DynEqShape::ProportionalQ, 6500.0f, -4.0f, 2.5f, -38.0f, 3.0f, 1.0f, 45.0f, false)
+            .tone (TT::Pop, TM::Shape, 25.0f, 40.0f, 70.0f)
+            .comp (1, -20.0f, 2.0f, 20.0f, 120.0f, 8.0f)
+            .bands ("exc", 2, 6000.0f).excite (2, EM::Tube, 10.0f, 40.0f)
+            .bands ("img", 2, 180.0f).width (1, -25.0f).width (2, 8.0f)
+            .maximizer (MM::Transparent, 12.5f, -1.0f, 3.0f)
+            .set ("max.learnTarget", -11.0f),
+        { ModuleType::Equalizer1, ModuleType::DynamicEq, ModuleType::ToneBalance, ModuleType::Dynamics,
+          ModuleType::Exciter, ModuleType::Imager, ModuleType::Maximizer }));
+
     //==============================================================================
     // Equalizer presets (shared by EQ 1 and EQ 2)
     all.push_back (modulePreset ("Low Cut 30 Hz", "Cleanup", ModuleType::Equalizer1,
@@ -306,6 +503,22 @@ std::vector<FactoryPreset> build()
             .eq ('a', 1, EqShape::HighPassFlat, 25.0f, 0.0f, 0.707f, kSlope12)
             .eq ('b', 1, EqShape::HighPassFlat, 150.0f, 0.0f, 0.707f, kSlope12)
             .eq ('b', 2, EqShape::HighShelfBaxandall, 8000.0f, 2.0f)));
+    // Transient/Sustain (set A = Transient, set B = Sustain)
+    all.push_back (modulePreset ("Air on the Hits", "Transient/Sustain", ModuleType::Equalizer1,
+        Builder()
+            .channelMode (ModuleType::Equalizer1, ChannelMode::TransientSustain, "eq")
+            .set ("eq.link", 0.0f)
+            .set ("eq.ts.sens", 55.0f).set ("eq.ts.len", 15.0f)
+            .eq ('a', 1, EqShape::HighShelfBaxandall, 9000.0f, 2.0f)         // Transient: air on the attacks
+            .eq ('a', 2, EqShape::ProportionalQ, 4000.0f, 0.8f, 0.8f)
+            .eq ('b', 1, EqShape::HighShelfBaxandall, 9000.0f, -0.5f)));      // Sustain: tails a touch softer
+    all.push_back (modulePreset ("Body for the Tails", "Transient/Sustain", ModuleType::Equalizer1,
+        Builder()
+            .channelMode (ModuleType::Equalizer1, ChannelMode::TransientSustain, "eq")
+            .set ("eq.link", 0.0f)
+            .set ("eq.ts.sens", 50.0f).set ("eq.ts.len", 25.0f)
+            .eq ('b', 1, EqShape::LowShelfBaxandall, 90.0f, 0.8f)
+            .eq ('b', 2, EqShape::ProportionalQ, 220.0f, 1.2f, 0.8f)));
 
     //==============================================================================
     // Dynamics presets
@@ -338,6 +551,17 @@ std::vector<FactoryPreset> build()
             .set ("img.antiphase", 1.0f)));
     all.push_back (modulePreset ("Safe Narrow", "Correction", ModuleType::Imager,
         Builder().width (1, -20.0f).set ("img.rec.on", 1.0f).set ("img.rec.gain", 0.0f)));
+    all.push_back (modulePreset ("Wide Tails, Focused Hits", "Transient/Sustain", ModuleType::Imager,
+        Builder()
+            .channelMode (ModuleType::Imager, ChannelMode::TransientSustain)
+            .set ("img.link", 0.0f)
+            .set ("img.ts.sens", 50.0f).set ("img.ts.len", 20.0f)
+            .bands ("img", 2, 250.0f)
+            .width (2, -20.0f)                                   // Transient: the hits a little more centred
+            .set ("img.b.b2.width", 25.0f)                      // Sustain: wider tails
+            .set ("img.b.stz.on", 1.0f).set ("img.b.stz.mode", (float) ps::StereoizeMode::ModeII)
+            .set ("img.b.stz.amount", 15.0f)
+            .set ("img.antiphase", 1.0f)));
 
     //==============================================================================
     // Exciter presets
@@ -350,6 +574,13 @@ std::vector<FactoryPreset> build()
             .bands ("exc", 2, 5000.0f)
             .excite (2, EM::Tube, 25.0f, 50.0f)
             .set ("exc.post.on", 1.0f).set ("exc.post.freq", 10000.0f).set ("exc.post.gain", -1.5f)));
+    all.push_back (modulePreset ("Sparkle the Transients", "Transient/Sustain", ModuleType::Exciter,
+        Builder()
+            .channelMode (ModuleType::Exciter, ChannelMode::TransientSustain)
+            .set ("exc.link", 0.0f)
+            .set ("exc.ts.sens", 60.0f).set ("exc.ts.len", 12.0f)
+            .bands ("exc", 2, 5000.0f)
+            .excite (2, EM::Tube, 25.0f, 60.0f)));               // Transient top band only; Sustain stays clean
 
     //==============================================================================
     // Maximizer presets
@@ -366,6 +597,142 @@ std::vector<FactoryPreset> build()
             .set ("max.clip.on", 1.0f)
             .set ("max.clip.mode", (float) ps::SoftClipMode::Moderate)
             .set ("max.clip.amount", 50.0f)));
+
+    //==============================================================================
+    // (phase 2) Dynamic EQ presets (Stereo; both sets carry the band so M/S or T/S starts linked)
+    all.push_back (modulePreset ("Soft De-ess", "Control", ModuleType::DynamicEq,
+        Builder().dynEq ("ab", 5, DynEqShape::ProportionalQ, 6500.0f, -5.0f, 2.5f, -38.0f, 3.0f, 1.0f, 45.0f, false)));
+    all.push_back (modulePreset ("Low-Mid Bloom Control", "Control", ModuleType::DynamicEq,
+        Builder().dynEq ("ab", 3, DynEqShape::Bell, 280.0f, -3.5f, 1.2f, -32.0f, 2.0f, 8.0f, 120.0f)));
+    all.push_back (modulePreset ("Kick Tamer", "Control", ModuleType::DynamicEq,
+        Builder()
+            .dynEq ("ab", 1, DynEqShape::LowShelfBaxandall, 70.0f, -2.5f, 0.707f, -22.0f, 2.5f, 12.0f, 150.0f)
+            .set ("deq.lookahead", 2.0f)));
+    all.push_back (modulePreset ("Air When Quiet", "Tone", ModuleType::DynamicEq,
+        Builder().dynEq ("ab", 6, DynEqShape::HighShelfBaxandall, 11000.0f, 2.5f, 0.707f, -42.0f, 2.0f, 5.0f, 80.0f)));
+
+    //==============================================================================
+    // (phase 2) Match EQ presets (the first three get their synthesised reference by name, see the top comment)
+    all.push_back (modulePreset ("Pink Balance", "Tonal", ModuleType::MatchEq,
+        Builder().match (30.0f, 70.0f, 6.0f, 6.0f)));
+    all.push_back (modulePreset ("Warm Tilt", "Tonal", ModuleType::MatchEq,
+        Builder().match (25.0f, 75.0f, 4.0f, 4.0f)));
+    all.push_back (modulePreset ("Bright Tilt", "Tonal", ModuleType::MatchEq,
+        Builder().match (25.0f, 75.0f, 4.0f, 4.0f)));
+    all.push_back (modulePreset ("Low End Only", "Region", ModuleType::MatchEq,
+        Builder()
+            .match (50.0f, 60.0f, 12.0f, 12.0f)
+            .both ("meq", "lo", 20.0f)
+            .both ("meq", "hi", 250.0f)));
+
+    //==============================================================================
+    // (phase 2) Tone Balance presets
+    all.push_back (modulePreset ("Gentle Balance", "Shape", ModuleType::ToneBalance,
+        Builder().tone (TT::Balanced, TM::Shape, 35.0f, 40.0f, 70.0f)));
+    all.push_back (modulePreset ("Steady Low End", "Shape", ModuleType::ToneBalance,
+        Builder().tone (TT::HipHop, TM::Shape, 50.0f, 55.0f, 60.0f, 50.0f, 50.0f, false, 100.0f, 30.0f, 0.0f)));
+    all.push_back (modulePreset ("Resonance Sweep", "Cut", ModuleType::ToneBalance,
+        Builder().tone (TT::Balanced, TM::Cut, 60.0f, 50.0f, 50.0f, 70.0f, 55.0f)));
+    all.push_back (modulePreset ("Calm the Hits", "Cut", ModuleType::ToneBalance,
+        Builder().tone (TT::Balanced, TM::Cut, 30.0f, 50.0f, 50.0f, 85.0f, 40.0f, true, 0.0f, 100.0f, 100.0f)));
+
+    //==============================================================================
+    // (phase 2) Definition presets
+    all.push_back (modulePreset ("Open Up", "Detail", ModuleType::Definition,
+        Builder().definition ("ab", 30.0f, 0.0f, 120.0f, 200.0f, 300.0f, 20000.0f)));
+    all.push_back (modulePreset ("Airy Detail", "Detail", ModuleType::Definition,
+        Builder().definition ("ab", 45.0f, 1.5f, 150.0f, 120.0f, 5000.0f, 20000.0f)));
+    all.push_back (modulePreset ("Warm Detail", "Detail", ModuleType::Definition,
+        Builder().definition ("ab", 35.0f, -2.0f, 250.0f, 250.0f, 300.0f, 4000.0f)));
+    all.push_back (modulePreset ("Center Presence", "Mid-Side", ModuleType::Definition,
+        Builder()
+            .channelMode (ModuleType::Definition, ChannelMode::MidSide)
+            .set ("defn.link", 0.0f)
+            .definition ("a", 40.0f, 1.0f, 150.0f, 120.0f, 1000.0f, 6000.0f)));   // Side (set B) stays at 0
+
+    //==============================================================================
+    // (phase 2) Smoother presets
+    all.push_back (modulePreset ("De-Harsh Master", "Harshness", ModuleType::Smoother,
+        Builder().smoother ("ab", 35.0f, SM::Medium, 8.0f, 40.0f, 0.0f, 2500.0f, 10000.0f)));
+    all.push_back (modulePreset ("Cymbal Taming", "Harshness", ModuleType::Smoother,
+        Builder().smoother ("ab", 50.0f, SM::Strong, 3.0f, 25.0f, -20.0f, 6000.0f, 16000.0f)));
+    all.push_back (modulePreset ("Soft Vocal Edge", "Harshness", ModuleType::Smoother,
+        Builder().smoother ("ab", 40.0f, SM::Gentle, 10.0f, 60.0f, 0.0f, 1800.0f, 6000.0f)));
+    all.push_back (modulePreset ("Side Shine Control", "Mid-Side", ModuleType::Smoother,
+        Builder()
+            .channelMode (ModuleType::Smoother, ChannelMode::MidSide)
+            .set ("smth.link", 0.0f)
+            .smoother ("b", 45.0f, SM::Medium, 5.0f, 30.0f, 0.0f, 4000.0f, 14000.0f)));   // Mid (set A) stays at 0
+
+    //==============================================================================
+    // (phase 2) Punch presets (Stereo, set B = set A, Analog crossover: no latency)
+    all.push_back (modulePreset ("Gentle Snap", "Punch", ModuleType::Punch,
+        Builder()
+            .bands ("pnch", 2, 200.0f).punch (1, 15.0f).punch (2, 25.0f)
+            .set ("pnch.env", 60.0f).set ("pnch.stLink", 1.0f).set ("pnch.autoGain", 1.0f)));
+    all.push_back (modulePreset ("Glue the Groove", "Density", ModuleType::Punch,
+        Builder()
+            .bands ("pnch", 3, 150.0f, 3000.0f).punch (1, -20.0f).punch (2, -15.0f).punch (3, -10.0f)
+            .set ("pnch.env", 120.0f).set ("pnch.stLink", 1.0f).set ("pnch.autoGain", 1.0f)));
+    all.push_back (modulePreset ("Drum Lift", "Punch", ModuleType::Punch,
+        Builder()
+            .bands ("pnch", 4, 120.0f, 1000.0f, 6000.0f)
+            .punch (1, 30.0f).punch (2, 20.0f).punch (3, 25.0f).punch (4, 15.0f)
+            .set ("pnch.env", 40.0f).set ("pnch.autoGain", 1.0f)));
+    all.push_back (modulePreset ("Tempo Bounce", "Punch", ModuleType::Punch,
+        Builder()
+            .bands ("pnch", 3, 180.0f, 2500.0f).punch (1, 20.0f).punch (2, 20.0f).punch (3, 15.0f)
+            .set ("pnch.sync", 1.0f).set ("pnch.syncNote", 10.0f)   // 1/8
+            .set ("pnch.stLink", 1.0f).set ("pnch.autoGain", 1.0f)));
+
+    //==============================================================================
+    // (phase 2) Low Contrast presets
+    all.push_back (modulePreset ("Tight Kick", "Contrast", ModuleType::LowContrast,
+        Builder()
+            .set ("lowc.low", 30.0f).set ("lowc.high", 120.0f)
+            .lowContrast ("ab", LM::Punchy, 40.0f, 0.5f)));
+    all.push_back (modulePreset ("Round Sub", "Contrast", ModuleType::LowContrast,
+        Builder()
+            .set ("lowc.low", 20.0f).set ("lowc.high", 80.0f)
+            .lowContrast ("ab", LM::Smooth, -35.0f, 1.0f)));
+    all.push_back (modulePreset ("Punchy Center, Calm Sides", "Mid-Side", ModuleType::LowContrast,
+        Builder()
+            .channelMode (ModuleType::LowContrast, ChannelMode::MidSide)
+            .set ("lowc.link", 0.0f)
+            .set ("lowc.low", 40.0f).set ("lowc.high", 180.0f)
+            .lowContrast ("a", LM::Punchy, 35.0f, 0.0f)
+            .lowContrast ("b", LM::Smooth, -50.0f, -1.0f)));
+    all.push_back (modulePreset ("Hit and Hold", "Transient/Sustain", ModuleType::LowContrast,
+        Builder()
+            .channelMode (ModuleType::LowContrast, ChannelMode::TransientSustain)
+            .set ("lowc.link", 0.0f)
+            .set ("lowc.ts.sens", 50.0f).set ("lowc.ts.len", 20.0f)
+            .set ("lowc.low", 25.0f).set ("lowc.high", 200.0f)
+            .lowContrast ("a", LM::Punchy, 45.0f, 0.0f)
+            .lowContrast ("b", LM::Smooth, -20.0f, 0.5f)));
+
+    //==============================================================================
+    // (phase 2) Bass Shaper presets (thresholds are absolute dBFS of the low band)
+    all.push_back (modulePreset ("Kick Forward", "Bass", ModuleType::BassShaper,
+        Builder()
+            .set ("bass.punch", 3.0f)
+            .set ("bass.peak.on", 1.0f).set ("bass.peak.thr", -6.0f).set ("bass.peak.char", 100.0f)
+            .set ("bass.peak.mix", 100.0f)));
+    all.push_back (modulePreset ("Warm Sustain", "Bass", ModuleType::BassShaper,
+        Builder()
+            .set ("bass.sus.on", 1.0f).set ("bass.sus.thr", -20.0f).set ("bass.sus.amount", 40.0f)
+            .set ("bass.sus.char", 60.0f)));
+    all.push_back (modulePreset ("Small Speaker Drive", "Translation", ModuleType::BassShaper,
+        Builder()
+            .set ("bass.cutoff", 100.0f)
+            .set ("bass.sus.on", 1.0f).set ("bass.sus.thr", -18.0f).set ("bass.sus.amount", 50.0f)
+            .set ("bass.sus.char", 20.0f)
+            .set ("bass.peak.on", 1.0f).set ("bass.peak.thr", -8.0f).set ("bass.peak.char", 30.0f)
+            .set ("bass.autoGain", 1.0f)));
+    all.push_back (modulePreset ("Tidy Low End", "Bass", ModuleType::BassShaper,
+        Builder()
+            .set ("bass.balance", -1.5f).set ("bass.punch", 1.0f)
+            .set ("bass.peak.on", 1.0f).set ("bass.peak.thr", -8.0f).set ("bass.peak.char", 100.0f)));
 
     return all;
 }

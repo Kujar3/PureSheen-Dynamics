@@ -16,8 +16,9 @@ accent). The research notes are private.
 - I/O metering, gain match, delta, undo history, A-D snapshots, presets
 
 Later phases (enums are append-only, so they slot in):
-- Phase 2 (in progress, see "Phase 2" below): Dynamic EQ, Match EQ, Tone Balance, Definition, Smoother, Punch,
-  Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
+- Phase 2 (done, see "Phase 2" and "Status (phase 2 integration)" below): Dynamic EQ, Match EQ, Tone Balance,
+  Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
+- Next: the preset importer (.xml presets of the reference suite, labelled generically in the UI)
 - Phase 3: Vintage modules, Unlimiter, rule-based Assistant, Track Referencing (from RefMatch), and one plug-in per
   module ("PureSheen EQ", "PureSheen Maximizer", ...)
 - Phase 4: MCP bridge
@@ -54,19 +55,24 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
   (phase 2)
   TransientSplit.h/.cpp   ps::TransientSplitter: the Transient/Sustain split of the chain (real)
   SpectralEngine.h/.cpp   residual STFT engine shared by Tone Balance, Definition, Smoother (real)
-  Quadrature.h/.cpp       ripple-free envelope for Punch / Bass Shaper (functional fallback; real design: dsp-punch)
-  DynamicEq, MatchEq (+ MatchAnalysis), ToneBalance, Definition, Smoother, Punch, LowContrast, BassShaper .h/.cpp
-                          one contract header per module + a passthrough stub .cpp (first line "// STUB (contracts)")
-src/plugin/               PluginProcessor.h/.cpp (+ UndoHistory.cpp, Presets.cpp, FactoryPresets.cpp)
+  Quadrature.h/.cpp       ripple-free envelope for Punch / Bass Shaper
+  DynamicEq, MatchEq (+ MatchAnalysis, CurveFir), ToneBalance (+ ToneTargets), Definition, Smoother, Punch,
+  LowContrast, BassShaper .h/.cpp   one contract header + implementation per module
+src/plugin/               PluginProcessor.h/.cpp (+ PluginState, UndoHistory, Presets, FactoryPresets, MatchEqState;
+                          MatchEqStateTests.cpp is compiled into the dev tool only)
 src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, ModulePanel, ModulePanels),
                           PluginEditor, HeaderBar, ChainStrip, IoPanel, DitherPanel, HelpOverlay,
                           EqPanel, DynamicsPanel, ImagerPanel, ExciterPanel, MaximizerPanel, MultibandDisplay
-                          (phase 2) DynamicEqPanel, MatchEqPanel, ToneBalancePanel, DefinitionPanel, SmootherPanel,
-                          PunchPanel, LowContrastPanel, BassShaperPanel: GenericModulePanel stubs for now
+                          (phase 2) DynamicEqPanel (+ DynamicEqDisplay, DynamicEqModel), MatchEqPanel (+ MatchDisplay,
+                          MatchEqModel), ToneBalancePanel / DefinitionPanel / SmootherPanel (+ SpectralDisplay,
+                          SpectralWidgets, SpectralCommon), PunchPanel (+ PunchViews), LowContrastPanel (+
+                          LowRegionDisplay), BassShaperPanel (+ BassScope), LowEndWidgets
 tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators);
                           ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
-                          AllocationTracking), snapshot <dir> (editor PNGs), render <in.wav> <out.wav>
+                          AllocationTracking), snapshot <dir> (editor PNGs), render <in.wav> <out.wav> (--preset,
+                          --module-preset, --chain, id=value), memory <rate> [ts] [editor] (private bytes)
+tools/audio/              make_test_mix.py, check_clicks.py, render_presets.sh (Core), render_phase2.py (phase 2)
 resources/fonts           Inter 400/600/700 (PureSheenBinary::Inter400_ttf ...)
 third_party/              JUCE 8.0.16, clap-juce-extensions (gitignored; copied from RefMatch)
 tools/pluginval, tools/clap-validator (gitignored)
@@ -166,14 +172,19 @@ Exciter and Imager copy set B over set A in setParams); latency only from shared
   and audition go only to that instance, the other part is muted meanwhile), power and module solo work per part; every crossfade
   toward "dry" uses the latency-aligned dry parts Td (T delayed) and Sd = dry - Td, so it reconstructs the input.
 - A channel-mode change that changes the slot latency also dips the slot output, global bypass and delta bus
-  (20 ms out, switch at silence, 20 ms in): no click from their alignment-delay jumps.
+  (20 ms out, switch at silence, 20 ms in): no click from their alignment-delay jumps. Match EQ phase / FIR size,
+  Dynamic EQ Digital / lookahead, and Punch crossover latency changes use the same dip before committing params;
+  `Module::getLatencySamplesForParams` predicts the shared-parameter latency without changing DSP state. The module
+  resets at silence and warms its new history with aligned dry output before the wet signal fades back in.
 - Meters: `IoMeters::moduleTsActivity` (mask activity, drives the glow of the Transient tab) and `moduleTsShareDb`
   (transient energy share). `Chain::setTapPart` lets the module taps carry one part ("show the selected part").
 - Channel modes per module: EQ 1 / 2, Dynamic EQ, Match EQ: Stereo, M/S, L/R, T/S. Exciter, Tone Balance,
   Definition, Smoother, Low Contrast: Stereo, M/S, T/S. Dynamics, Punch: Stereo, M/S. Imager: Stereo, T/S.
   Maximizer, Bass Shaper: Stereo.
-- CPU: a slot in T/S runs its module twice (plus < 0.2 % for the splitter). Memory: every twin is prepared with the
-  chain (the Digital EQ preallocates its FIR sizes); measure before release, lazy preparation is the fallback.
+- CPU: a slot in T/S runs its module twice (plus < 0.2 % for the splitter). Memory: every module type and every twin
+  is prepared with the chain, in the chain or not (the Digital EQ preallocates its FIR sizes), so the chain contents
+  and channel modes barely change it. Measured with `PureSheenDev memory` (see "Status (phase 2 integration)"): under
+  the 300 MB budget at 48 kHz, so the twins stay eagerly prepared; lazy preparation is the fallback for 192 kHz.
 
 ## Phase 2: modules, contracts and ownership
 
@@ -202,7 +213,8 @@ Contracts written in the contracts wave (headers are contracts, rule 1):
 - `ui/Widgets.h`: currentChannelMode / isDualChannelMode / channelSetName / channelModeShortLabel /
   moduleForChannelSet; the header's channel-mode segments offer T/S, the tabs read "Transient | Sustain" and carry
   the T/S options gear.
-- Each panel file `src/ui/<Module>Panel.h/.cpp` derives from GenericModulePanel for now; its owner replaces the body.
+- Each panel file `src/ui/<Module>Panel.h/.cpp` started as a GenericModulePanel stub; wave 2 replaced every one with a
+  dedicated panel deriving from ModulePanel.
 
 Ownership for the next wave (only edit your files; ask the lead for contract changes):
 - dsp-deq: DynamicEq.h/.cpp (+ new files), tests/DynamicEqTests.cpp ("deq.")
@@ -282,3 +294,50 @@ Known limitations:
 - Installer: `scripts\build-installer.bat` -> `dist\PureSheen-Dynamics-Setup-<version>.exe` (Inno Setup 6, static
   runtime). Icon: `PureSheenDev icon resources/icon/logo_512.png 512`; `installer/puresheen.ico` holds 16-256 px renders.
 - Not done: listening tests in FL Studio; the installer has been built but not run yet.
+
+## Status (phase 2 integration)
+
+Done: all eight phase 2 modules with real DSP and a dedicated panel each (no stubs left), the Transient/Sustain mode
+on every module that offers it, the Match EQ state / undo / reference-file loader, phase 2 and T/S factory presets
+(18 global presets; 2-6 per module, 4 per phase 2 module), and the integration (selftest coverage, snapshots, renders,
+memory). Verification on build-p2int (all five targets, 0 warnings in our sources):
+- `CoreTests`: 437 test cases, 0 failed. `PureSheenDev selftest`: 236 passed, 0 failed (after the review below; the
+  Match EQ state checks inside it: 81 / 0 failed). New phase 2 checks: every
+  phase 2 module alone in every channel mode it offers is a latency-aligned null at neutral settings with the latency
+  reported to the host; a 14-module chain in T/S with random values round-trips through the state and plays finite
+  audio at the same latency; every phase 2 module preset loads as one step, moves its module and plays finite audio
+  with the module in the chain (besides the existing realtime groups per module / mode and T/S at 44.1 / 96 kHz).
+- `PureSheenDev snapshot`: OK, 129 PNGs incl. every phase 2 panel at 980x600 .. 1800x1100, M/S and T/S tabs, the strip
+  with 14 modules, Help; plus the panel agents' mouse checks (one undo step per drag, right-click edits nothing,
+  solos cleared with their panel, no keyboard focus). Reviewed by eye.
+- pluginval strictness 10 with GUI tests (VST3): SUCCESS. clap-validator: 31 passed, 0 failed, 12 skipped, 1 warning
+  (`state-invalid-random`, see Core).
+- Renders (`python tools/audio/render_phase2.py build-p2int test_audio/p2int_mix.wav`, 30 s, -20.2 LUFS): default
+  chain exact null; every global preset no NaN, no clicks (worst 2.0 sigma), true peak <= Output Level + 0.02 dB;
+  each phase 2 module alone with a factory preset in Stereo and T/S: no NaN, no clicks.
+- Latency at defaults (44.1 / 48 kHz): Dynamic EQ 0 (Analog, no lookahead), Match EQ 9216 (Linear, FIR 16384), Tone
+  Balance 2048, Definition 1024, Smoother 1024, Punch 0 (Analog crossover), Low Contrast 4096, Bass Shaper 115;
+  + 64 per slot in T/S. All 14 modules at defaults: 18003 samples (375 ms at 48 kHz).
+- Memory (`PureSheenDev memory`, process private bytes with every module and twin prepared): +142 MB at 44.1 / 48 kHz
+  (+8 MB with the editor open), +265 MB at 96 kHz, +511 MB at 192 kHz; the same with T/S on or off and with the
+  default chain (everything is prepared up front). Under the 300 MB budget at 48 kHz, so twin preparation stays eager.
+
+Final adversarial review-and-fix of phase 2 (independent reviewer): all numbers above are from after its fixes. The released 479-parameter fingerprint remains unchanged. Regression coverage now includes coordinated latency
+switches and long-chain alignment, selected-part region solos, capture/state/undo ordering, linked file completion
+after panel closure, gesture routing across refreshes and tabs, prompt and solo teardown, and shared scope overflow.
+The Match EQ capture test waits for analysis progress instead of assuming worker scheduling from fixed sleeps.
+
+Decisions / known limitations (phase 2):
+- Match EQ: the Low / High cutoff knobs appear only when the strip is >= 1120 px wide; at every editor size the cutoffs
+  are edited on the display handles (drag, double-click, right-click "Enter value"). A loaded file is analysed without
+  the T/S split; in T/S with Link the processor applies it to both parts as one undo step, even after the panel closes.
+- Smoother: Learn lives in the panel's side column (the header Learn button is the multiband crossover learn). The
+  factory presets act only where the material has resonances above their threshold (on the synthetic test mix
+  "De-Harsh Master" is a bit-exact passthrough; at Amount 100 / Strong it works).
+- Tone Balance: boost / cut caps are fixed by the DSP (+9 / -12 dB x Amount), shown as limit markers.
+- Punch: the synced Envelope shows the note only (no host tempo in the UI); the band amount is in the overlay pill.
+- Low-frequency spectra use the shared analysers (4096-point FFT by default); a larger FFT in Options resolves the
+  Low Contrast / Bass Shaper range better.
+- `SpectrumAnalyser::draw` ignores the alpha of the line colour; the spectral panels fade with transparency layers.
+- pluginval's editor tests open the default module, so the phase 2 panels are exercised by the snapshot checks.
+- Not done: listening tests in FL Studio, the preset importer.

@@ -606,26 +606,42 @@ struct MultibandDisplay::Impl
                                               (pill.isEmpty() ? plot.getRight() - 8.0f : pill.getX() - 10.0f) - plot.getX() - 8.0f, 14.0f);
         const auto f = font (10.5f, 600);
 
-        auto item = [&] (const juce::String& text, juce::Colour c)
+        if (plot.getWidth() <= 420.0f)
+            return;
+
+        const std::pair<juce::String, juce::Colour> items[] { { "Output", colour }, { "Input", Colours::input } };
+        float total = 0.0f;
+        int shown = 0;
+
+        for (const auto& it : items)
         {
-            const float w = textWidth (f, text) + 16.0f;
+            const float w = textWidth (f, it.first) + 16.0f + (shown > 0 ? 10.0f : 0.0f);
 
-            if (legend.getWidth() < w)
-                return;
+            if (total + w > legend.getWidth())
+                break;
 
-            auto r = legend.removeFromRight (w);
-            legend.removeFromRight (10.0f);
-            g.setColour (c);
+            total += w;
+            ++shown;
+        }
+
+        if (shown == 0)
+            return;
+
+        // A soft backdrop keeps the legend readable over the spectrum (same as the phase 2 spectral displays).
+        auto row = legend.removeFromRight (total);
+        g.setColour (Colours::background.withAlpha (0.72f));
+        g.fillRoundedRectangle (row.expanded (8.0f, 4.0f), 7.0f);
+
+        for (int i = 0; i < shown; ++i)
+        {
+            const float w = textWidth (f, items[i].first) + 16.0f;
+            auto r = row.removeFromRight (w);
+            row.removeFromRight (10.0f);
+            g.setColour (items[i].second);
             g.fillRoundedRectangle (r.removeFromLeft (10.0f).withSizeKeepingCentre (10.0f, 3.0f), 1.5f);
             g.setFont (f);
             g.setColour (Colours::textDim);
-            g.drawText (text, r.withTrimmedLeft (5.0f), juce::Justification::centredLeft, false);
-        };
-
-        if (plot.getWidth() > 420.0f)
-        {
-            item ("Output", colour);
-            item ("Input", Colours::input);
+            g.drawText (items[i].first, r.withTrimmedLeft (5.0f), juce::Justification::centredLeft, false);
         }
     }
 
@@ -898,6 +914,12 @@ MultibandDisplay::~MultibandDisplay()
         impl->setSolo (impl->altPreviousSolo);
 
     impl->closeEntry();
+}
+
+void MultibandDisplay::clearSolo()
+{
+    impl->altSolo = false;
+    impl->setSolo (-1);
 }
 
 void MultibandDisplay::tick()

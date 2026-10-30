@@ -299,6 +299,18 @@ int runMatchEqStateTests()
     {
         Proc h;
         meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
+        h.p.setParameterValue ("meq.a.amount", 75.0f);   // before the housekeeping timer sees the reference edit
+        h.p.undo();
+        check (sameSpectrum (meq (h.p, 0).getSpectrum (ps::MatchRole::Reference), ref0)
+                   && std::abs (h.p.getParameterValue ("meq.a.amount") - 50.0f) < 1.0e-3f,
+               "undo: an unpolled spectrum edit stays before a later parameter edit");
+        h.p.undo();
+        check (! meq (h.p, 0).getSpectrum (ps::MatchRole::Reference).valid,
+               "undo: the second undo reverses the earlier unpolled spectrum edit");
+    }
+    {
+        Proc h;
+        meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
         h.p.undo();   // no housekeeping tick has happened yet
         check (! meq (h.p, 0).getSpectrum (ps::MatchRole::Reference).valid && h.p.canRedo(),
                "undo: an immediate undo records and reverses the pending first spectrum edit");
@@ -361,6 +373,38 @@ int runMatchEqStateTests()
 
     // ---- snapshots
     {
+        Proc h;
+        meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
+        meq (h.p, 1).setSpectrum (ps::MatchRole::Current, cur1);
+        h.flush();
+        h.p.storeSnapshot (0);
+        const auto saved = h.state();
+        const auto startCaptures = [&]
+        {
+            meq (h.p, 0).startCapture (ps::MatchRole::Reference);
+            meq (h.p, 1).startCapture (ps::MatchRole::Current);
+        };
+        const auto capturesStopped = [&]
+        {
+            const bool stopped = ! meq (h.p, 0).isCapturing() && ! meq (h.p, 1).isCapturing();
+            // A stale UI Stop must have no result left to publish into the restored state.
+            meq (h.p, 0).stopCapture();
+            meq (h.p, 1).stopCapture();
+            return stopped && sameSpectrum (meq (h.p, 0).getSpectrum (ps::MatchRole::Reference), ref0)
+                           && sameSpectrum (meq (h.p, 1).getSpectrum (ps::MatchRole::Current), cur1);
+        };
+        startCaptures();
+        h.load (saved);
+        check (capturesStopped(), "state: project restore discards captures from the previous project");
+        startCaptures();
+        h.p.recallSnapshot (0);
+        check (capturesStopped(), "snapshots: recall stops captures before restoring both parts");
+        h.p.setParameterValue ("meq.a.amount", 75.0f);
+        startCaptures();
+        h.p.undo();
+        check (capturesStopped(), "undo: restoring a history entry discards active captures");
+    }
+    {
         Proc a, b;
         meq (a.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
         meq (a.p, 1).setSpectrum (ps::MatchRole::Current, cur1);
@@ -389,6 +433,34 @@ int runMatchEqStateTests()
     }
 
     // ---- host-thread saves while the message thread replaces a snapshot
+    {
+        Proc h;
+        h.p.setHistoryDepth (10);
+        meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
+        h.flush();
+        for (int i = 0; i < 10; ++i)
+            h.p.setParameterValues ({ { "meq.a.amount", (float) (20 + i) } }, "History step " + juce::String (i));
+        // At depth 10 the oldest retained entry is the reference edit, followed by the ten amount edits.
+        meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref1);
+        h.p.storeSnapshotFromHistory (0, 5);   // amount 24, before housekeeping trims the oldest entry
+        h.p.recallSnapshot (0);
+        check (std::abs (h.p.getParameterValue ("meq.a.amount") - 24.0f) < 1.0e-3f
+                   && sameSpectrum (meq (h.p, 0).getSpectrum (ps::MatchRole::Reference), ref0),
+               "snapshots: pending spectrum edits cannot shift a selected history entry during storage");
+    }
+    {
+        Proc h;
+        h.p.setHistoryDepth (10);
+        meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
+        h.flush();
+        for (int i = 0; i < 10; ++i)
+            h.p.setParameterValues ({ { "meq.a.amount", (float) (20 + i) } }, "History step " + juce::String (i));
+        meq (h.p, 0).setSpectrum (ps::MatchRole::Reference, ref1);
+        h.p.jumpToHistory (5);
+        check (std::abs (h.p.getParameterValue ("meq.a.amount") - 24.0f) < 1.0e-3f
+                   && sameSpectrum (meq (h.p, 0).getSpectrum (ps::MatchRole::Reference), ref0),
+               "undo: pending spectrum edits cannot shift the selected history jump target");
+    }
     {
         Proc h;
         h.p.setParameterValue ("meq.a.amount", 20.0f);
@@ -569,6 +641,31 @@ int runMatchEqStateTests()
         const auto l = pink (10.0, rate, 11), r = pink (10.0, rate, 12);
         const auto wavFile = temp.getChildFile ("Pink Test.wav");
         check (writeWav (wavFile, l, &r, rate, 32), "files: write a 32-bit float stereo WAV");
+
+        {
+            Proc linked;
+            meq (linked.p, 0).setSpectrum (ps::MatchRole::Reference, ref0);
+            meq (linked.p, 1).setSpectrum (ps::MatchRole::Reference, ref1);
+            linked.flush();
+            const auto beforeSteps = linked.p.getHistory().size();
+            meq (linked.p, 0).startCapture (ps::MatchRole::Reference);
+            meq (linked.p, 1).startCapture (ps::MatchRole::Current);
+            const bool startedLinked = linked.p.startMatchReferenceFile (wavFile, 1, true);
+            const bool finishedLinked = waitForLoad (linked);
+            const auto first = meq (linked.p, 0).getSpectrum (ps::MatchRole::Reference);
+            const auto second = meq (linked.p, 1).getSpectrum (ps::MatchRole::Reference);
+            check (startedLinked && finishedLinked && first.valid && sameSpectrum (first, second)
+                       && juce::String (first.source.data()) == "file:Pink Test",
+                   "files: a linked reference load publishes both parts without a panel");
+            check (! meq (linked.p, 0).isCapturing() && meq (linked.p, 1).isCapturing(),
+                   "files: a loaded reference stops the old Reference capture and keeps a Current capture");
+            check (linked.p.getHistory().size() == beforeSteps + 1,
+                   "files: a linked reference load is one undo step");
+            linked.p.undo();
+            check (sameSpectrum (meq (linked.p, 0).getSpectrum (ps::MatchRole::Reference), ref0)
+                       && sameSpectrum (meq (linked.p, 1).getSpectrum (ps::MatchRole::Reference), ref1),
+                   "files: undo of a linked load restores both preceding references");
+        }
 
         check (h.p.getMatchReferenceFileProgress() == -1.0f, "files: progress is -1 when idle");
         check (h.p.startMatchReferenceFile (wavFile, 0), "files: start loading a WAV", h.p.getMatchReferenceFileError());

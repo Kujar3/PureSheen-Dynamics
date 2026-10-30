@@ -113,6 +113,8 @@ public:
     }
 
     unsigned long long getWriteCount() const noexcept { return writeCount.load (std::memory_order_acquire); }
+    // Consumer thread only: the returned pull ended here; first returned sample = getReadCount() - count.
+    unsigned long long getReadCount() const noexcept { return readCount; }
 
 private:
     std::unique_ptr<std::atomic<float>[]> left, right;

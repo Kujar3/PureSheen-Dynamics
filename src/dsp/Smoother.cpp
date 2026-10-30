@@ -590,4 +590,60 @@ void Smoother::process (float* const* channels, int numSamples, const ProcessCon
 int Smoother::getLatencySamples() const noexcept { return impl->engine.getLatencySamples(); }
 const SmootherMeters& Smoother::getMeters() const noexcept { return impl->meters; }
 double Smoother::getSampleRate() const noexcept { return impl->sampleRate; }
+
+// (added by ui-spectral) The Learn rule (Smoother.h).
+bool smootherLearnedRegion (const SmootherMeters& m, int set, double sampleRate, double& lowHz, double& highHz) noexcept
+{
+    const int s = std::clamp (set, 0, kNumChannelSets - 1);
+    double sc[kSmootherBands], total = 0.0;
+
+    for (int b = 0; b < kSmootherBands; ++b)
+    {
+        const double v = (double) m.learnScore[s][b].load();
+        sc[b] = std::isfinite (v) ? std::max (0.0, v) : 0.0;
+        total += sc[b];
+    }
+
+    if (! (total > 0.0) || ! std::isfinite (total))
+        return false;
+
+    int bestLo = 0, bestHi = kSmootherBands - 1;
+
+    for (int lo = 0; lo < kSmootherBands; ++lo)
+    {
+        double acc = 0.0;
+
+        for (int hi = lo; hi < kSmootherBands; ++hi)
+        {
+            acc += sc[hi];
+
+            if (acc >= 0.75 * total)
+            {
+                if (hi - lo < bestHi - bestLo)
+                {
+                    bestLo = lo;
+                    bestHi = hi;
+                }
+
+                break;
+            }
+        }
+    }
+
+    // Half a band beyond the span.
+    auto outer = [sampleRate] (int b, int dir)
+    {
+        const double c = smootherBandHz (b, sampleRate);
+        const int nb = b + dir;
+
+        if (nb >= 0 && nb < kSmootherBands)
+            return std::sqrt (c * smootherBandHz (nb, sampleRate));
+
+        return c * std::sqrt (c / smootherBandHz (b - dir, sampleRate));
+    };
+
+    lowHz = outer (bestLo, -1);
+    highHz = outer (bestHi, 1);
+    return true;
+}
 } // namespace ps

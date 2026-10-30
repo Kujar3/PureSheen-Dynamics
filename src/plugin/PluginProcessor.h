@@ -193,6 +193,8 @@ public:
     //     files count as L = R). When done, the result goes to setSpectrum (Reference) of that part on the message
     //     thread with source "file:<name>" and a change message is sent.
     bool startMatchReferenceFile (const juce::File&, int part = 0);   // false: unreadable / unsupported file
+    // Linked T/S references are applied together by the processor, even after the panel has been closed.
+    bool startMatchReferenceFile (const juce::File&, int part, bool linkedParts);
     void cancelMatchReferenceFile();
     float getMatchReferenceFileProgress() const;                     // 0..1 while loading, -1 when idle
     juce::String getMatchReferenceFileError() const;                 // last failure (plain text), empty if none

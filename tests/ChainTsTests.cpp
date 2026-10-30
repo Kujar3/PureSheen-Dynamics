@@ -470,6 +470,26 @@ TEST_CASE ("chain. t/s audition routing follows the active mode without a new mo
     }
 }
 
+TEST_CASE ("chain. t/s selected region solo routes and isolates its part")
+{
+    const auto x = musicLike (48000.0, 0.1, 133u);
+    const auto ref = referenceSplit (x, x, 48000.0, 480);
+    for (int part = 0; part < 2; ++part)
+    {
+        TsRig rig (1.0f, 1.0f);
+        ModuleMonitor m;
+        m.soloRegion = true;
+        m.soloChannelSet = part;
+        rig.chain.setMonitor (ModuleType::Equalizer1, m);
+        auto l = x, r = x;
+        rig.run (l, r);
+        CHECK_EQ (rig.a->lastMonitor.soloRegion, part == 0);
+        CHECK_EQ (rig.b->lastMonitor.soloRegion, part == 1);
+        CHECK (maxDiff (l, part == 0 ? ref.tl : ref.sl) < 1.0e-6);
+        CHECK (maxDiff (r, part == 0 ? ref.tr : ref.sr) < 1.0e-6);
+    }
+}
+
 TEST_CASE ("chain. t/s powered-off selected part keeps publishing aligned dry taps")
 {
     const auto x = musicLike (48000.0, 0.1, 34u);

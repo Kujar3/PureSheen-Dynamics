@@ -84,4 +84,11 @@ private:
     std::unique_ptr<Impl> impl;
 };
 
+// (added by ui-spectral) The Learn rule, shared by the panel and tests/SmootherTests.cpp: from learnScore[set], the
+// smallest contiguous band span holding 75 % of the total score (the lowest such span on a tie), widened by half a band
+// on each side (the geometric mean of the edge band's centre and its outer neighbour's centre; beyond the outermost
+// band, the same ratio mirrored). Returns false and leaves lowHz / highHz unchanged when nothing was learned (total
+// score <= 0 or not finite). Any thread, no allocation.
+bool smootherLearnedRegion (const SmootherMeters&, int set, double sampleRate, double& lowHz, double& highHz) noexcept;
+
 } // namespace ps

@@ -9,6 +9,10 @@
 // Built-in (factory) presets (owner: plugin). Each is a list of parameter overrides on top of the defaults of its
 // scope; global presets also carry the chain order. Equalizer presets are shared by Equalizer 1 and 2 (written with
 // the placeholder prefix "eq." which toPresetData replaces by "eq1." / "eq2.").
+// Phase 2: every module has its own factory presets; the Transient/Sustain presets of the Core modules sit in the
+// category "Transient/Sustain" (set A = Transient, set B = Sustain). The Match EQ presets "Pink Balance", "Warm Tilt"
+// and "Bright Tilt" get a synthesised reference by name (MatchEqState.h factoryMatchReference): keep those names in
+// sync. Preset names are unique across all scopes.
 namespace psplug
 {
 struct FactoryPreset

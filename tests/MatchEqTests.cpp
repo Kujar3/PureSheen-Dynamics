@@ -1223,8 +1223,15 @@ TEST_CASE ("meq. capture: FIFO + worker, calibration, M/S decode, gaps, generati
                 rig.eq.process (p, n, rig.ctx);
                 allocations += scope.count();
             }
-            if (pos % 8192 == 0)
-                std::this_thread::sleep_for (std::chrono::milliseconds (1));
+            if ((pos + (size_t) n) % 32768 == 0)
+            {
+                // Do not assume the worker got scheduled during a short fixed sleep. Keep well within the FIFO
+                // capacity while allowing one analysis window of lag, including on a busy build/test machine.
+                const double minimumSeconds = ((double) (pos + (size_t) n) - 16384.0) / sr;
+                for (int wait = 0; wait < 5000 && rig.eq.getCaptureSeconds() < minimumSeconds; ++wait)
+                    std::this_thread::sleep_for (std::chrono::milliseconds (1));
+                REQUIRE (rig.eq.getCaptureSeconds() >= minimumSeconds);
+            }
         }
         CHECK_EQ (allocations, 0LL);
         rig.eq.stopCapture();

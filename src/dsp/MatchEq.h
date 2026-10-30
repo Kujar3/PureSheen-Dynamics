@@ -58,6 +58,7 @@ public:
     void setMonitor (const ModuleMonitor&) noexcept override;
     void process (float* const* channels, int numSamples, const ProcessContext&) noexcept override;
     int getLatencySamples() const noexcept override;
+    int getLatencySamplesForParams (ParamValues) const noexcept override;
 
     const MatchEqMeters& getMeters() const noexcept;
     bool isDesignPending() const noexcept;

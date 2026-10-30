@@ -8,16 +8,19 @@
 //                                            latency, chain edits, undo/redo, presets), exit code 0 on success
 //   PureSheenDev snapshot <outDir>        -> renders the editor in several states to PNG files in outDir
 //   PureSheenDev render <in.wav> <out.wav> [--preset <name>] [--module-preset <prefix>:<name>] [--bits 16|24|32]
-//                       [--block <n>] [id=value ...]
+//                       [--block <n>] [--chain <prefix,...>] [id=value ...]
 //                                         -> plays <in.wav> through the processor like a host would, writes the
 //                                            latency-compensated result and prints loudness / true peak / LRA
 //   PureSheenDev icon <out.png> [size]    -> renders the app / plugin icon (resources/icon/logo_512.png)
+//   PureSheenDev memory <rate> [ts] [editor]
+//                                         -> private memory with all 14 modules prepared at <rate> (Memory.cpp)
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
 int runRender (const juce::File& input, const juce::File& output,     // Render.cpp
                const juce::StringArray& options);
 int runIcon (const juce::File& output, int size);                     // Icon.cpp
+int runMemory (const juce::StringArray& args);                        // Memory.cpp
 
 int main (int argc, char** argv)
 {
@@ -44,8 +47,17 @@ int main (int argc, char** argv)
     if (command == "icon" && argc > 2)
         return runIcon (cwd.getChildFile (juce::String::fromUTF8 (argv[2])), argc > 3 ? std::atoi (argv[3]) : 512);
 
+    if (command == "memory")
+    {
+        juce::StringArray args;
+        for (int i = 2; i < argc; ++i)
+            args.add (juce::String::fromUTF8 (argv[i]));
+        return runMemory (args);
+    }
+
     std::cout << "usage: PureSheenDev selftest | snapshot <outDir> | render <in.wav> <out.wav> [--preset <name>]\n"
-                 "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [id=value ...]\n"
+                 "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [--chain <prefix,...>]\n"
+                 "       [id=value ...]\n"
                  "       icon <out.png> [size]\n";
     return 2;
 }

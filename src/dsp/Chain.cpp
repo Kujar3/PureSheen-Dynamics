@@ -53,6 +53,10 @@
 //   change that changes the slot latency fades the slot output to 0 (20 ms, together with the module's own fade),
 //   switches while silent and fades back in (20 ms) while the module warms up for its new latency.
 //   The same dip gates global bypass and the delta sum: their alignment delays change at the switch too.
+// - A phase 2 module's latency-changing parameters use the same dip before setParams commits them. Prediction is
+//   pure (no speculative worker requests); at silence the module resets to the new configuration and warms up on
+//   aligned dry. This includes Dynamic EQ lookahead edits: latency automation trades a short dip for coherent dry,
+//   delta and bypass paths, rather than mixing differently delayed audio during the module's private transition.
 // - Gain match measures the chain input before input gain, latency-aligned (it is the bypass signal), and the chain
 //   output after output gain / mono / swap, before bypass and the match gain itself (open loop: no feedback). Both
 //   measurements (and so the match gain) are frozen while a monitoring function is active (module solo, delta, channel
@@ -66,9 +70,9 @@
 //   before channel solo; one-pole 300 ms on the mean squares; 0 dB for silence.
 // - True-peak meters: a continuous 4x interpolator (same design as core/TruePeak) that reports a per-block maximum,
 //   since core's TruePeakMeter only offers a max since reset.
-// - Delay lines: per slot, dry max(0.75 s, 16384) and delta max(1.3 s, 32768) samples (it holds the latency of all
-//   the slots after it), rounded up to a power of two (Digital EQ at 192 kHz, ~70k samples, fits); bypass line
-//   max(2 s, 65536). A latency beyond that is clamped (alignment then breaks, the reported latency stays exact).
+// - Delay lines: per slot, dry max(0.75 s, 32768); delta and global bypass max(2 s, 131072 x FIR rate family),
+//   rounded up to a power of two. The full phase 2 chain needs over 100k samples at the largest FIR sizes at 48 kHz.
+//   The family bound also covers rates just above a FIR-size doubling threshold and rates below 44.1 kHz.
 // - Chain order and monitor requests are handed to the audio thread through seqlocks of atomics (the reader never
 //   waits: if it races a writer it keeps the previous value and picks the new one up next block).
 namespace ps
@@ -676,15 +680,31 @@ struct Chain::Impl
             auto& m = *modules[t];
 
             Module* twin = twins[t].get();
+            const bool fresh = s.fresh || firstBlock;
+            bool parameterLatencyPending = false;
             if (values != nullptr)
             {
                 readSlotParams (values, (ModuleType) t, s.params);
                 if (twin == nullptr && s.params.channelMode == ChannelMode::TransientSustain)
                     s.params.channelMode = ChannelMode::Stereo;   // (a test module without a twin)
-                m.setParams (values);
-                if (twin != nullptr && (s.params.channelMode == ChannelMode::TransientSustain
-                                        || s.activeMode == ChannelMode::TransientSustain))
-                    twin->setParams (values);
+                const bool useTwin = twin != nullptr && (s.params.channelMode == ChannelMode::TransientSustain
+                                                         || s.activeMode == ChannelMode::TransientSustain);
+                const bool changesLatency = m.getLatencySamplesForParams (values) != m.getLatencySamples()
+                    || (useTwin && twin->getLatencySamplesForParams (values) != twin->getLatencySamples());
+                parameterLatencyPending = ! fresh && changesLatency && ! s.dip.isAt (0.0f);
+                if (! parameterLatencyPending)
+                {
+                    m.setParams (values);
+                    if (useTwin)
+                        twin->setParams (values);
+                    if (! fresh && changesLatency)
+                    {
+                        // Commit at silence. The normal power-up path below resets the internal configuration
+                        // to the new tap and supplies aligned dry while the module's audio history refills.
+                        s.processing = false;
+                        s.wet.snap (0.0f);
+                    }
+                }
             }
 
             // Slot latency per mode: the module's, or in T/S the splitter's + the common latency of both parts.
@@ -698,8 +718,6 @@ struct Chain::Impl
 
             if (t == soloType)
                 soloValid = true;
-
-            const bool fresh = s.fresh || firstBlock;
 
             // Channel-mode change: the module's buffered state belongs to the old domain. The slot fades to its
             // aligned dry signal in the old mode, stops, switches, reset()s the module and warms it up silently for
@@ -725,7 +743,9 @@ struct Chain::Impl
             const bool modePending = s.activeMode != s.params.channelMode;
             if (s.activeMode != previousMode)
                 forwardMonitor (t);
-            if (! modePending)
+            if (parameterLatencyPending)
+                s.dip.setTarget (0.0f);
+            else if (! modePending)
                 s.dip.setTarget (1.0f);
 
             const int lat = slotLatency (s.activeMode);
@@ -752,7 +772,7 @@ struct Chain::Impl
                 // T/S: an EQ audition plays only the part whose instance auditions (the other part is muted)
                 if (ts && s.monitor.auditionOn && c != std::clamp (s.monitor.auditionChannelSet, 0, 1))
                     keepTarget[c] = 0.0f;
-                if (ts && s.monitor.soloBand >= 0 && s.monitor.soloChannelSet >= 0
+                if (ts && (s.monitor.soloBand >= 0 || s.monitor.soloRegion) && s.monitor.soloChannelSet >= 0
                     && c != std::clamp (s.monitor.soloChannelSet, 0, 1))
                     keepTarget[c] = 0.0f;
             }
@@ -886,6 +906,8 @@ struct Chain::Impl
             const int soloSet = std::clamp (mon.soloChannelSet, 0, 1);
             if (soloSet != 0) a.soloBand = -1;
             if (soloSet != 1) b.soloBand = -1;
+            if (soloSet != 0) a.soloRegion = false;
+            if (soloSet != 1) b.soloRegion = false;
         }
         modules[t]->setMonitor (a);
         twins[t]->setMonitor (b);
@@ -1495,12 +1517,15 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
             v.assign ((size_t) d.maxBlock, 0.0f);
     d.modeDip.assign ((size_t) d.maxBlock, 1.0f);
 
-    const int slotCapacity = std::max (16384, (int) std::ceil (0.75 * d.sampleRate));
-    const int deltaCapacity = std::max (32768, (int) std::ceil (1.3 * d.sampleRate));   // downstream latency
+    const int slotCapacity = std::max (32768, (int) std::ceil (0.75 * d.sampleRate));
+    // The full phase 2 chain can exceed the old 1.3 s bound. A delta can precede every other module, so it needs
+    // the same bound as global bypass, not a smaller estimate based on the Core chain.
+    const int firFamily = d.sampleRate > 100000.0 ? 4 : (d.sampleRate > 50000.0 ? 2 : 1);
+    const int chainCapacity = std::max (131072 * firFamily, (int) std::ceil (2.0 * d.sampleRate));
     for (auto& s : d.slots)
     {
         s.dry.prepare (slotCapacity);
-        s.deltaLine.prepare (deltaCapacity);
+        s.deltaLine.prepare (chainCapacity);
         s.loudness.design (d.sampleRate);
         s.split.prepare (d.sampleRate, d.maxBlock);
         s.partDry.prepare (slotCapacity);
@@ -1509,7 +1534,7 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
     }
     for (auto& m : d.ioMeters.moduleTsShareDb)
         m.store (-60.0f);
-    d.bypassDelay.prepare (std::max (65536, (int) std::ceil (2.0 * d.sampleRate)));
+    d.bypassDelay.prepare (chainCapacity);
     d.dcFilter.design (d.sampleRate);
 
     for (auto& m : d.modules)

@@ -24,9 +24,9 @@
 //   7. dither (last)
 //   8. output taps (FIFO + meters: peak, true peak, LUFS M / S / I, LRA)
 // Latency = sum of the slot latencies of the modules in the chain (power on or off): a module's getLatencySamples(),
-// or in Transient/Sustain the splitter latency + max (latency of instance A, of the twin). A change (mode / chain
-// edit) takes effect immediately in the audio; getLatencySamples() reports it so the processor can update the host
-// (setLatencySamples on the message thread).
+// or in Transient/Sustain the splitter latency + max (latency of instance A, of the twin). A phase 2 parameter
+// change that alters latency is committed after the slot and monitoring buses fade to silence; getLatencySamples()
+// reports the committed audio latency so the processor can update the host (setLatencySamples on the message thread).
 //
 // Transient/Sustain (phase 2): every type that offers T/S gets a second instance (the twin, getModule (type, 1),
 // paramSet 1). While a slot runs in T/S: x -> ps::TransientSplitter -> T (instance A, set A) and S (twin, set B), both

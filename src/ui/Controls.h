@@ -112,7 +112,7 @@ private:
 void showMenu (juce::PopupMenu&, juce::Component& target, std::function<void (int)> done, int minWidth = 0);
 
 // Asks for a line of text (preset names) in a small modal window; `done` gets the trimmed text (not called on Cancel
-// or for an empty text).
+// or for an empty text). Destroying the parent cancels the prompt and its callback.
 void promptForText (juce::Component& parent, const juce::String& title, const juce::String& message,
                     const juce::String& initial, std::function<void (juce::String)> done);
 
