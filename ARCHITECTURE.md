@@ -1,8 +1,8 @@
 # PureSheen Dynamics: architecture & team contract
 
 PureSheen Dynamics is a full mastering suite (VST3 + Standalone + CLAP, JUCE 8, C++17, Windows / FL Studio first) whose
-feature set follows a top-tier commercial mastering suite module for module and control for control. It has its own name, its
-own algorithms and its own UI, in the visual family of Chordbloom, RefMatch and Duckling (dark slate, Inter, mint
+feature set matches a top-tier commercial mastering suite module for module and control for control. It has its own
+name, its own algorithms and its own UI, in the visual family of Chordbloom, RefMatch and Duckling (dark slate, Inter, mint
 accent). The research notes are private.
 
 **Scope.** Core (phase 1, this document):
@@ -24,8 +24,8 @@ Later phases (enums are append-only, so they slot in):
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
 
-**Naming rule.** Never use another vendor's product, module or algorithm names in code, UI text or docs shipped to users.
-The research doc may mention them.
+**Naming rule.** Never use another vendor's product, module or algorithm names in code, comments, UI text or docs.
+The (private) research doc may mention them.
 
 ## Repository layout
 
@@ -100,7 +100,7 @@ out/                      snapshots, renders, measurements (gitignored)
    - Measure with real numbers (frequency response via a sine sweep or impulse + FFT, THD, null tests, true peak),
      not just "doesn't crash".
 9. **User-facing text** is ASCII only and plain language. FL Studio is the main host (1920x1080).
-10. **reference parity.** Where the research documents a behaviour, match it. Where it does not, choose what a mastering
+10. **Feature parity.** Where the research documents a behaviour, match it. Where it does not, choose what a mastering
     engineer would expect, and note the choice in a comment at the top of the module's .cpp.
 
 ## Threading model
@@ -134,3 +134,32 @@ The table is append-only: never rename, reorder or remove an entry once released
 - `PureSheenDev render` of test material: a null test at neutral settings, and a loudness / true-peak check of the
   Maximizer.
 - Listening test by the user in FL Studio.
+
+## Status (end of Core integration)
+
+Done: every Core module is real (Equalizer 1/2 with Analog and linear-phase Digital modes, Dynamics, Imager, Exciter,
+Maximizer with six modes, Dither), the chain host, the processor (undo history, A-D snapshots, presets, factory
+presets, learn), the editor with a dedicated panel per module, and the dev tool. Verification on build-int:
+- `CoreTests`: 199 test cases, 0 failed. `PureSheenDev selftest`: 177 checks, 0 failed (incl. every [dsp] check).
+- pluginval strictness 10 with GUI tests: SUCCESS. clap-validator: 31 passed, 0 failed, 12 skipped (features we do not
+  implement: preset discovery, 64-bit audio, note ports, port configs), 1 warning (`state-invalid-random`: JUCE's
+  CLAP wrapper reports success for any state blob; the garbage is ignored and nothing crashes).
+- `PureSheenDev snapshot`: every panel at 980x600 .. 1800x1100 plus mode variants (Maximizer Spectral, EQ Digital,
+  Dynamics 4 bands M/S, Imager 4 bands + Stereoize, Exciter 4 bands M/S), reviewed by eye.
+- Renders of a synthesized 30 s premaster (-20.2 LUFS, -4 dBFS peak) through the default chain (exact null) and every
+  global factory preset: true peak within 0.02 dB under the Output Level, no NaN, no clicks found.
+  Reproduce: `python tools/audio/make_test_mix.py test_audio/int_mix.wav`, then `sh tools/audio/render_presets.sh`.
+
+Known limitations:
+- EQ: no Notch / Band Pass / Tilt shapes yet (a narrow Bell at -30 dB acts as a notch). Digital mode designs on a
+  worker thread, so faster-than-realtime offline renders can apply a changed curve a few blocks earlier or later
+  than a realtime pass; after switching to Digital the EQ joins once the FIR has a full input history (~0.7 s at
+  FIR 32768, 48 kHz), flat and exact until then.
+- Crossover: changing the band count between 1 and N with an Analog / Hybrid crossover crossfades the bit-exact
+  passthrough with the all-pass band sum for 20 ms; a tone near a crossover can dip by up to ~0.9 dB during that fade.
+- Maximizer: a mode change mutes for ~20-45 ms (fade out, flush, refill at the new latency, fade in); Learn simulates
+  the captured audio once on the message thread (0.1-0.3 s).
+- Imager / Exciter: topology changes (band count, crossover type, oversampling) crossfade between two complete
+  engines; the second engine roughly doubles their CPU cost (heaviest Exciter case still ~12x realtime).
+- Dynamics: removing bands folds the removed band into the last remaining one at that band's gain.
+- Not done: listening tests in FL Studio, the installer for this product.

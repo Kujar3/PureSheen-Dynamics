@@ -1,5 +1,6 @@
 #include "AllocationTracking.h"
 #include "core/Loudness.h"
+#include "core/TruePeak.h"
 #include "dsp/Maximizer.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/PluginProcessor.h"
@@ -26,8 +27,9 @@
 // JUCE's HeapBlock uses. A canary check proves the counter sees both before the processor tests run. Presets go to a
 // temporary folder of their own (unique per run).
 //
-// Checks marked [dsp] in their name depend on the DSP modules / chain doing real work (they pass trivially or fail
-// while those are skeleton stubs); every other check tests the processor itself.
+// Checks marked [dsp] in their name measure the real DSP modules / chain (null tests, latency, Maximizer ceiling,
+// learn, delta); each "is neutral" check has a counterpart that proves the path does audible work when it should.
+// Every other check tests the processor itself.
 
 namespace
 {
@@ -472,8 +474,12 @@ void testNullAndBypass()
 
 //==============================================================================
 // Measures the delay of an impulse through the (bypassed or linear) chain and compares with the reported latency.
+// The chain's delay lines (bypass delay, module latency) still hold whatever the previous case played; when the
+// latency grows, an older impulse would come out again inside the measured window. So the chain is flushed with
+// silence (longer than its latency) before the impulse is sent.
 int impulseDelay (Host& h, int length = 32768)
 {
+    h.stream (h.proc.getChain().getLatencySamples() + 4096, [] (long long, float& l, float& r) { l = r = 0.0f; });
     const auto out = h.stream (length, [] (long long i, float& l, float& r) { l = r = i == 1000 ? 0.5f : 0.0f; });
     int best = -1;
     float peak = 0.0f;
@@ -1294,6 +1300,51 @@ void testMaximizerLearn()
            str ("[dsp] max learn: gain written as one step (input ", inputLoudness, " LUFS, target -12)"),
            str ("gain ", gain, " expected ~", expected, ", last step ", h.proc.getHistory().back().description));
     check (progress > 0.5f, "[dsp] max learn: progress reported", str (progress));
+
+    // Cancel: listening stops at once, the gain stays, nothing is recorded.
+    const auto steps = h.proc.getHistory().size();
+    h.proc.startMaximizerLearn();
+    h.stream (24000, input);
+    h.proc.cancelMaximizerLearn();
+    h.stream (48000 * 6, input);
+    h.proc.flushPendingChanges (true);
+    check (! h.proc.isMaximizerLearning() && h.get ("max.gain") == gain && h.proc.getHistory().size() == steps,
+           "max learn: cancel stops listening and keeps the gain");
+}
+
+//==============================================================================
+// The Maximizer's output contract through the whole default chain: pushed hard, the true peak of the processor
+// output stays at the Output Level (+0.05 dB), in every mode.
+void testMaximizerCeiling()
+{
+    std::cout << "\n-- Maximizer ceiling through the chain\n";
+    bool ok = true;
+    std::string detail;
+    float worst = -200.0f;
+
+    for (int mode = 0; mode < (int) ps::MaximizerMode::Count; ++mode)
+    {
+        Host h;
+        h.prepare();
+        h.set ("max.mode", (float) mode);
+        h.set ("max.gain", 18.0f);
+        h.set ("max.ceiling", -1.0f);
+        h.stream (9600, musicLikeInput (0.25f));
+        const auto out = h.stream (48000, musicLikeInput (0.25f, 21));
+        ps::TruePeakMeter tp;
+        tp.prepare (kRate);
+        tp.process (out.l.data(), out.r.data(), (int) out.l.size());
+        const float peak = tp.truePeakDb();
+        worst = juce::jmax (worst, peak);
+        if (! (peak <= -1.0f + 0.05f) || ! std::isfinite (peak))
+        {
+            ok = false;
+            detail += str ("mode ", mode, ": ", peak, " dBTP; ");
+        }
+    }
+
+    check (ok, str ("[dsp] maximizer: +18 dB into the default chain stays under -1 dBTP in every mode (worst ", worst,
+                    " dBTP)"), detail);
 }
 
 //==============================================================================
@@ -1570,6 +1621,14 @@ void testMonitoring()
     for (size_t i = 4096; i < out.l.size(); ++i)
         peak = juce::jmax (peak, std::abs (out.l[i]), std::abs (out.r[i]));
     check (dbOf (peak) < -100.0f, "[dsp] monitor: delta of a neutral Imager is silent", str (dbOf (peak), " dBFS"));
+
+    // ... and not silent once it does something (so the check above is not passing on a dead delta bus).
+    h.set ("img.b1.width", 60.0f);
+    const auto wide = h.stream (24000, noiseInput (0.05f));
+    float widePeak = 0.0f;
+    for (size_t i = 4096; i < wide.l.size(); ++i)
+        widePeak = juce::jmax (widePeak, std::abs (wide.l[i]), std::abs (wide.r[i]));
+    check (dbOf (widePeak) > -50.0f, "[dsp] monitor: delta of a widened Imager is audible", str (dbOf (widePeak), " dBFS"));
 }
 
 //==============================================================================
@@ -1640,7 +1699,7 @@ int runSelfTest()
                   .getChildFile ("PureSheenSelfTest-" + juce::Uuid().toDashedString());
     tempDir.createDirectory();
     std::cout << "selftest: temporary files in " << tempDir.getFullPathName() << "\n";
-    std::cout << "selftest: checks marked [dsp] need the real DSP modules / chain\n";
+    std::cout << "selftest: checks marked [dsp] measure the DSP modules / chain\n";
 
     const double start = juce::Time::getMillisecondCounterHiRes();
 
@@ -1652,6 +1711,7 @@ int runSelfTest()
     testState();
     testUndo();
     testMaximizerLearn();
+    testMaximizerCeiling();
     testPresets();
     testMonitoring();
     testThreads();

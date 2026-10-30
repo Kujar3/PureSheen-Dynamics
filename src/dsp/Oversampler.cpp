@@ -14,9 +14,12 @@
 //   samples of its own rate on the way up and again on the way down; the total is padded at the top rate to a whole
 //   number of base-rate samples, so getLatencySamples() is exact (2x: 69, 4x: 79, 8x: 82). Double accumulation.
 // MinimumPhase: polyphase IIR half-bands (two parallel chains of first-order all-passes in z^2, elliptic design after
-//   the classic Valenzuela / Constantinides structure), designed for >= 100 dB from 0.55 fs for stage 1. Latency is
-//   reported as the rounded low-frequency group delay of the round trip (the phase is not linear, so it is an
-//   approximation by nature).
+//   the classic Valenzuela / Constantinides structure), designed for >= 100 dB from 0.55 fs for stage 1. Latency
+//   convention: getLatencySamples() = the round trip's low-frequency group delay (-dphase/dw at DC, base-rate
+//   samples) rounded to the nearest integer, so low frequencies line up with a dry path delayed by it within half a
+//   sample (the phase is not linear, so no integer is exact at every frequency). Per stage: interpolator gd, decimator
+//   gd - 1 (it keeps the odd-indexed filtered sample), in that stage's high-rate samples. 2x / 4x / 8x: 3 / 5 / 6
+//   (group delay at DC 3.49 / 4.94 / 5.60).
 namespace ps
 {
 namespace
@@ -368,13 +371,15 @@ void Oversampler::prepare (int factorLog2, Quality quality, int maxBlockSize, in
     }
     else
     {
-        // low-frequency group delay of the round trip, in base-rate samples
+        // Low-frequency group delay of the round trip, in base-rate samples. Stage s runs at 2^(s+1) x the base rate;
+        // its interpolator is H(z) (gd high-rate samples), its decimator keeps the filtered sample at odd index 2n + 1
+        // (A0 on the odd inputs, A1 on the even ones), i.e. it is one high-rate sample early: gd - 1.
         double delay = 0.0;
         for (int s = 0; s < m.stages; ++s)
         {
             const double w = 1.0e-3;   // rad/sample at the stage's high rate
             const double gd = -(iirPhase (m.iir[s].coefs, 2.0 * w) - iirPhase (m.iir[s].coefs, w)) / w;
-            delay += 2.0 * gd / (double) (2 << s);
+            delay += (2.0 * gd - 1.0) / (double) (2 << s);
         }
         m.pad = 0;
         m.latency = (int) std::lround (delay);

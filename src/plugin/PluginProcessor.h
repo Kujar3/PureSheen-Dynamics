@@ -22,7 +22,7 @@
 //   - "Options" : ps::ui options (meter, spectrum, history depth ...) as properties (opaque to the processor)
 //   - "Snapshots": A..D (each a full copy of params + chain), "editorW" / "editorH"
 //   - "presetName", "presetModified"
-// Undo history is NOT saved (reference parity).
+// Undo history is NOT saved (reference-suite parity).
 //
 // Threading: everything here is message-thread only except processBlock and the getters marked "any thread".
 class PureSheenProcessor final : public juce::AudioProcessor,
@@ -98,6 +98,7 @@ public:
     // module pre-tap, collected while the UI is open; falls back to defaults when there is no audio yet). One undo step.
     void learnCrossovers (ps::ModuleType);
     void startMaximizerLearn();                                       // result written to "max.gain" (one undo step)
+    void cancelMaximizerLearn();                                      // (added) stop listening, keep the gain
     bool isMaximizerLearning() const;
     float getMaximizerLearnProgress() const;
     // Long-term average spectrum (dB per FFT bin, 4096-point, Hann) of the module pre-tap; empty if not enough data.
@@ -105,7 +106,7 @@ public:
     void feedLearnSpectrum (ps::ModuleType, const std::vector<float>& magnitudeDb, double binHz);
 
     //==============================================================================
-    // Undo history (reference parity: list of changes, click to jump, A-D snapshots)
+    // Undo history (reference-suite parity: list of changes, click to jump, A-D snapshots)
     struct HistoryEntry
     {
         int id = 0;
@@ -117,7 +118,7 @@ public:
     bool canRedo() const;
     void undo();
     void redo();
-    void jumpToHistory (int index);                                   // like clicking an entry in the reference's history
+    void jumpToHistory (int index);                                   // like clicking an entry in the history list
     void clearHistory();                                              // keeps the current state as "Initial state"
     void setHistoryDepth (int maxEntries);                            // 10..1000, default 200
 
@@ -161,7 +162,7 @@ public:
     // are never lost. Call it directly where timers do not run (dev tool).
     void flushPendingChanges (bool force = false);
 
-    // A-D snapshot from an entry of the history list (reference parity: snapshots are taken from history entries).
+    // A-D snapshot from an entry of the history list (reference-suite parity: snapshots are taken from history entries).
     void storeSnapshotFromHistory (int slot, int historyIndex);
 
     // Preset folder root (default Documents/PureSheen Dynamics/Presets); the self-test points it at a temp folder.

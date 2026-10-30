@@ -7,6 +7,7 @@
 #include "ui/HeaderBar.h"
 #include "ui/HelpOverlay.h"
 #include "ui/IoPanel.h"
+#include "ui/Vectorscope.h"
 
 // PureSheen Dynamics editor (owner: ui-shell).
 //
@@ -122,6 +123,9 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             options = ps::ui::UiOptions::fromValueTree (tree);
         }
 
+        if (savedSize.x <= 0 || savedSize.y <= 0)
+            savedSize = processor.getEditorSize();   // state saved by a host that kept only the processor's size
+
         if (selected < -1 || selected >= ps::kNumModuleTypes)
             selected = (int) ps::ModuleType::Equalizer1;
 
@@ -141,6 +145,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         tree.setProperty (kLinkOut, linkOut, nullptr);
         tree.appendChild (options.toValueTree(), nullptr);
         processor.setUiState (tree);
+        processor.setEditorSize (owner.getWidth(), owner.getHeight());
     }
 
     juce::Point<int> initialSize() const
@@ -334,6 +339,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         n = chain.getOutputFifo().pull (scratchL.data(), scratchR.data(), kScratch);
         io.processOutput (scratchL.data(), scratchR.data(), n);
         output.process (scratchL.data(), scratchR.data(), n);
+        ps::ui::Vectorscope::publishOutput (processor, scratchL.data(), scratchR.data(), n);   // single FIFO consumer
 
         modulePre.update (chain.getModulePreFifo());
         modulePost.update (chain.getModulePostFifo());
@@ -545,7 +551,12 @@ void PureSheenEditor::setHistoryVisible (bool show) { impl->setHistoryVisible (s
 
 ps::ui::ModulePanel* PureSheenEditor::getCurrentPanel() noexcept { return impl->panel.get(); }
 
-void PureSheenEditor::updateNow() { impl->tick(); }
+void PureSheenEditor::updateNow()
+{
+    // Timers do not run in the dev tool: do the processor's housekeeping (gesture commits, latency, learn result) too.
+    impl->processor.flushPendingChanges();
+    impl->tick();
+}
 
 void PureSheenEditor::changeListenerCallback (juce::ChangeBroadcaster*)
 {

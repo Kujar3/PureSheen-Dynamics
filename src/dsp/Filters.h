@@ -60,9 +60,14 @@ private:
     double z1 = 0.0, z2 = 0.0;
 };
 
-// Click-free coefficient changes: interpolates the coefficients linearly over `rampSamples` after setTarget (stable
-// for the shapes we use when the ramp is >= 32 samples; designs that change filter order switch at a zero-crossing of
-// the ramp instead, see SmoothedBiquadCascade).
+// Click-free coefficient changes: after setTarget the filter glides to the new design over `rampLength` samples.
+// Unconditionally stable under any modulation (any targets, any rate of setTarget calls, any ramp length): every
+// design is realised as a trapezoidal (TPT) state-variable filter, y = m0 x + m1 band + m2 low, with
+// g = tan (w0 / 2) > 0 and damping k > 0 recovered from the denominator; the glide interpolates g, k, m0..m2. For every
+// g > 0, k > 0 the SVF's state-transition matrix has spectral norm exactly 1 (it can never amplify its state), so no
+// sequence of coefficients can make it grow. A static SmoothedBiquad has the transfer function of its BiquadCoeffs (to
+// double rounding). Cost: ~9 multiplies per sample, + 1 division per sample while ramping. Targets must be stable
+// designs (all design:: functions are); a non-finite or unstable target is ignored.
 class SmoothedBiquad
 {
 public:
@@ -74,8 +79,15 @@ public:
     bool isRamping() const noexcept { return remaining > 0; }
 
 private:
-    BiquadCoeffs current, target, step;
-    double z1 = 0.0, z2 = 0.0;
+    struct Svf
+    {
+        double g = 0.1, k = 1.0, m0 = 1.0, m1 = 0.0, m2 = 0.0;
+    };
+    void updateGains() noexcept;   // a1..a3 of `current`
+
+    Svf current, target, step;
+    double a1 = 1.0, a2 = 0.0, a3 = 0.0;   // SVF gains of current
+    double ic1 = 0.0, ic2 = 0.0;          // trapezoidal integrator states
     int rampLength = 64, remaining = 0;
 };
 

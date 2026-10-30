@@ -99,6 +99,7 @@ endif()
 #   PureSheenDev selftest
 #   PureSheenDev snapshot <outDir>
 #   PureSheenDev render <in.wav> <out.wav>
+#   PureSheenDev icon <out.png> [size]
 # ---------------------------------------------------------------------------
 juce_add_console_app(PureSheenDev PRODUCT_NAME "PureSheenDev")
 file(GLOB PS_DEV_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/dev/*.cpp")

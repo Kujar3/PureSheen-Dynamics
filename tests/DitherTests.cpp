@@ -244,37 +244,63 @@ TEST_CASE ("dither. limit peaks keeps the shaped noise within 4 LSB")
 
 TEST_CASE ("dither. auto-blank mutes after 0.7 s of digital silence")
 {
+    // Blank on and off run identically seeded: up to the blank point the outputs must be bit-identical (blanking
+    // changes nothing before 0.7 s of silence), from the 0.7 s point to the end of the silence the blanked output is
+    // exact digital silence while the other one keeps dithering, and both resume when the input does.
     const double sr = 48000.0;
     const auto music = pstest::sine (440.0, -20.0, 0.3, sr);
     std::vector<float> in = music;
     in.resize (music.size() + (size_t) sr, 0.0f);   // 1 s of exact zeros
     in = pstest::concat (in, music);
 
-    for (bool blank : { true, false })
+    std::vector<float> out[2];
+    for (int k = 0; k < 2; ++k)
     {
         Dither d;
         d.prepare (sr, 512);
-        d.setParams (makeParams (DitherBits::Bits16, DitherAmount::Strong, 50.0f, true, blank));
-        const auto out = runDither (d, in);
-        const size_t zeroStart = music.size();
-        const size_t blankAt = zeroStart + (size_t) std::ceil (0.7 * sr);
-
-        bool noiseBefore = false, silentAfter = true;
-        for (size_t i = zeroStart; i < blankAt - 1; ++i)
-            noiseBefore = noiseBefore || out[i] != 0.0f;
-        for (size_t i = blankAt; i < zeroStart + (size_t) sr; ++i)
-            silentAfter = silentAfter && out[i] == 0.0f;
-        bool resumed = false;
-        for (size_t i = zeroStart + (size_t) sr; i < out.size(); ++i)
-            resumed = resumed || out[i] != 0.0f;
-
-        CHECK (noiseBefore);
-        CHECK (resumed);
-        if (blank)
-            CHECK (silentAfter);
-        else
-            CHECK (! silentAfter);
+        d.setParams (makeParams (DitherBits::Bits16, DitherAmount::Strong, 50.0f, true, k == 0));
+        out[k] = runDither (d, in);
     }
+    const auto& on = out[0];
+    const auto& off = out[1];
+
+    const size_t zeroStart = music.size();
+    const size_t zeroEnd = zeroStart + (size_t) sr;
+    const size_t blankSamples = (size_t) std::ceil (0.7 * sr);       // 33600
+    const size_t firstBlanked = zeroStart + blankSamples - 1;          // the 33600th silent sample
+
+    size_t firstDifference = on.size();
+    for (size_t i = 0; i < on.size() && firstDifference == on.size(); ++i)
+        if (on[i] != off[i])
+            firstDifference = i;
+
+    bool silentAfter = true, offDithers = false;
+    for (size_t i = firstBlanked; i < zeroEnd; ++i)
+    {
+        silentAfter = silentAfter && on[i] == 0.0f;
+        offDithers = offDithers || off[i] != 0.0f;
+    }
+    bool noiseJustBefore = false;
+    for (size_t i = firstBlanked - 480; i < firstBlanked; ++i)
+        noiseJustBefore = noiseJustBefore || on[i] != 0.0f;
+    bool resumedOn = false, resumedOff = false;
+    for (size_t i = zeroEnd; i < on.size(); ++i)
+    {
+        resumedOn = resumedOn || on[i] != 0.0f;
+        resumedOff = resumedOff || off[i] != 0.0f;
+    }
+
+    pstest::note ("blank point (samples after the silence starts, expect 33599)", (double) (firstBlanked - zeroStart));
+    pstest::note ("first sample where blank on / off differ, after the silence starts", (double) (firstDifference - zeroStart));
+    CHECK (firstDifference >= firstBlanked);       // bit-identical before the blank point
+    CHECK (firstDifference < firstBlanked + 64);   // and they part right there (off keeps dithering)
+    CHECK (noiseJustBefore);                    // still dithering in the last 10 ms before the blank point
+    CHECK (silentAfter);
+    CHECK (offDithers);
+    CHECK (resumedOn);
+    CHECK (resumedOff);
+    // the first resumed samples are the music again, quantised (within 1 LSB + shaped noise)
+    CHECK (std::abs ((double) on[zeroEnd + 100] - (double) in[zeroEnd + 100]) < 8.0 * lsb (DitherBits::Bits16));
 }
 
 TEST_CASE ("dither. deterministic")
@@ -297,38 +323,141 @@ TEST_CASE ("dither. deterministic")
     CHECK (runDither (a, in) == la);
 }
 
-TEST_CASE ("dither. harmonic suppression moves low-level harmonics out of the audible band")
+TEST_CASE ("dither. harmonic suppression removes low-level harmonics, low-frequency floor near plain rounding")
 {
     const double sr = 44100.0;
     const double q = lsb (DitherBits::Bits16);
     constexpr int fftOrder = 16;   // fine resolution: harmonic bins hold the harmonics, not the floor
     const double f0 = std::round (1000.0 * 65536.0 / sr) * sr / 65536.0;   // on a bin
+    const double binHz = sr / 65536.0;
+
+    // power in the harmonic bins (k = 2.. below 16 kHz) relative to the floor around them (median of +-40 bins)
+    auto harmonicExcessDb = [&] (const std::vector<double>& psd)
+    {
+        double harm = 0.0, floor = 0.0;
+        std::vector<double> nb;
+        for (int k = 2; k * f0 < 16000.0; ++k)
+        {
+            const int centre = (int) std::lround (k * f0 / binHz);
+            nb.clear();
+            for (int b = centre - 40; b <= centre + 40; ++b)
+                if (std::abs (b - centre) > 4)
+                    nb.push_back (psd[(size_t) b]);
+            std::nth_element (nb.begin(), nb.begin() + (long long) nb.size() / 2, nb.end());
+            for (int b = centre - 3; b <= centre + 3; ++b)
+            {
+                harm += psd[(size_t) b];
+                floor += nb[nb.size() / 2];
+            }
+        }
+        return 10.0 * std::log10 ((harm + 1.0e-30) / (floor + 1.0e-30));
+    };
+
+    auto errorPsd = [&] (const std::vector<float>& in, DitherAmount amount, bool harm)
+    {
+        Dither d;
+        d.prepare (sr, 512);
+        auto p = makeParams (DitherBits::Bits16, amount, 0.0f);
+        p.harmonicSuppression = harm;
+        d.setParams (p);
+        return powerSpectrum (errorSignal (runDither (d, in), in), q, fftOrder);
+    };
+
+    // reference floor: plain rounding of loud noise (the error is then white, q^2 / 12)
+    const auto loud = pstest::whiteNoise (0.5, 4.0, sr, 41u);
+    const double whiteFloor = bandPowerDb (errorPsd (loud, DitherAmount::Off, false), sr, 20.0, 6000.0);
+
     for (double amplitudeLsb : { 0.7, 2.5, 10.0 })
     {
-        std::vector<float> in ((size_t) (4.0 * sr));
+        std::vector<float> in ((size_t) (12.0 * sr));
         for (size_t i = 0; i < in.size(); ++i)
             in[i] = (float) (amplitudeLsb * q * std::sin (2.0 * pstest::kPi * f0 * (double) i / sr));
 
-        auto measure = [&] (bool harm, double& floorDb)
+        const auto plain = errorPsd (in, DitherAmount::Off, false);
+        const auto hs = errorPsd (in, DitherAmount::Off, true);
+        const auto tpdf = errorPsd (in, DitherAmount::Strong, false);
+        const double excessPlain = harmonicExcessDb (plain), excessHs = harmonicExcessDb (hs);
+        const double floorHs = bandPowerDb (hs, sr, 20.0, 6000.0);
+        note ("sine amplitude (LSB)", amplitudeLsb);
+        note ("  harmonics < 16 kHz above the local floor, plain rounding (dB)", excessPlain);
+        note ("  harmonics < 16 kHz above the local floor, suppression on (dB)", excessHs);
+        note ("  20 Hz..6 kHz floor vs white q^2/12 (dB)", floorHs - whiteFloor);
+        note ("  20 Hz..6 kHz floor vs Strong TPDF (dB)", floorHs - bandPowerDb (tpdf, sr, 20.0, 6000.0));
+        CHECK (std::abs (excessHs) < 1.0);                  // no harmonics left (estimator spread ~ +-0.5 dB)
+        if (amplitudeLsb < 5.0)
+            CHECK (excessPlain > 10.0);                     // (plain rounding is full of them)
+        CHECK (floorHs - whiteFloor < 1.5);                 // close to undithered rounding below 6 kHz
+        CHECK (floorHs - bandPowerDb (tpdf, sr, 20.0, 6000.0) < -3.0);   // well below flat TPDF
+    }
+}
+
+TEST_CASE ("dither. harmonic suppression adds no spectral lines (DC, sub-LSB DC and low-level sines)")
+{
+    // Regression: the deterministic pattern turned 0.25 LSB of DC at 8 bits into a ~723 Hz tone (-52 dBFS).
+    // The total error (output - input) must be line-free: every bin of an averaged spectrum (Welch, 4096 points,
+    // ~8 s) within 3 dB of the median of its +-24 neighbours. Plain rounding is checked to fail this (it does create
+    // lines), so the detector is known to work.
+    const double sr = 44100.0;
+    const double q = lsb (DitherBits::Bits8);
+    const double fBin = 44100.0 / 4096.0;
+    struct Case { const char* name; double dcLsb, sineLsb, sineHz; };
+    const Case cases[] { { "DC 0.25 LSB", 0.25, 0.0, 0.0 }, { "DC 0.37 LSB", 0.37, 0.0, 0.0 },
+                         { "DC 3.5 LSB", 3.5, 0.0, 0.0 }, { "sine 0.4 LSB", 0.0, 0.4, 93.0 * fBin },
+                         { "sine 3 LSB + 0.2 LSB DC", 0.2, 3.0, 93.0 * fBin }, { "sine 20 LSB", 0.0, 20.0, 371.0 * fBin } };
+
+    auto worstLineDb = [&] (const std::vector<double>& psd)
+    {
+        double worst = -100.0;
+        std::vector<double> nb;
+        for (int k = 4; k < (int) psd.size() - 2; ++k)
+        {
+            nb.clear();
+            for (int j = std::max (1, k - 24); j <= std::min ((int) psd.size() - 1, k + 24); ++j)
+                if (std::abs (j - k) > 2)
+                    nb.push_back (psd[(size_t) j]);
+            std::nth_element (nb.begin(), nb.begin() + (long long) nb.size() / 2, nb.end());
+            const double med = nb[nb.size() / 2];
+            if (med > 0.0)
+                worst = std::max (worst, 10.0 * std::log10 (psd[(size_t) k] / med));
+        }
+        return worst;
+    };
+
+    for (const auto& cs : cases)
+    {
+        std::vector<float> in ((size_t) (8.0 * sr));
+        for (size_t i = 0; i < in.size(); ++i)
+            in[i] = (float) (q * (cs.dcLsb + cs.sineLsb * std::sin (2.0 * pstest::kPi * cs.sineHz * (double) i / sr)));
+
+        double lines[2] {};
+        for (int hs = 0; hs < 2; ++hs)
         {
             Dither d;
             d.prepare (sr, 512);
-            auto p = makeParams (DitherBits::Bits16, DitherAmount::Off, 0.0f);
-            p.harmonicSuppression = harm;
+            auto p = makeParams (DitherBits::Bits8, DitherAmount::Off, 0.0f);
+            p.harmonicSuppression = hs == 1;
             d.setParams (p);
-            const auto psd = powerSpectrum (errorSignal (runDither (d, in), in), q, fftOrder);
-            floorDb = bandPowerDb (psd, sr, 20.0, 16000.0);
-            return 10.0 * std::log10 (harmonicPower (psd, sr, f0, 16000.0) + 1.0e-30);
-        };
+            const auto psd = powerSpectrum (errorSignal (runDither (d, in), in), q, 12);
+            lines[hs] = worstLineDb (psd);
+        }
+        note (std::string (cs.name) + ": strongest line above the local floor, suppression on (dB)", lines[1]);
+        note (std::string (cs.name) + ":   plain rounding (dB)", lines[0]);
+        CHECK (lines[1] < 3.0);
+        if (cs.sineLsb > 0.0 || cs.dcLsb != std::floor (cs.dcLsb))
+            CHECK (lines[0] > 10.0 || cs.sineLsb == 0.0);   // rounding of a tone is full of harmonics
+    }
 
-        double floorPlain = 0.0, floorHs = 0.0;
-        const double plain = measure (false, floorPlain);
-        const double hs = measure (true, floorHs);
-        note ("sine amplitude (LSB)", amplitudeLsb);
-        note ("  harmonics < 16 kHz, suppression on vs plain rounding (dB)", hs - plain);
-        note ("  20 Hz..16 kHz error floor change (dB)", floorHs - floorPlain);
-        CHECK (hs - plain < -15.0);
-        CHECK (floorHs - floorPlain < 1.0);
+    // and with noise shaping on top (error feedback of the shaped total error): still no lines
+    {
+        std::vector<float> in ((size_t) (8.0 * sr), (float) (0.25 * q));
+        Dither d;
+        d.prepare (sr, 512);
+        auto p = makeParams (DitherBits::Bits8, DitherAmount::Off, 100.0f, true);
+        p.harmonicSuppression = true;
+        d.setParams (p);
+        const double worst = worstLineDb (powerSpectrum (errorSignal (runDither (d, in), in), q, 12));
+        note ("DC 0.25 LSB, shaping 100, Limit Peaks: strongest line (dB)", worst);
+        CHECK (worst < 3.0);
     }
 }
 

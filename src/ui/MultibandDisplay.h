@@ -19,6 +19,13 @@
 //   - overlay hook: the owning panel paints band-specific content (threshold lines, width bars, drive meters...) into
 //     each band's area through paintBandOverlay, and may handle drags itself through the band mouse hooks
 // Never takes keyboard focus; left-click-only edits.
+//
+// (added by ui-dynamics) Mouse priority in the plot: a crossover line (+-6 px around it) and the band count buttons
+// always win; Alt + left click is the solo-while-held gesture (never passed to the hooks); otherwise onBandMouseDown
+// gets every LEFT click first (right clicks go to onBandPopupMenu instead). Once onBandMouseDown returned true, the
+// drag and the release of that gesture go to onBandMouseDrag / onBandMouseUp with the same band (even outside it).
+// paintBandOverlay is called with the graphics clipped to the band's area, after the spectra, before the crossovers.
+// Adding a band (the "+" button) also moves the new crossover when its stored value would not be ascending.
 namespace ps::ui
 {
 class MultibandDisplay : public juce::Component
@@ -47,6 +54,25 @@ public:
     std::function<bool (int band, const juce::MouseEvent&)> onBandMouseDown;
     std::function<void (int band, const juce::MouseEvent&)> onBandMouseDrag;
     std::function<void (int band, const juce::MouseEvent&)> onBandMouseUp;
+
+    //==============================================================================
+    // (added by ui-dynamics) Optional extras.
+    void setAccentColour (juce::Colour);             // tint, crossovers, output spectrum (default moduleColour; panels
+                                                     // pass Colours::sideChannel while channel set B is edited)
+    void setLevelRange (float minDb, float maxDb);   // dB scale of the spectrum and of the grid (default -84 .. 0)
+    DbAxis getLevelAxis() const noexcept;            // that scale over the plot area (for overlays in dB)
+    juce::Rectangle<float> getBandHeaderArea (int band) const noexcept;   // the band's header strip
+    int getSoloBand() const noexcept;                // -1 = none
+    int getHoverBand() const noexcept;               // band under the mouse in the plot, -1 = none
+
+    // Mouse moves over the plot (band -1: the mouse left the plot or is over a crossover line). For hover effects.
+    std::function<void (int band, const juce::MouseEvent&)> onBandMouseMove;
+    // Cursor over a band (not called over crossover lines). Unset = normal cursor.
+    std::function<juce::MouseCursor (int band, juce::Point<float> position)> getBandCursor;
+    // Left double-click in a band (not on a crossover line). Return true when handled.
+    std::function<bool (int band, const juce::MouseEvent&)> onBandDoubleClick;
+    // Right-click / ctrl-click in a band (not on a crossover line): show a menu. Return true when handled.
+    std::function<bool (int band, const juce::MouseEvent&)> onBandPopupMenu;
 
     void paint (juce::Graphics&) override;
     void resized() override;

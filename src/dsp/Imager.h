@@ -4,7 +4,7 @@
 
 #include <memory>
 
-// Multiband stereo Imager (reference parity). Owner: dsp-stereo. Implementation: Imager.cpp.
+// Multiband stereo Imager (reference-suite parity). Owner: dsp-stereo. Implementation: Imager.cpp.
 //   - per band: S *= 1 + width/100 * amount/100 (width -100 = mono), M untouched
 //   - Stereoize (bands with width > 0 only, scaled by that band's width):
 //       Mode I : Haas-style: a delayed (~ 8..20 ms, frequency-dependent) and filtered copy of M added to S
@@ -15,8 +15,8 @@
 //   - Prevent antiphase: per band, limits |S| so the band's correlation stays >= 0 (smoothed)
 //   - Crossover: ps::Crossover (default Analog: 0 latency, compensated tree so every band carries the same phase;
 //     Digital = linear phase)
-// Meters are computed by the UI from the chain's output FIFO (vectorscope always shows the final output, reference
-// parity); the module publishes per-band correlation for its band display.
+// Meters are computed by the UI from the chain's output FIFO (the vectorscope always shows the final
+// output); the module publishes per-band correlation for its band display.
 namespace ps
 {
 struct ImagerMeters

@@ -5,17 +5,19 @@
 
 #include <cstdint>
 
-// Output dither (reference parity; our own algorithm). Owner: dsp-maximizer. Implementation: Dither.cpp.
+// Output dither (reference-suite parity; our own algorithms). Owner: dsp-maximizer. Implementation: Dither.cpp.
 //   - quantises to the chosen bit depth (the output stays float, holding exactly representable values)
 //   - Amount Strong / Medium / Low: TPDF noise of 1.0 / 0.7 / 0.5 LSB peak-to-peak scale (deterministic LCG, seeded
-//     per channel); Off: plain rounding, optionally with Harmonic Suppression (very low-level, high-frequency
-//     subtractive pattern that moves quantisation harmonics above 16 kHz without a broadband noise floor)
+//     per channel); Off: plain rounding, optionally with Harmonic Suppression (high-pass TPDF dither: +-1 LSB
+//     triangular, spectrum rising toward Nyquist; removes quantisation harmonics and idle tones for any input, with
+//     a low-frequency floor close to plain rounding's)
 //   - Noise shaping 0..100: error-feedback filter blended from flat (0) to a 9th-order psychoacoustic curve (100,
 //     ~ 14 dB less audible noise in the 1..6 kHz region, noise pushed above 15 kHz); the filter is designed for 44.1
 //     and 48 kHz families, flat above 96 kHz
 //   - Limit Peaks: keeps |shaped noise| within 4 LSB so aggressive shaping cannot create spurious peaks
 //   - Auto-blank: output is exact digital silence when the input has been exactly 0 for >= 0.7 s
-//   - Bit meter: per channel, which of the 24 bits were active in the last block (and a peak-hold mask)
+//   - Bit meter: per channel, which of the 24 bits were active in the last block (and a peak-hold mask, cleared by
+//     resetPeakBits and whenever the bit depth or the on switch changes)
 // Deterministic: same input -> same output (tests rely on it).
 namespace ps
 {
@@ -55,7 +57,7 @@ private:
     double dcState[2] {};
     double dcCoeff = 0.0;
     int blankThreshold = 33600;                             // 0.7 s in samples
-    int harmonicPhase = 0;
+    double hpPrev[2] {};                                    // Harmonic Suppression: previous uniform value (high-pass TPDF)
     int lastBits = -1;
     bool lastOn = false;
 };

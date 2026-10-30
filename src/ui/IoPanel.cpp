@@ -16,6 +16,7 @@ using MeterScale = UiOptions::MeterScale;
 constexpr float kTickSeconds = 1.0f / 30.0f;
 constexpr float kFallDbPerSecond = 20.0f;
 constexpr int kSubBlocks = 512;   // 10 ms each: up to 5.12 s of RMS window
+constexpr int kHoldTicks = 600;   // peak-hold window memory: 20 s of 30 Hz ticks (longer holds never fall)
 
 float toDb (float linear) { return linear > 1.0e-10f ? 20.0f * std::log10 (linear) : -200.0f; }
 
@@ -147,7 +148,8 @@ struct Side
         blockPeak = { 0.0f, 0.0f };
         shownPeak = { -200.0f, -200.0f };
         hold = { -200.0f, -200.0f };
-        holdTicks = { 0, 0 };
+        for (auto& h : holdRing)
+            h.fill (-200.0f);
         rmsDb = { -200.0f, -200.0f };
         maxPeakDb = -200.0f;
         maxTruePeakDb = -200.0f;
@@ -159,7 +161,8 @@ struct Side
     void resetHolds()
     {
         hold = { -200.0f, -200.0f };
-        holdTicks = { 0, 0 };
+        for (auto& h : holdRing)
+            h.fill (-200.0f);
         overTruePeak = false;
     }
 
@@ -209,15 +212,22 @@ struct Side
             blockPeak[(size_t) c] = 0.0f;
             shownPeak[(size_t) c] = juce::jmax (p, shownPeak[(size_t) c] - fall);
 
-            if (p >= hold[(size_t) c])
+            // Peak hold = the highest tick peak of the last holdLimit ticks (a sliding window, so channels with the
+            // same material hold the same level); when that drops, the shown hold falls towards it.
+            holdRing[(size_t) c][(size_t) holdPos] = p;
+            float target = -200.0f;
+
+            if (holdLimit >= kHoldTicks)
             {
-                hold[(size_t) c] = p;
-                holdTicks[(size_t) c] = 0;
+                target = juce::jmax (hold[(size_t) c], p);
             }
-            else if (++holdTicks[(size_t) c] > holdLimit)
+            else
             {
-                hold[(size_t) c] = juce::jmax (p, hold[(size_t) c] - fall * 1.5f);
+                for (int k = 0; k <= holdLimit; ++k)
+                    target = juce::jmax (target, holdRing[(size_t) c][(size_t) ((holdPos - k + kHoldTicks) % kHoldTicks)]);
             }
+
+            hold[(size_t) c] = target >= hold[(size_t) c] ? target : juce::jmax (target, hold[(size_t) c] - fall * 1.5f);
 
             const int count = juce::jmin (windowBlocks, ringFilled);
             double sum = 0.0;
@@ -228,6 +238,7 @@ struct Side
             rmsDb[(size_t) c] = count > 0 ? (float) (10.0 * std::log10 (sum / ((double) count * subLength) + 1.0e-20)) : -200.0f;
         }
 
+        holdPos = (holdPos + 1) % kHoldTicks;
         maxPeakDb = juce::jmax (maxPeakDb, toDb (maxSample));
         maxSample = 0.0f;
         const float tpDb = toDb (juce::jmax (tp[0].truePeakLinear(), tp[1].truePeakLinear()));
@@ -240,7 +251,16 @@ struct Side
     std::array<double, 2> subSum {};
     std::array<std::array<double, kSubBlocks>, 2> ring {};
     std::array<float, 2> blockPeak {}, shownPeak { -200.0f, -200.0f }, hold { -200.0f, -200.0f }, rmsDb { -200.0f, -200.0f };
-    std::array<int, 2> holdTicks {};
+    std::array<std::array<float, kHoldTicks>, 2> holdRing = makeHoldRing();
+    int holdPos = 0;
+
+    static std::array<std::array<float, kHoldTicks>, 2> makeHoldRing()
+    {
+        std::array<std::array<float, kHoldTicks>, 2> r {};
+        for (auto& h : r)
+            h.fill (-200.0f);
+        return r;
+    }
     float maxSample = 0.0f, maxPeakDb = -200.0f, maxTruePeakDb = -200.0f;
     bool overTruePeak = false;
     ps::TruePeakMeter tp[2];
@@ -746,7 +766,7 @@ void IoPanel::tick()
 void IoPanel::resetReadouts()
 {
     auto& d = *impl;
-    auto& meters = const_cast<ps::IoMeters&> (d.proc.getChain().getIoMeters());   // the UI resets the clip latches (Chain.h)
+    auto& meters = d.proc.getChain().getIoMeters();   // the UI resets the clip latches (Chain.h)
 
     for (int c = 0; c < 2; ++c)
     {
@@ -791,7 +811,7 @@ void IoPanel::mouseUp (const juce::MouseEvent& e)
     if (impl->inMeter.expanded (2.0f).contains (p) || impl->outMeter.expanded (2.0f).contains (p)
         || impl->inValues.contains (p) || impl->outValues.contains (p))
     {
-        auto& meters = const_cast<ps::IoMeters&> (impl->proc.getChain().getIoMeters());
+        auto& meters = impl->proc.getChain().getIoMeters();
 
         for (int c = 0; c < 2; ++c)
         {

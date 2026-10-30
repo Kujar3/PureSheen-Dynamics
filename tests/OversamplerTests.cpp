@@ -195,6 +195,50 @@ TEST_CASE ("os. minimum phase: low latency, 100 dB images, flat passband")
     }
 }
 
+TEST_CASE ("os. minimum phase latency = measured low-frequency group delay of the round trip, rounded")
+{
+    // Regression: the decimator's one-sample advance (per stage, at that stage's high rate) was not counted, so 4x
+    // measured ~4.9 samples but reported 6. Convention: latency = round (group delay at DC, base-rate samples).
+    for (int f = 1; f <= 3; ++f)
+    {
+        Oversampler os;
+        os.prepare (f, Quality::MinimumPhase, 512, 2);
+        const int L = os.getLatencySamples();
+
+        // round-trip impulse response -> phase slope at low frequencies (independent double FFT)
+        std::vector<float> imp (16384, 0.0f);
+        imp[0] = 1.0f;
+        const auto h = roundTrip (os, imp, 512);
+        const auto H = pstest::spectrumOf (h, h.size());
+        const double binW = 2.0 * pstest::kPi / (double) h.size();
+        double worstAway = 0.0, gdDc = 0.0;
+        for (int k : { 1, 4, 16, 64 })   // 2.7 Hz .. 172 Hz at 44.1 kHz
+        {
+            const double dphi = std::arg (H[(size_t) k + 1] / H[(size_t) k]);
+            const double gd = -dphi / binW;
+            if (k == 1)
+                gdDc = gd;
+            worstAway = std::max (worstAway, std::abs (gd - L));
+        }
+        // alignment check: a 50 Hz sine through the round trip vs the same sine delayed by L
+        const double sr = 44100.0;
+        const auto x = pstest::sine (50.0, -6.0, 1.0, sr);
+        os.reset();
+        const auto z = roundTrip (os, x, 512);
+        double err = 0.0;
+        for (size_t i = 22050; i < x.size(); ++i)
+            err = std::max (err, std::abs ((double) z[i] - (double) x[i - (size_t) L]));
+
+        pstest::note (std::to_string (1 << f) + "x minimum phase: reported latency", L);
+        pstest::note (std::to_string (1 << f) + "x minimum phase: measured group delay at DC (samples)", gdDc);
+        pstest::note (std::to_string (1 << f) + "x minimum phase: 50 Hz sine vs input delayed by the latency (dBFS)",
+                      pstest::dbOf (err));
+        CHECK (std::abs (gdDc - L) <= 0.5);
+        CHECK (worstAway <= 0.5);
+        CHECK (std::lround (gdDc) == L);
+    }
+}
+
 TEST_CASE ("os. upsample and downsample do not allocate")
 {
     for (auto q : { Quality::LinearPhase, Quality::MinimumPhase })

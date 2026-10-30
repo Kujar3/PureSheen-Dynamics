@@ -110,56 +110,67 @@ float GainCurve::gainDb (float x) const noexcept
 }
 
 //==============================================================================
+namespace
+{
+    // double-precision one-pole coefficient (onePoleCoeff's float result is too coarse near 1 for long times)
+    inline double onePoleCoeffD (double timeMs, double sampleRate) noexcept
+    {
+        const double samples = timeMs * 0.001 * sampleRate;
+        return samples > 0.0 ? std::exp (-1.0 / samples) : 0.0;
+    }
+}
+
 void GainSmoother::prepare (double sampleRate) noexcept
 {
     sr = sampleRate > 0.0 ? sampleRate : 48000.0;
-    fastDecay = (float) (300.0 / sr);
-    slowDecay = (float) (20.0 / sr);
+    fastDecay = 300.0 / sr;
+    slowDecay = 20.0 / sr;
     setTimes (10.0f, releaseMs, adaptive);
     reset (0.0f);
 }
 
 void GainSmoother::setTimes (float attackMs, float relMs, bool adaptiveRelease) noexcept
 {
-    attCoeff = onePoleCoeff (std::max (0.0f, attackMs), sr);
-    if (relMs != releaseMs || adaptiveRelease != adaptive || relCoeff == 0.0f)
+    attCoeff = onePoleCoeffD (std::max (0.0, (double) attackMs), sr);
+    if (relMs != releaseMs || adaptiveRelease != adaptive || relCoeff == 0.0)
     {
         releaseMs = std::max (0.0f, relMs);
         adaptive = adaptiveRelease;
-        relCoeff = onePoleCoeff (releaseMs * (adaptive ? releaseScale : 1.0f), sr);
+        relCoeff = onePoleCoeffD ((double) releaseMs * (adaptive ? releaseScale : 1.0), sr);
     }
 }
 
 void GainSmoother::reset (float valueDb) noexcept
 {
-    state = valueDb;
-    fastEnv = slowEnv = -200.0f;
-    releaseScale = 1.0f;
+    state = (double) valueDb;
+    fastEnv = slowEnv = -200.0;
+    releaseScale = 1.0;
     counter = 0;
-    relCoeff = onePoleCoeff (releaseMs, sr);
+    relCoeff = onePoleCoeffD ((double) releaseMs, sr);
 }
 
 float GainSmoother::process (float targetGainDb, float detectorDb) noexcept
 {
     if (adaptive)
     {
-        fastEnv = std::max (detectorDb, fastEnv - fastDecay);
-        slowEnv = std::max (detectorDb, slowEnv - slowDecay);
+        fastEnv = std::max ((double) detectorDb, fastEnv - fastDecay);
+        slowEnv = std::max ((double) detectorDb, slowEnv - slowDecay);
 
         if (++counter >= 16)
         {
             counter = 0;
-            const float crest = std::clamp (slowEnv - fastEnv, 3.0f, 15.0f);
-            releaseScale = 2.0f * std::pow (10.0f, -(crest - 3.0f) / 12.0f);   // 2 .. 0.2
-            relCoeff = onePoleCoeff (releaseMs * releaseScale, sr);
+            const double crest = std::clamp (slowEnv - fastEnv, 3.0, 15.0);
+            releaseScale = 2.0 * std::pow (10.0, -(crest - 3.0) / 12.0);   // 2 .. 0.2
+            relCoeff = onePoleCoeffD ((double) releaseMs * releaseScale, sr);
         }
     }
 
-    const float coeff = targetGainDb < state ? attCoeff : relCoeff;
-    state = targetGainDb + coeff * (state - targetGainDb);
-    if (std::abs (state) < 1.0e-12f)
-        state = 0.0f;
-    return state;
+    const double target = (double) targetGainDb;
+    const double coeff = target < state ? attCoeff : relCoeff;
+    state = target + coeff * (state - target);
+    if (std::abs (state) < 1.0e-12)
+        state = 0.0;
+    return (float) state;
 }
 
 //==============================================================================
@@ -217,33 +228,48 @@ void DelayLine::process (float* data, int numSamples) noexcept
 
 //==============================================================================
 // Ring of capacity = maxWindow + 1 entries (never full): front = head, back = tail - 1. Entries are kept in
-// decreasing value order; stamps use wrap-safe unsigned differences.
+// decreasing value order; stamps use wrap-safe unsigned differences. `history` keeps the last maxWindow inputs
+// (histFill of them valid since reset) so a growing window can be rebuilt exactly.
 void SlidingMax::prepare (int maxWindow)
 {
     capacity = std::max (1, maxWindow) + 1;
     values.assign ((size_t) capacity, 0.0f);
     stamps.assign ((size_t) capacity, 0);
+    history.assign ((size_t) (capacity - 1), 0.0f);
     window = std::clamp (window, 1, capacity - 1);
     reset();
 }
 
 void SlidingMax::setWindow (int samples) noexcept
 {
-    window = std::clamp (samples, 1, std::max (1, capacity - 1));
+    const int w = std::clamp (samples, 1, std::max (1, capacity - 1));
+    const bool grows = w > window;
+    window = w;
+    if (! grows || capacity < 2)
+        return;   // shrinking: process() drops the entries that left the window
+
+    // Rebuild the deque from the last min (window, histFill) inputs, oldest first. history[histPos - 1] is the
+    // newest input (stamp `time`).
+    head = tail = 0;
+    const int n = std::min (window, histFill);
+    const int histSize = capacity - 1;
+    for (int age = n - 1; age >= 0; --age)
+    {
+        int idx = histPos - 1 - age;
+        while (idx < 0)
+            idx += histSize;
+        push (history[(size_t) idx], (int) ((unsigned) time - (unsigned) age));
+    }
 }
 
 void SlidingMax::reset() noexcept
 {
     head = tail = time = 0;
+    histPos = histFill = 0;
 }
 
-float SlidingMax::process (float x) noexcept
+void SlidingMax::push (float x, int stamp) noexcept
 {
-    if (capacity < 2)
-        return x;
-
-    time = (int) ((unsigned) time + 1u);
-
     while (head != tail)
     {
         const int back = tail == 0 ? capacity - 1 : tail - 1;
@@ -254,8 +280,22 @@ float SlidingMax::process (float x) noexcept
     }
 
     values[(size_t) tail] = x;
-    stamps[(size_t) tail] = time;
+    stamps[(size_t) tail] = stamp;
     tail = tail + 1 == capacity ? 0 : tail + 1;
+}
+
+float SlidingMax::process (float x) noexcept
+{
+    if (capacity < 2)
+        return x;
+
+    time = (int) ((unsigned) time + 1u);
+
+    history[(size_t) histPos] = x;
+    histPos = histPos + 1 == capacity - 1 ? 0 : histPos + 1;
+    histFill = std::min (histFill + 1, capacity - 1);
+
+    push (x, time);
 
     while ((unsigned) time - (unsigned) stamps[(size_t) head] >= (unsigned) window)
         head = head + 1 == capacity ? 0 : head + 1;

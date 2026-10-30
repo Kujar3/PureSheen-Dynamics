@@ -1,5 +1,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <cstdlib>
 #include <iostream>
 
 // PureSheenDev: developer tool built from the same sources as the plugin.
@@ -10,11 +11,13 @@
 //                       [--block <n>] [id=value ...]
 //                                         -> plays <in.wav> through the processor like a host would, writes the
 //                                            latency-compensated result and prints loudness / true peak / LRA
+//   PureSheenDev icon <out.png> [size]    -> renders the app / plugin icon (resources/icon/logo_512.png)
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
 int runRender (const juce::File& input, const juce::File& output,     // Render.cpp
                const juce::StringArray& options);
+int runIcon (const juce::File& output, int size);                     // Icon.cpp
 
 int main (int argc, char** argv)
 {
@@ -38,7 +41,11 @@ int main (int argc, char** argv)
                           cwd.getChildFile (juce::String::fromUTF8 (argv[3])), options);
     }
 
+    if (command == "icon" && argc > 2)
+        return runIcon (cwd.getChildFile (juce::String::fromUTF8 (argv[2])), argc > 3 ? std::atoi (argv[3]) : 512);
+
     std::cout << "usage: PureSheenDev selftest | snapshot <outDir> | render <in.wav> <out.wav> [--preset <name>]\n"
-                 "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [id=value ...]\n";
+                 "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [id=value ...]\n"
+                 "       icon <out.png> [size]\n";
     return 2;
 }

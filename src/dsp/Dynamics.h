@@ -4,7 +4,7 @@
 
 #include <memory>
 
-// Multiband Dynamics (reference parity): up to 4 bands, per band a compressor (downward / upward) and a limiter (downward /
+// Multiband Dynamics (reference-suite parity): up to 4 bands, per band a compressor (downward / upward) and a limiter (downward /
 // upward expansion), per band parallel mix and gain. Owner: dsp-dynamics. Implementation: Dynamics.cpp.
 //
 //   - Crossover: ps::Crossover (Analog / Digital / Hybrid); one band = no split
@@ -14,7 +14,7 @@
 //   - Stereo mode: detector = max (|L|, |R|) per band, one gain for both channels. M/S: independent, ch1 uses set B
 //   - Lookahead 0..10 ms: the audio is delayed, the detector is not (latency = lookahead + crossover latency)
 //   - Compressor: GainCurve + GainSmoother (attack/release, adaptive release); Limiter: second GainCurve after the
-//     compressor with its own times (fast, high ratio), not brickwall (reference parity: 30:1 may overshoot)
+//     compressor with its own times (fast, high ratio), not brickwall (reference-suite parity: 30:1 may overshoot)
 //   - Auto gain: per band makeup = - (average gain change of that band at a -18 dBFS RMS pink reference level through
 //     the static curves), recomputed when the curve changes (no level-dependent pumping)
 //   - Parallel: band out = dry_band * (1 - mix) + wet_band * mix (same latency)

@@ -4,7 +4,7 @@
 
 #include <memory>
 
-// Maximizer: the final loudness limiter (reference parity; our own algorithms). Owner: dsp-maximizer.
+// Maximizer: the final loudness limiter (reference-suite parity; our own algorithms). Owner: dsp-maximizer.
 // Implementation: Maximizer.cpp (+ MaximizerModes.cpp etc. as needed).
 //
 // Signal flow:  x * gain -> [Upward Compress] -> [Transient Emphasis] -> [Soft Clip (4x OS)] -> limiter (mode) ->
@@ -56,6 +56,7 @@ public:
     bool handlesDelta() const noexcept override { return true; }
 
     const MaximizerMeters& getMeters() const noexcept;
+    MaximizerMeters& getMeters() noexcept;             // (added) for the UI's exchange() of the peak GR
 
     // Learn Input Gain (message thread starts it; the audio thread does the listening).
     void startLearn() noexcept;

@@ -6,7 +6,10 @@
 //   LinearPhase : FIR half-bands (>= 100 dB stopband, passband ripple < 0.01 dB up to 0.45 fs), latency reported in
 //                 base-rate samples (rounded up; the remainder is padded with a fractional delay so the reported value
 //                 is exact)
-//   MinimumPhase: polyphase IIR half-bands (low latency, small phase shift at the top of the band)
+//   MinimumPhase: polyphase IIR half-bands (low latency, small phase shift at the top of the band); latency = the
+//                 round trip's group delay at DC rounded to the nearest base-rate sample (2x / 4x / 8x: 3 / 5 / 6;
+//                 the phase is not linear, so a dry path delayed by it lines up within half a sample at low
+//                 frequencies only)
 // Realtime: prepare() allocates; process functions are allocation-free.
 namespace ps
 {

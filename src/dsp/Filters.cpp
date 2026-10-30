@@ -219,6 +219,16 @@ namespace
             && std::isfinite (c.a2) && std::abs (c.a2) < 0.99999 && std::abs (c.a1) < 1.0 + c.a2 - 1.0e-9;
     }
 
+    // Largest pole radius of 1 + a1 z^-1 + a2 z^-2.
+    double maxPoleRadius (const BiquadCoeffs& c) noexcept
+    {
+        const double disc = c.a1 * c.a1 - 4.0 * c.a2;
+        if (disc < 0.0)
+            return std::sqrt (std::max (0.0, c.a2));
+        const double s = std::sqrt (disc);
+        return 0.5 * std::max (std::abs (-c.a1 + s), std::abs (-c.a1 - s));
+    }
+
     double worstDb (const BiquadCoeffs& c, const Grid& g) noexcept
     {
         if (! isStable (c))
@@ -280,6 +290,12 @@ namespace
         double lambda = 1.0e-2;
         double cost = gridCost (c, g);
 
+        // The fit may move the poles, but never much closer to the unit circle than the closed-form (impulse-
+        // invariant) poles: at most half their distance, i.e. at most twice the ringing time. Without this bound a
+        // narrow bell or resonant pass near Nyquist could be "fitted" with a pole within 1e-6 of |z| = 1 (rings for
+        // seconds).
+        const double radiusLimit = 1.0 - 0.5 * (1.0 - std::min (maxPoleRadius (c), 1.0));
+
         for (int it = 0; it < 16; ++it)
         {
             double m[5][6] {};
@@ -316,7 +332,7 @@ namespace
                 t.b1 = -t.b0;
             }
 
-            const double tc = isStable (t) ? gridCost (t, g) : 1.0e300;
+            const double tc = (isStable (t) && maxPoleRadius (t) <= radiusLimit) ? gridCost (t, g) : 1.0e300;
             if (tc < cost)
             {
                 c = t;
@@ -637,15 +653,56 @@ void Biquad::process (float* data, int numSamples) noexcept
 }
 
 //==============================================================================
+// SmoothedBiquad: trapezoidal state-variable filter (A. Simper's form), states ic1, ic2:
+//     v3 = x - ic2,  v1 = a1 ic1 + a2 v3,  v2 = ic2 + a2 ic1 + a3 v3,  ic1' = 2 v1 - ic1,  ic2' = 2 v2 - ic2
+//     a1 = 1 / (1 + g (g + k)), a2 = g a1, a3 = g a2;   y = m0 x + m1 v1 + m2 v2
+// With no input the states map through M = [[1 - g^2 - g k, -2 g], [2 g, 1 - g^2 + g k]] / (1 + g^2 + g k), whose
+// singular values are 1 and |1 + g^2 - g k| / (1 + g^2 + g k): ||M|| = 1 for every g > 0, k > 0, so the state norm
+// can never grow, whatever sequence of (g, k) the glide produces (unconditional stability under modulation).
+void SmoothedBiquad::updateGains() noexcept
+{
+    const double g = current.g;
+    a1 = 1.0 / (1.0 + g * (g + current.k));
+    a2 = g * a1;
+    a3 = g * a2;
+}
+
 void SmoothedBiquad::setTarget (const BiquadCoeffs& c) noexcept
 {
-    target = c;
+    if (! (std::isfinite (c.b0) && std::isfinite (c.b1) && std::isfinite (c.b2) && std::isfinite (c.a1)
+           && std::isfinite (c.a2)))
+        return;
+
+    // Denominator -> (g, k): the bilinear SVF has 1 + a1 + a2 = 4 g^2 / D, 1 - a1 + a2 = 4 / D, 1 - a2 = 2 g k / D
+    // (D = 1 + g k + g^2). A stable denominator has all three > 0.
+    const double pDc = 1.0 + c.a1 + c.a2, pNy = 1.0 - c.a1 + c.a2, pMid = 1.0 - c.a2;
+    if (! (pDc > 1.0e-30 && pNy > 1.0e-30 && pMid > 1.0e-30))
+        return;
+
+    Svf t;
+    t.g = std::sqrt (pDc / pNy);
+    t.k = 2.0 * pMid / (t.g * pNy);
+    const double D = 4.0 / pNy;
+    // Numerator: B = m0 A + (m1 g / D) (1 - z^-2) + (m2 g^2 / D) (1 + z^-1)^2
+    t.m0 = (c.b0 - c.b1 + c.b2) / pNy;               // response at Nyquist
+    const double q = 0.5 * (c.b1 - t.m0 * c.a1);      // m2 g^2 / D
+    const double p = c.b0 - t.m0 - q;                 // m1 g / D
+    t.m1 = p * D / t.g;
+    t.m2 = q * D / (t.g * t.g);
+    if (! (std::isfinite (t.g) && std::isfinite (t.k) && std::isfinite (t.m1) && std::isfinite (t.m2)))
+        return;
+
+    target = t;
+    if (remaining == 0 && t.g == current.g && t.k == current.k && t.m0 == current.m0 && t.m1 == current.m1
+        && t.m2 == current.m2)
+        return;   // unchanged design (callers may re-send it every block): no ramp, no per-sample work
+
     const double inv = 1.0 / (double) rampLength;
-    step.b0 = (target.b0 - current.b0) * inv;
-    step.b1 = (target.b1 - current.b1) * inv;
-    step.b2 = (target.b2 - current.b2) * inv;
-    step.a1 = (target.a1 - current.a1) * inv;
-    step.a2 = (target.a2 - current.a2) * inv;
+    step.g = (target.g - current.g) * inv;
+    step.k = (target.k - current.k) * inv;
+    step.m0 = (target.m0 - current.m0) * inv;
+    step.m1 = (target.m1 - current.m1) * inv;
+    step.m2 = (target.m2 - current.m2) * inv;
     remaining = rampLength;
 }
 
@@ -653,11 +710,12 @@ void SmoothedBiquad::snapToTarget() noexcept
 {
     current = target;
     remaining = 0;
+    updateGains();
 }
 
 void SmoothedBiquad::reset() noexcept
 {
-    z1 = z2 = 0.0;
+    ic1 = ic2 = 0.0;
 }
 
 double SmoothedBiquad::processSample (double x) noexcept
@@ -670,20 +728,24 @@ double SmoothedBiquad::processSample (double x) noexcept
         }
         else
         {
-            current.b0 += step.b0;
-            current.b1 += step.b1;
-            current.b2 += step.b2;
-            current.a1 += step.a1;
-            current.a2 += step.a2;
+            // convex steps: g > 0 and k > 0 hold all the way
+            current.g += step.g;
+            current.k += step.k;
+            current.m0 += step.m0;
+            current.m1 += step.m1;
+            current.m2 += step.m2;
         }
+        updateGains();
     }
 
-    const double y = current.b0 * x + z1;
-    z1 = current.b1 * x - current.a1 * y + z2;
-    z2 = current.b2 * x - current.a2 * y;
+    const double v3 = x - ic2;
+    const double v1 = a1 * ic1 + a2 * v3;
+    const double v2 = ic2 + a2 * ic1 + a3 * v3;
+    ic1 = 2.0 * v1 - ic1;
+    ic2 = 2.0 * v2 - ic2;
 
-    if (std::abs (z1) < 1.0e-30) z1 = 0.0;
-    if (std::abs (z2) < 1.0e-30) z2 = 0.0;
-    return y;
+    if (std::abs (ic1) < 1.0e-30) ic1 = 0.0;
+    if (std::abs (ic2) < 1.0e-30) ic2 = 0.0;
+    return current.m0 * x + current.m1 * v1 + current.m2 * v2;
 }
 } // namespace ps

@@ -70,8 +70,8 @@ struct SlotParams
 };
 void readSlotParams (ParamValues, ModuleType, SlotParams&) noexcept;
 
-// Channel modes each module offers (reference parity): EQ1/EQ2 all; Dynamics, Exciter Stereo + M/S; Imager, Maximizer
-// Stereo only (the choice list of "<prefix>.chMode" contains only these, in this order).
+// Channel modes each module offers (reference-suite parity): EQ1/EQ2 all; Dynamics, Exciter Stereo + M/S; Imager,
+// Maximizer Stereo only (the choice list of "<prefix>.chMode" contains only these, in this order).
 std::vector<ChannelMode> supportedChannelModes (ModuleType);
 
 //==============================================================================

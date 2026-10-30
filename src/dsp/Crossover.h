@@ -17,6 +17,13 @@
 //              (1 up to 50 kHz, 2 up to 100 kHz, 4, 8), i.e. 75.4 ms at 44.1 kHz, 69.3 ms at 48 kHz
 //   - crossover frequency changes are click-free (Analog/Hybrid: smoothed coefficients; Digital: crossfaded kernels)
 //   - one band = passthrough (Digital still delays by its latency so a band-count change never shifts latency)
+//   - type changes are click-free: the new engine is warmed and crossfaded in (20 ms raised cosine). Digital's input
+//     history always runs (one FFT per partition), so it has valid output at once; an Analog / Hybrid engine is run
+//     over the last D input samples first (plus a silent settle of up to ~0.2 s for crossovers below ~45 Hz when
+//     coming from the other IIR type; meanwhile the old type stays audible). A switch to or from Digital changes the
+//     latency: during the 20 ms fade the old type (old latency) and the new one (new latency) are mixed, after that
+//     only the new one plays; the caller reports getLatencySamples (new type) from the moment of the switch.
+//     A switch back during a fade reverses it; any other request waits for the fade to end.
 //
 // Realtime: prepare() allocates; setup() and process() are allocation-free and lock-free. Digital kernels are
 // designed inside process() incrementally or from precomputed tables - never with allocation.

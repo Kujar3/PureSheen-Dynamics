@@ -184,16 +184,32 @@ TEST_CASE ("conv. kernel swaps crossfade over exactly one partition")
 
 TEST_CASE ("conv. kernel replacement from another thread is lock-free and never tears")
 {
+    // Two distinct broadband kernels spanning 8 partitions, broadband input. Every output partition must be exactly
+    // one of: all A, all B, a raised-cosine fade A -> B or B -> A (each against a double-precision reference). A torn
+    // install (the audio thread reading a slot the producer is writing) would mix partitions of both kernels and miss
+    // all four by orders of magnitude.
     Convolver c;
-    const int P = 256;
-    c.prepare (2048, P, 2);
+    const int P = 256, taps = 2048, block = 512, numBlocks = 300;
+    c.prepare (taps, P, 2);
+    REQUIRE (c.getLatencySamples() == P);
 
-    // kernels: gain g at tap 0 (+ a long tail of exact zeros, so every partition is in use)
-    std::vector<float> kA (2048, 0.0f), kB (2048, 0.0f);
-    kA[0] = 1.0f;
-    kB[0] = 0.25f;
-    c.setKernel (0, kA.data(), 2048);
-    c.setKernel (1, kA.data(), 2048);
+    std::vector<float> kA ((size_t) taps), kB ((size_t) taps);
+    pstest::Lcg la (101u), lb (202u);
+    for (int i = 0; i < taps; ++i)
+    {
+        kA[(size_t) i] = 0.05f * la.next();
+        kB[(size_t) i] = 0.05f * lb.next();
+    }
+    const size_t total = (size_t) block * (size_t) numBlocks;
+    const auto xL = pstest::whiteNoise (0.5, (double) total / 48000.0 + 0.01, 48000.0, 31u);
+    const auto xR = pstest::whiteNoise (0.5, (double) total / 48000.0 + 0.01, 48000.0, 32u);
+    REQUIRE (xL.size() >= total && xR.size() >= total);
+    const std::vector<float> inL (xL.begin(), xL.begin() + (long long) total), inR (xR.begin(), xR.begin() + (long long) total);
+    const std::vector<double> ref[2][2] { { directConvolution (inL, kA), directConvolution (inL, kB) },
+                                          { directConvolution (inR, kA), directConvolution (inR, kB) } };
+
+    CHECK (c.setKernel (0, kA.data(), taps));
+    CHECK (c.setKernel (1, kA.data(), taps));
 
     std::atomic<bool> stop { false };
     std::atomic<int> installs { 0 };
@@ -202,8 +218,8 @@ TEST_CASE ("conv. kernel replacement from another thread is lock-free and never 
         int i = 0;
         while (! stop.load())
         {
-            const auto& k = ((i / 2) & 1) ? kA : kB;
-            if (c.setKernel (i % 2, k.data(), 2048))
+            const auto& k = ((i / 2) & 1) ? kA : kB;   // per channel: B, A, B, A, ...
+            if (c.setKernel (i % 2, k.data(), taps))
             {
                 ++i;
                 installs.fetch_add (1);
@@ -215,40 +231,71 @@ TEST_CASE ("conv. kernel replacement from another thread is lock-free and never 
         }
     });
 
-    std::vector<float> L (512), R (512);
-    float* ch[2] { L.data(), R.data() };
-    bool ok = true;
-    double maxStep = 0.0;
-    float prevL = 1.0f, prevR = 1.0f;
-    int blocks = 0;
-    for (; blocks < 4000; ++blocks)
+    std::vector<float> outL = inL, outR = inR;
+    for (int b = 0; b < numBlocks; ++b)
     {
-        std::fill (L.begin(), L.end(), 1.0f);
-        std::fill (R.begin(), R.end(), 1.0f);
-        c.process (ch, 512);
-        if (blocks < 2)
-        {
-            prevL = L[511];
-            prevR = R[511];
-            continue;
-        }
-        for (int i = 0; i < 512; ++i)
-        {
-            ok = ok && std::isfinite (L[(size_t) i]) && L[(size_t) i] >= 0.25f - 1e-5f && L[(size_t) i] <= 1.0f + 1e-5f;
-            ok = ok && std::isfinite (R[(size_t) i]) && R[(size_t) i] >= 0.25f - 1e-5f && R[(size_t) i] <= 1.0f + 1e-5f;
-            maxStep = std::max (maxStep, (double) std::max (std::abs (L[(size_t) i] - prevL), std::abs (R[(size_t) i] - prevR)));
-            prevL = L[(size_t) i];
-            prevR = R[(size_t) i];
-        }
+        float* ch[2] { outL.data() + (size_t) b * block, outR.data() + (size_t) b * block };
+        c.process (ch, block);
     }
     stop = true;
     producer.join();
 
+    // classify every partition (output partition j plays the input of partition j - 1)
+    double worst = 0.0;
+    int fades = 0, unmatched = 0;
+    const int numPartitions = (int) (total / (size_t) P);
+    for (int chn = 0; chn < 2; ++chn)
+    {
+        const auto& out = chn == 0 ? outL : outR;
+        int lastSteady = 0;   // 0 = A, 1 = B
+        for (int j = 2; j < numPartitions; ++j)
+        {
+            double err[4] { 0.0, 0.0, 0.0, 0.0 };   // A, B, A -> B, B -> A
+            bool finite = true;
+            for (int i = 0; i < P; ++i)
+            {
+                const size_t n = (size_t) j * (size_t) P + (size_t) i;
+                const double y = (double) out[n];
+                finite = finite && std::isfinite (y);
+                const double a = ref[chn][0][n - (size_t) P], bb = ref[chn][1][n - (size_t) P];
+                const double r = 0.5 - 0.5 * std::cos (((double) i + 0.5) * pstest::kPi / (double) P);
+                err[0] = std::max (err[0], std::abs (y - a));
+                err[1] = std::max (err[1], std::abs (y - bb));
+                err[2] = std::max (err[2], std::abs (y - (a + (bb - a) * r)));
+                err[3] = std::max (err[3], std::abs (y - (bb + (a - bb) * r)));
+            }
+            int best = 0;
+            for (int k = 1; k < 4; ++k)
+                if (err[k] < err[best])
+                    best = k;
+            if (! finite || err[best] > 1.0e-4)
+                ++unmatched;
+            // a fade must start from the kernel that was playing
+            if (best == 2 || best == 3)
+            {
+                ++fades;
+                if ((best == 2 && lastSteady != 0) || (best == 3 && lastSteady != 1))
+                    ++unmatched;
+                lastSteady = best == 2 ? 1 : 0;
+            }
+            else if (best != lastSteady)
+            {
+                ++unmatched;   // a jump between kernels without a fade
+                lastSteady = best;
+            }
+            worst = std::max (worst, err[best]);
+        }
+    }
+
     pstest::note ("kernels installed while processing", installs.load());
-    pstest::note ("largest per-sample gain step", maxStep);
+    pstest::note ("crossfaded partitions found", fades);
+    pstest::note ("worst error against the matching reference", worst);
+    pstest::note ("partitions matching no reference", unmatched);
     CHECK (installs.load() > 100);
-    CHECK (ok);
-    CHECK (maxStep <= 0.75 * 1.6 / P);   // raised-cosine / linear fade over one partition, no jumps
+    CHECK (fades >= installs.load() - 2);   // every install is heard as exactly one fade (the last may be pending)
+    CHECK (fades <= installs.load());
+    CHECK_EQ (unmatched, 0);
+    CHECK (worst < 1.0e-4);
 }
 
 TEST_CASE ("conv. process does not allocate")

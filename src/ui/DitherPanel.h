@@ -17,6 +17,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;   // a click on the bit meter clears its peak hold
 
 private:
     struct Impl;

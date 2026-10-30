@@ -1,26 +1,1029 @@
-// STUB (skeleton): replaced by dsp-maximizer
 #include "dsp/Maximizer.h"
 
+#include "dsp/MaximizerBands.h"
+#include "dsp/MaximizerLearn.h"
+#include "dsp/MaximizerStages.h"
+#include "core/Loudness.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstring>
+
+#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
+ #include <xmmintrin.h>
+ #define PS_MAX_HAS_SSE 1
+#endif
+
+// Maximizer (dsp-maximizer).
+//
+// Pipeline (every stage in double precision where gains are formed):
+//   x * Gain -> Upward Compress -> Transient Emphasis -> Soft Clip (4x) -> mode stage -> Guard -> Fine -> clamp
+// - Output Level is the ceiling, not an output gain: material below it passes untouched (at neutral settings the
+//   module is an exact delay). Gain and Output Level are smoothed over 30 ms. The ceiling (and the True Peak switch)
+//   is stamped on every sample when it enters, and each stage limits a sample against its own stamp, so a ceiling or
+//   True Peak change is never violated while it travels through the lookahead: the limiters see it coming and ramp.
+// - Mode stage:
+//     Low Latency : nothing (the Guard alone, character sets its attack 0.02-0.25 ms and release 5-600 ms)
+//     Smooth      : LimiterCore, 5 ms lookahead, two-stage release (fast stage for transients, slow stage that charges
+//                   on sustained limiting), slower release and extra hold on bass-heavy material
+//     Transparent : Smooth + transient preservation: on detected transients the core leaves part of the reduction to
+//                   the fast Guard, so a hit is shaved in < 1 ms instead of ducking what comes before it
+//     Aggressive  : 7 ms lookahead, fast recovery; styles Clipping (near-clipping times), Crisp (short, transient
+//                   preserving), Balanced, Pumping (slow stage charges quickly: audible breathing)
+//     Spectral    : SpectralStage (critical-band groups, water-filling; it does 45 % of the needed reduction in dB,
+//                   30 % in the Transient style) + LimiterCore 2.5 ms for the rest
+//     Multiband   : MultibandStage (4 linear-phase bands, contribution-ordered) + LimiterCore 2.5 ms
+//   With True Peak on, the cores also detect half-sample peaks and aim 0.03 dB under the ceiling.
+// - Guard: true-peak limiter on a 1/8-sample grid containing ps::TruePeakMeter's points (sample peak with True Peak
+//   off), target 0.02 dB under the ceiling with True Peak on; Fine: the same at the exact ceiling with a 4-sample
+//   attack (removes the last hundredths of a dB the Guard's gain modulation can leave); then a sample clamp at the
+//   ceiling (makes the sample-peak contract exact; never active with True Peak on in practice).
+// - Character 0..10 maps to attack / release of every stage (0 = clip-like, 10 = very slow); styles are presets of
+//   the same controls. Stereo Independence: Transient = the fast release stage and the Guard, Sustain = the slow stage
+//   and the spectral / low multiband bands.
+// - Upward Compress (our choice where the research is silent): linked RMS detector (10 ms attack / 150 ms release),
+//   lift = amount * clamp ((-12 dB - level) / 20 dB, 0, 1), faded out below -60 dB so noise floors are not raised;
+//   0 dBFS material gets no lift. Lift rises over 200 ms, falls over 20 ms.
+// - Transient Emphasis: up to +8 dB on onsets (0.3 ms / 15 ms envelope against a 20 ms / 200 ms one), applied before
+//   the limiter, so the limiter's gain envelope and the soft clip shape the hits.
+// - Soft Clip: relative to the output level (onset -3 / -9 / -30 dB), residue form on 4x oversampled audio (linear
+//   phase; minimum phase in Low Latency to keep it ~1 ms).
+// - Mode changes: the output fades out (raised cosine 10 ms), the pipeline is flushed and reconfigured, refilled for
+//   the new latency and faded in. Latency is constant per mode and sample rate (not affected by True Peak, styles,
+//   character or soft clip).
+// - Delta: output - (x * Gain) aligned with the output (what upward compression, emphasis, clipping and limiting
+//   changed). Written to ProcessContext::deltaOut when given; with only ProcessContext::delta set (older chain), the
+//   delta replaces the output.
+// - Learn: the audio thread copies 5 s of non-silent input (blocks above -70 dBFS RMS; the transport state is not
+//   required, so it also works in a stopped FL Studio with live input). takeLearnedGain() (message thread) then
+//   searches the gain whose simulated output from the complete selected pipeline reaches the learn target in
+//   integrated LUFS (ps::LoudnessMeter), 0..20 dB. Settings are captured with the completed input, and simulation
+//   excludes pipeline latency while rendering the full captured duration.
+// - Meters: gainReductionDb = the largest limiter change of the last block (<= 0, all limiting stages; for the band
+//   stages their energy-weighted change); peakGainReductionDb holds the most negative value since the UI last
+//   exchanged it (also <= 0).
 namespace ps
 {
+namespace
+{
+using namespace maxi;
+
+constexpr double kLn10Over20 = 0.11512925464970228;
+constexpr double kGuardTpMargin = 0.99770006382;   // -0.02 dB
+constexpr double kCoreTpMargin = 0.99655206468;    // -0.03 dB (the core also detects half-sample peaks)
+constexpr double kFadeMs = 10.0;
+constexpr double kLearnSeconds = 5.0;
+
+double lerpExp (double a, double b, double t) noexcept { return a * std::pow (b / a, t); }
+
+// The largest float that is <= v (so a float sample clamped to it is <= v in double).
+float floatAtMost (double v) noexcept
+{
+    float f = (float) v;
+    if ((double) f > v)
+        f = std::nextafter (f, 0.0f);
+    return f;
+}
+
+struct RampD
+{
+    double current = 1.0, target = 1.0, step = 0.0;
+    int remaining = 0, rampSamples = 1;
+
+    void setTarget (double v) noexcept
+    {
+        if (v == target)
+            return;
+        target = v;
+        remaining = rampSamples;
+        step = (target - current) / (double) rampSamples;
+    }
+    void snap (double v) noexcept
+    {
+        current = target = v;
+        remaining = 0;
+        step = 0.0;
+    }
+    double next() noexcept
+    {
+        if (remaining > 0)
+            current = (--remaining == 0) ? target : current + step;
+        return current;
+    }
+};
+
+struct DenormalGuard
+{
+#if PS_MAX_HAS_SSE
+    unsigned int saved = 0;
+    DenormalGuard() noexcept : saved (_mm_getcsr()) { _mm_setcsr (saved | 0x8040u); }   // FTZ | DAZ
+    ~DenormalGuard() { _mm_setcsr (saved); }
+#endif
+};
+
+enum class Phase { Running, FadeOut, Flush, Fill, FadeIn };
+} // namespace
+
+//==============================================================================
 struct Maximizer::Impl
 {
     MaximizerMeters meters;
+    double sr = 48000.0;
+    bool prepared = false;
+    int family = 1;
+
+    MaximizerParams params;
+    bool haveParams = false, settingsDirty = true, domainUnlinked = false;
+    bool snapNext = true;   // set by resetAll(): the first setParams after a reset applies its values directly
+    MaximizerMode activeMode = MaximizerMode::Transparent, targetMode = MaximizerMode::Transparent;
+    std::atomic<int> reportedLatency { 0 };
+    std::array<int, (int) MaximizerMode::Count> modeLatency {};
+
+    // stages
+    SoftClipStage clip;
+    LimiterCore core;
+    SpectralStage spectral;
+    MultibandStage multiband;
+    Guard guard, fine;
+    int clipLatencyLinear = 0, clipLatencyMinimum = 0;
+
+    // current configuration (of activeMode)
+    int latClip = 0, latStage = 0, latCore = 0, latGuard = 0, latFine = 0, latTotal = 0;
+
+    // smoothing
+    RampD gain, ceiling;
+    double upAmountDb = 0.0, upTargetDb = 0.0, upStep = 0.0;
+    std::array<double, 2> upEnv {}, upLiftDb {};
+    double kUpAtt = 0.0, kUpRel = 0.0, kLiftUp = 0.0, kLiftDown = 0.0;
+    double emAmount = 0.0, emTarget = 0.0, emStep = 0.0;
+    std::array<double, 2> emFast {}, emSlow {}, emBoostDb {};
+    double kEmFastAtt = 0.0, kEmFastRel = 0.0, kEmSlowAtt = 0.0, kEmSlowRel = 0.0, kEmGainAtt = 0.0, kEmGainRel = 0.0;
+
+    // stamps / reference rings (index = absolute input sample index)
+    std::vector<double> ceilRing;
+    std::vector<std::uint8_t> tpRing;
+    std::array<std::vector<float>, 2> refRing;
+    std::vector<float> fadeRing;
+    long long ringMask = 0;
+    long long counter = 0;
+
+    // mode switching
+    Phase phase = Phase::Running;
+    int fadeLength = 480, fadePos = 0, phaseCount = 0;
+
+    // chunk buffers
+    float buf[6][2][kChunk] {};
+    double thrBuf[kChunk] {};
+    std::uint8_t tpBuf[kChunk] {};
+
+    // learn (audio thread writes the capture, message thread reads it once it is complete)
+    std::array<std::vector<float>, 2> capture;
+    int captureLength = 0, captured = 0;
+    unsigned audioLearnGen = 0;
+    LearnCaptureMailbox learnCapture;
+    MaximizerParams capturedParams;
+    bool capturedUnlinked = false;
+    LoudnessMeter simMeter;
+    float simBuf[2][kChunk] {};
+
+    // meters
+    double upMeterDb = 0.0;
+
+    //==========================================================================
+    int engineLatencyFor (MaximizerMode m) const noexcept
+    {
+        switch (m)
+        {
+            case MaximizerMode::LowLatency:  return 0;
+            case MaximizerMode::Spectral:    return spectral.getLatency() + coreLookaheadFor (m) + kMidDetectorDelay;
+            case MaximizerMode::Multiband:   return multiband.getLatency() + coreLookaheadFor (m) + kMidDetectorDelay;
+            default:                         return coreLookaheadFor (m) + kMidDetectorDelay;
+        }
+    }
+
+    int coreLookaheadFor (MaximizerMode m) const noexcept
+    {
+        const double ms = m == MaximizerMode::Aggressive ? 7.0
+                        : (m == MaximizerMode::Smooth || m == MaximizerMode::Transparent) ? 5.0 : 2.5;
+        return std::max (2, (int) std::lround (msToSamples (ms, sr)));
+    }
+
+    int guardMaxAttackFor (MaximizerMode m) const noexcept
+    {
+        const double ms = m == MaximizerMode::LowLatency ? 0.25 : 0.75;
+        return std::max (2, (int) std::lround (msToSamples (ms, sr)));
+    }
+
+    static constexpr int kFineAttack = 4;
+
+    int latencyFor (MaximizerMode m) const noexcept
+    {
+        const int c = m == MaximizerMode::LowLatency ? clipLatencyMinimum : clipLatencyLinear;
+        return c + engineLatencyFor (m) + (guardMaxAttackFor (m) + kTpDetectorDelay + 6)
+               + (kFineAttack + kTpDetectorDelay + 6);
+    }
+
+    //==========================================================================
+    void prepare (double sampleRate)
+    {
+        sr = sampleRate > 0.0 ? sampleRate : 48000.0;
+        family = sr <= 50000.0 ? 1 : (sr <= 100000.0 ? 2 : (sr <= 200000.0 ? 4 : 8));
+
+        clip.prepare (sr);
+        clip.setMinimumPhase (false);
+        clipLatencyLinear = clip.getLatency();
+        clip.setMinimumPhase (true);
+        clipLatencyMinimum = clip.getLatency();
+
+        core.prepare (sr, 8.0);
+        spectral.prepare (sr);
+        multiband.prepare (sr);
+        guard.prepare (sr, guardMaxAttackFor (MaximizerMode::Smooth));
+        fine.prepare (sr, kFineAttack);
+        fine.setMaxAttack (kFineAttack);
+
+        int maxLat = 0;
+        for (int m = 0; m < (int) MaximizerMode::Count; ++m)
+        {
+            modeLatency[(size_t) m] = latencyFor ((MaximizerMode) m);
+            maxLat = std::max (maxLat, modeLatency[(size_t) m]);
+        }
+        const int ringSize = nextPow2 (maxLat + 4 * kChunk + 64);
+        ringMask = ringSize - 1;
+        ceilRing.assign ((size_t) ringSize, 1.0);
+        tpRing.assign ((size_t) ringSize, 1);
+        fadeRing.assign ((size_t) ringSize, 0.0f);
+        for (auto& r : refRing)
+            r.assign ((size_t) ringSize, 0.0f);
+
+        gain.rampSamples = ceiling.rampSamples = std::max (1, (int) std::lround (msToSamples (30.0, sr)));
+        fadeLength = std::max (1, (int) std::lround (msToSamples (kFadeMs, sr)));
+        upStep = 12.0 / std::max (1.0, msToSamples (50.0, sr));      // amount ramps: full range in 50 ms
+        emStep = 1.0 / std::max (1.0, msToSamples (50.0, sr));
+        kUpAtt = chargeCoeff (msToSamples (10.0, sr));
+        kUpRel = chargeCoeff (msToSamples (150.0, sr));
+        kLiftUp = chargeCoeff (msToSamples (200.0, sr));
+        kLiftDown = chargeCoeff (msToSamples (20.0, sr));
+        kEmFastAtt = chargeCoeff (msToSamples (0.3, sr));
+        kEmFastRel = chargeCoeff (msToSamples (15.0, sr));
+        kEmSlowAtt = chargeCoeff (msToSamples (20.0, sr));
+        kEmSlowRel = chargeCoeff (msToSamples (200.0, sr));
+        kEmGainAtt = chargeCoeff (msToSamples (0.5, sr));
+        kEmGainRel = chargeCoeff (msToSamples (20.0, sr));
+
+        captureLength = (int) std::lround (kLearnSeconds * sr);
+        for (auto& c : capture)
+            c.assign ((size_t) captureLength, 0.0f);
+        simMeter.prepare (sr);
+        learnCapture.cancel();
+
+        prepared = true;
+        if (! haveParams)
+            params = MaximizerParams {};
+        targetMode = params.mode;
+        resetAll();
+    }
+
+    //==========================================================================
+    void configure (MaximizerMode m) noexcept
+    {
+        activeMode = m;
+        const bool ll = m == MaximizerMode::LowLatency;
+        clip.setMinimumPhase (ll);
+        core.setLookahead (coreLookaheadFor (m));
+        guard.setMaxAttack (guardMaxAttackFor (m));
+        latClip = clip.getLatency();
+        latStage = m == MaximizerMode::Spectral ? spectral.getLatency()
+                 : (m == MaximizerMode::Multiband ? multiband.getLatency() : 0);
+        latCore = ll ? 0 : core.getLatency();
+        latGuard = guard.getLatency();
+        latFine = fine.getLatency();
+        latTotal = latClip + latStage + latCore + latGuard + latFine;
+        // Publish the delay of the pipeline actually producing audio. During FadeOut it
+        // still belongs to the old mode; changing it early misaligns the host's dry path.
+        reportedLatency.store (latTotal, std::memory_order_relaxed);
+        settingsDirty = true;
+        applySettings();
+        clip.reset();
+        core.reset();
+        spectral.reset();
+        multiband.reset();
+        guard.reset();
+        fine.reset();
+    }
+
+    void resetAll() noexcept
+    {
+        if (! prepared)
+            return;
+        configure (targetMode);
+        gain.snap (std::pow (10.0, params.gainDb / 20.0));
+        ceiling.snap (std::pow (10.0, params.outputLevelDb / 20.0));
+        std::fill (ceilRing.begin(), ceilRing.end(), ceiling.current);
+        std::fill (tpRing.begin(), tpRing.end(), (std::uint8_t) (params.truePeak ? 1 : 0));
+        std::fill (fadeRing.begin(), fadeRing.end(), 1.0f);
+        for (auto& r : refRing)
+            std::fill (r.begin(), r.end(), 0.0f);
+        counter = 0;
+        phase = Phase::Running;
+        fadePos = 0;
+        upTargetDb = upAmountDb = params.upwardCompressDb;
+        snapNext = true;   // nothing is playing yet: the next parameters apply directly (no glide, no mode fade)
+        upEnv.fill (0.0);
+        upLiftDb.fill (0.0);
+        emTarget = emAmount = params.transientEmphasisOn ? params.transientEmphasis * 0.01 : 0.0;
+        emFast.fill (0.0);
+        emSlow.fill (0.0);
+        emBoostDb.fill (0.0);
+        upMeterDb = 0.0;
+    }
+
+    //==========================================================================
+    void applySettings() noexcept
+    {
+        if (! settingsDirty)
+            return;
+        settingsDirty = false;
+        const auto& p = params;
+        const double t = std::clamp ((double) p.character, 0.0, 10.0) / 10.0;
+        const double siT = domainUnlinked ? 1.0 : std::clamp ((double) p.stereoIndependenceTransient, 0.0, 100.0) * 0.01;
+        const double siS = domainUnlinked ? 1.0 : std::clamp ((double) p.stereoIndependenceSustain, 0.0, 100.0) * 0.01;
+
+        clip.setParams (p.softClipOn, (int) p.softClipMode, p.softClipAmount * 0.01);
+
+        CoreSettings cs;
+        cs.siTrans = siT;
+        cs.siSus = siS;
+        cs.midDetect = p.truePeak;
+        double guardAttackMs = 0.75, guardReleaseMs = lerpExp (3.0, 30.0, t), guardIndep = siT;
+
+        switch (activeMode)
+        {
+            case MaximizerMode::LowLatency:
+                guardAttackMs = lerpExp (0.02, 0.25, t);
+                guardReleaseMs = lerpExp (5.0, 600.0, t);
+                break;
+
+            case MaximizerMode::Smooth:
+                cs.attackMs = lerpExp (0.5, 5.0, t);
+                cs.holdMs = 0.5;
+                cs.fastReleaseMs = lerpExp (4.0, 120.0, t);
+                cs.slowReleaseMs = lerpExp (60.0, 2500.0, t);
+                cs.slowChargeMs = lerpExp (60.0, 800.0, t);
+                cs.lfAdapt = 1.0;
+                break;
+
+            case MaximizerMode::Transparent:
+                cs.attackMs = lerpExp (0.7, 5.0, t);
+                cs.holdMs = 0.3;
+                cs.fastReleaseMs = lerpExp (5.0, 150.0, t);
+                cs.slowReleaseMs = lerpExp (80.0, 2500.0, t);
+                cs.slowChargeMs = lerpExp (80.0, 900.0, t);
+                cs.lfAdapt = 0.8;
+                cs.transientPreserve = 0.6;
+                guardAttackMs = 0.5;
+                guardReleaseMs = lerpExp (2.0, 20.0, t);
+                break;
+
+            case MaximizerMode::Aggressive:
+                switch (p.aggressiveStyle)
+                {
+                    case AggressiveStyle::Clipping:
+                        cs.attackMs = lerpExp (0.05, 1.0, t);
+                        cs.fastReleaseMs = lerpExp (1.0, 40.0, t);
+                        cs.slowReleaseMs = lerpExp (60.0, 600.0, t);
+                        cs.slowChargeMs = lerpExp (300.0, 2000.0, t);
+                        cs.lfAdapt = 0.3;
+                        guardAttackMs = 0.1;
+                        guardReleaseMs = lerpExp (1.0, 10.0, t);
+                        break;
+                    case AggressiveStyle::Crisp:
+                        cs.attackMs = lerpExp (0.2, 2.0, t);
+                        cs.holdMs = 0.2;
+                        cs.fastReleaseMs = lerpExp (2.0, 60.0, t);
+                        cs.slowReleaseMs = lerpExp (40.0, 600.0, t);
+                        cs.slowChargeMs = lerpExp (400.0, 3000.0, t);
+                        cs.lfAdapt = 0.6;
+                        cs.transientPreserve = 0.4;
+                        guardAttackMs = 0.25;
+                        guardReleaseMs = lerpExp (1.5, 15.0, t);
+                        break;
+                    case AggressiveStyle::Balanced:
+                        cs.attackMs = lerpExp (0.4, 4.0, t);
+                        cs.holdMs = 0.5;
+                        cs.fastReleaseMs = lerpExp (3.0, 90.0, t);
+                        cs.slowReleaseMs = lerpExp (50.0, 800.0, t);
+                        cs.slowChargeMs = lerpExp (300.0, 2500.0, t);
+                        cs.lfAdapt = 1.0;
+                        cs.transientPreserve = 0.2;
+                        guardAttackMs = 0.4;
+                        guardReleaseMs = lerpExp (2.0, 20.0, t);
+                        break;
+                    case AggressiveStyle::Pumping:
+                        cs.attackMs = lerpExp (1.0, 7.0, t);
+                        cs.holdMs = 2.0;
+                        cs.fastReleaseMs = lerpExp (20.0, 250.0, t);
+                        cs.slowReleaseMs = lerpExp (250.0, 1500.0, t);
+                        cs.slowChargeMs = lerpExp (20.0, 150.0, t);
+                        guardAttackMs = 0.5;
+                        guardReleaseMs = 10.0;
+                        break;
+                }
+                break;
+
+            case MaximizerMode::Spectral:
+            {
+                SpectralStage::Settings ss;
+                ss.independence = siS;
+                ss.amount = 0.45;
+                switch (p.spectralStyle)
+                {
+                    case SpectralStyle::Classic:
+                        ss.selectivity = 0.35;
+                        ss.releaseMs = lerpExp (25.0, 500.0, t);
+                        break;
+                    case SpectralStyle::Modern:
+                        ss.selectivity = 1.0;
+                        ss.releaseMs = lerpExp (20.0, 400.0, t);
+                        ss.highReleaseScale = 0.8;
+                        break;
+                    case SpectralStyle::Transient:
+                        ss.selectivity = 1.0;
+                        ss.amount = 0.3;   // onsets are left to the fast core / guard
+                        ss.releaseMs = lerpExp (15.0, 300.0, t);
+                        ss.highReleaseScale = 0.35;
+                        break;
+                }
+                spectral.setSettings (ss);
+                cs.attackMs = lerpExp (0.5, 2.5, t);
+                cs.holdMs = 1.0;
+                cs.fastReleaseMs = lerpExp (5.0, 120.0, t);
+                cs.slowReleaseMs = lerpExp (100.0, 1200.0, t);
+                cs.slowChargeMs = lerpExp (100.0, 800.0, t);
+                cs.lfAdapt = 1.0;
+                cs.transientPreserve = p.spectralStyle == SpectralStyle::Transient ? 0.6 : 0.2;
+                if (p.spectralStyle == SpectralStyle::Transient)
+                    cs.attackMs = lerpExp (0.3, 2.0, t);
+                break;
+            }
+
+            case MaximizerMode::Multiband:
+            {
+                MultibandStage::Settings ms;
+                ms.releaseMs = lerpExp (10.0, 300.0, t);
+                ms.siSus = siS;
+                ms.siTrans = siT;
+                multiband.setSettings (ms);
+                cs.attackMs = lerpExp (0.5, 2.5, t);
+                cs.holdMs = 1.0;
+                cs.fastReleaseMs = lerpExp (4.0, 100.0, t);
+                cs.slowReleaseMs = lerpExp (80.0, 1000.0, t);
+                cs.slowChargeMs = lerpExp (150.0, 1000.0, t);
+                cs.lfAdapt = 1.0;
+                cs.transientPreserve = 0.3;
+                break;
+            }
+
+            case MaximizerMode::Count:
+                break;
+        }
+
+        core.setSettings (cs);
+        guard.setTimes (std::max (1, (int) std::lround (msToSamples (guardAttackMs, sr))), guardReleaseMs, guardIndep,
+                        activeMode == MaximizerMode::LowLatency ? siS : -1.0);
+        fine.setTimes (kFineAttack, 2.0, 1.0);
+    }
+
+    //==========================================================================
+    void setParams (ParamValues v) noexcept
+    {
+        MaximizerParams p;
+        readMaximizerParams (v, p);
+        const bool changedSettings = ! haveParams || p.character != params.character
+                                     || p.aggressiveStyle != params.aggressiveStyle || p.spectralStyle != params.spectralStyle
+                                     || p.stereoIndependenceTransient != params.stereoIndependenceTransient
+                                     || p.stereoIndependenceSustain != params.stereoIndependenceSustain
+                                     || p.truePeak != params.truePeak || p.softClipOn != params.softClipOn
+                                     || p.softClipMode != params.softClipMode || p.softClipAmount != params.softClipAmount;
+        const bool first = ! haveParams || snapNext;
+        params = p;
+        haveParams = true;
+        if (changedSettings)
+            settingsDirty = true;
+
+        targetMode = p.mode;
+        if (! prepared)
+            return;
+
+        gain.setTarget (std::pow (10.0, (double) std::clamp (p.gainDb, 0.0f, 20.0f) / 20.0));
+        ceiling.setTarget (std::pow (10.0, (double) std::clamp (p.outputLevelDb, -20.0f, 0.0f) / 20.0));
+        upTargetDb = std::clamp ((double) p.upwardCompressDb, 0.0, 12.0);
+        emTarget = p.transientEmphasisOn ? std::clamp ((double) p.transientEmphasis, 0.0, 100.0) * 0.01 : 0.0;
+
+        if (first)
+        {
+            gain.snap (gain.target);
+            ceiling.snap (ceiling.target);
+            upAmountDb = upTargetDb;
+            emAmount = emTarget;
+            if (activeMode != targetMode)
+                resetAll();
+            snapNext = false;
+        }
+    }
+
+    //==========================================================================
+    void fillThr (int n, long long idx0, int offset, double margin) noexcept
+    {
+        for (int i = 0; i < n; ++i)
+            thrBuf[i] = ceilRing[(size_t) ((idx0 + i - offset) & ringMask)] * margin;
+    }
+
+    void fillTp (int n, long long idx0, int offset) noexcept
+    {
+        for (int i = 0; i < n; ++i)
+            tpBuf[i] = tpRing[(size_t) ((idx0 + i - offset) & ringMask)];
+    }
+
+    double fadeValue() noexcept
+    {
+        switch (phase)
+        {
+            case Phase::Running: return 1.0;
+            case Phase::FadeOut:
+            {
+                if (fadePos >= fadeLength)
+                    return 0.0;
+                const double v = 0.5 * (1.0 + std::cos (3.14159265358979323846 * (double) fadePos / fadeLength));
+                ++fadePos;
+                return v;
+            }
+            case Phase::FadeIn:
+            {
+                if (fadePos >= fadeLength)
+                    return 1.0;
+                const double v = 0.5 * (1.0 - std::cos (3.14159265358979323846 * (double) fadePos / fadeLength));
+                ++fadePos;
+                return v;
+            }
+            case Phase::Flush:
+            case Phase::Fill:
+            default: return 0.0;
+        }
+    }
+
+    void updatePhaseBeforeChunk() noexcept
+    {
+        const bool wantSwitch = targetMode != activeMode;
+        switch (phase)
+        {
+            case Phase::Running:
+                if (wantSwitch)
+                {
+                    phase = Phase::FadeOut;
+                    fadePos = 0;
+                }
+                break;
+            case Phase::FadeIn:
+                if (wantSwitch)
+                {
+                    phase = Phase::FadeOut;
+                    fadePos = fadeLength - std::min (fadePos, fadeLength);
+                }
+                break;
+            case Phase::FadeOut:
+                if (! wantSwitch)
+                {
+                    phase = Phase::FadeIn;
+                    fadePos = fadeLength - std::min (fadePos, fadeLength);
+                }
+                break;
+            case Phase::Flush:
+                if (! wantSwitch)
+                {
+                    phase = Phase::FadeIn;
+                    fadePos = 0;
+                }
+                break;
+            case Phase::Fill:
+                if (wantSwitch)
+                {
+                    phase = Phase::Flush;
+                    phaseCount = 0;
+                }
+                break;
+        }
+    }
+
+    void updatePhaseAfterChunk (int n) noexcept
+    {
+        switch (phase)
+        {
+            case Phase::FadeOut:
+                if (fadePos >= fadeLength)
+                {
+                    phase = Phase::Flush;
+                    phaseCount = latGuard + latFine;
+                }
+                break;
+            case Phase::Flush:
+                phaseCount -= n;
+                if (phaseCount <= 0)
+                {
+                    configure (targetMode);
+                    std::fill (fadeRing.begin(), fadeRing.end(), 0.0f);
+                    phase = Phase::Fill;
+                    phaseCount = latClip + latStage + latCore;
+                }
+                break;
+            case Phase::Fill:
+                phaseCount -= n;
+                if (phaseCount <= 0)
+                {
+                    phase = Phase::FadeIn;
+                    fadePos = 0;
+                }
+                break;
+            case Phase::FadeIn:
+                if (fadePos >= fadeLength)
+                    phase = Phase::Running;
+                break;
+            case Phase::Running:
+                break;
+        }
+    }
+
+    //==========================================================================
+    void preStages (float* const* io, int n, long long idx0) noexcept
+    {
+        float* a0 = buf[0][0];
+        float* a1 = buf[0][1];
+        const auto tp = (std::uint8_t) (params.truePeak ? 1 : 0);
+        for (int i = 0; i < n; ++i)
+        {
+            const double g = gain.next();
+            const long long idx = (idx0 + i) & ringMask;
+            const float u0 = (float) ((double) io[0][i] * g);
+            const float u1 = (float) ((double) io[1][i] * g);
+            refRing[0][(size_t) idx] = u0;
+            refRing[1][(size_t) idx] = u1;
+            ceilRing[(size_t) idx] = ceiling.next();
+            tpRing[(size_t) idx] = tp;
+            a0[i] = u0;
+            a1[i] = u1;
+        }
+
+        // Upward Compress
+        if (upAmountDb > 0.0 || upTargetDb > 0.0 || upLiftDb[0] > 0.0 || upLiftDb[1] > 0.0)
+        {
+            double maxLift = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                if (upAmountDb < upTargetDb)
+                    upAmountDb = std::min (upTargetDb, upAmountDb + upStep);
+                else if (upAmountDb > upTargetDb)
+                    upAmountDb = std::max (upTargetDb, upAmountDb - upStep);
+                const double x0 = a0[i], x1 = a1[i];
+                for (size_t c = 0; c < 2; ++c)
+                {
+                    const double x = c == 0 ? x0 : x1;
+                    const double pw = domainUnlinked ? x * x : 0.5 * (x0 * x0 + x1 * x1);
+                    upEnv[c] += (pw - upEnv[c]) * (pw > upEnv[c] ? kUpAtt : kUpRel);
+                    const double level = upEnv[c] > 1.0e-20 ? 10.0 * std::log10 (upEnv[c]) : -200.0;
+                    double lift = upAmountDb * std::clamp ((-12.0 - level) / 20.0, 0.0, 1.0);
+                    lift *= std::clamp ((level + 80.0) / 20.0, 0.0, 1.0);
+                    upLiftDb[c] += (lift - upLiftDb[c]) * (lift > upLiftDb[c] ? kLiftUp : kLiftDown);
+                    if (upLiftDb[c] < 1.0e-9 && upAmountDb <= 0.0)
+                        upLiftDb[c] = 0.0;
+                    if (upLiftDb[c] > 0.0)
+                        buf[0][c][i] = (float) (x * std::exp (upLiftDb[c] * kLn10Over20));
+                    maxLift = std::max (maxLift, upLiftDb[c]);
+                }
+            }
+            upMeterDb = maxLift;
+        }
+        else
+        {
+            upMeterDb = 0.0;
+        }
+
+        // Transient Emphasis
+        if (emAmount > 0.0 || emTarget > 0.0 || emBoostDb[0] > 0.0 || emBoostDb[1] > 0.0)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                if (emAmount < emTarget)
+                    emAmount = std::min (emTarget, emAmount + emStep);
+                else if (emAmount > emTarget)
+                    emAmount = std::max (emTarget, emAmount - emStep);
+                const double x0 = a0[i], x1 = a1[i];
+                for (size_t c = 0; c < 2; ++c)
+                {
+                    const double x = c == 0 ? x0 : x1;
+                    const double a = domainUnlinked ? std::abs (x) : std::max (std::abs (x0), std::abs (x1));
+                    emFast[c] += (a - emFast[c]) * (a > emFast[c] ? kEmFastAtt : kEmFastRel);
+                    emSlow[c] += (a - emSlow[c]) * (a > emSlow[c] ? kEmSlowAtt : kEmSlowRel);
+                    const double ratio = emFast[c] / (emSlow[c] + 1.0e-9);
+                    const double boost = emAmount * 8.0 * std::clamp ((ratio - 1.15) / 0.85, 0.0, 1.0);
+                    emBoostDb[c] += (boost - emBoostDb[c]) * (boost > emBoostDb[c] ? kEmGainAtt : kEmGainRel);
+                    if (emBoostDb[c] < 1.0e-9 && emAmount <= 0.0)
+                        emBoostDb[c] = 0.0;
+                    if (emBoostDb[c] > 0.0)
+                        buf[0][c][i] = (float) (x * std::exp (emBoostDb[c] * kLn10Over20));
+                }
+            }
+        }
+    }
+
+    void processChunk (float* const* io, float* const* deltaOut, bool deltaInPlace, int n) noexcept
+    {
+        updatePhaseBeforeChunk();
+        applySettings();
+        const long long idx0 = counter;
+        preStages (io, n, idx0);
+
+        float* in0[2] { buf[0][0], buf[0][1] };
+        float* b1[2] { buf[1][0], buf[1][1] };
+        float* b2[2] { buf[2][0], buf[2][1] };
+        float* b3[2] { buf[3][0], buf[3][1] };
+        float* b4[2] { buf[4][0], buf[4][1] };
+        float* b5[2] { buf[5][0], buf[5][1] };
+
+        // The clipping curve follows each input sample's ceiling, including ramps.
+        fillThr (n, idx0, 0, 1.0);
+        clip.process (in0, b1, thrBuf, n);
+
+        // mode stage
+        const bool tpOn = params.truePeak;
+        const double coreMargin = tpOn ? kCoreTpMargin : 1.0;
+        float* const* engineOut = b1;
+        switch (activeMode)
+        {
+            case MaximizerMode::LowLatency:
+                break;
+            case MaximizerMode::Spectral:
+                fillThr (n, idx0, latClip, 1.0);
+                spectral.process (b1, b2, thrBuf, n);
+                fillThr (n, idx0, latClip + latStage + kMidDetectorDelay, coreMargin);
+                core.process (b2, b3, thrBuf, n);
+                engineOut = b3;
+                break;
+            case MaximizerMode::Multiband:
+                fillThr (n, idx0, latClip + multiband.getSplitLatency(), 1.0);
+                multiband.process (b1, b2, thrBuf, n);
+                fillThr (n, idx0, latClip + latStage + kMidDetectorDelay, coreMargin);
+                core.process (b2, b3, thrBuf, n);
+                engineOut = b3;
+                break;
+            default:
+                fillThr (n, idx0, latClip + kMidDetectorDelay, coreMargin);
+                core.process (b1, b3, thrBuf, n);
+                engineOut = b3;
+                break;
+        }
+
+        // mode-switch fade (before the guard, so the guard keeps the contract through it)
+        const int latPre = latClip + latStage + latCore;
+        for (int i = 0; i < n; ++i)
+        {
+            const double f = fadeValue();
+            fadeRing[(size_t) ((idx0 + i - latPre) & ringMask)] = (float) f;
+            if (f != 1.0)
+            {
+                engineOut[0][i] = (float) (engineOut[0][i] * f);
+                engineOut[1][i] = (float) (engineOut[1][i] * f);
+            }
+        }
+
+        // guard + fine
+        fillThr (n, idx0, latPre + kTpDetectorDelay, tpOn ? kGuardTpMargin : 1.0);
+        fillTp (n, idx0, latPre + kTpDetectorDelay);
+        guard.process (engineOut, b4, thrBuf, tpBuf, n);
+        fillThr (n, idx0, latPre + latGuard + kTpDetectorDelay, 1.0);
+        fillTp (n, idx0, latPre + latGuard + kTpDetectorDelay);
+        fine.process (b4, b5, thrBuf, tpBuf, n);
+
+        // clamp, delta, output
+        for (int i = 0; i < n; ++i)
+        {
+            const long long oi = (idx0 + i - latTotal) & ringMask;
+            const float c = floatAtMost (ceilRing[(size_t) oi]);
+            const float f = fadeRing[(size_t) oi];
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float y = std::clamp (b5[ch][i], -c, c);
+                const float d = y - f * refRing[(size_t) ch][(size_t) oi];
+                if (deltaOut != nullptr)
+                    deltaOut[ch][i] = d;
+                io[ch][i] = deltaInPlace ? d : y;
+            }
+        }
+
+        counter += n;
+        updatePhaseAfterChunk (n);
+    }
+
+    //==========================================================================
+    void captureLearn (const float* const* io, int n) noexcept
+    {
+        const auto request = learnCapture.load();
+        if (LearnCaptureMailbox::state (request) != LearnCaptureMailbox::Listening)
+            return;
+        const unsigned g = LearnCaptureMailbox::generation (request);
+        if (g != audioLearnGen)
+        {
+            audioLearnGen = g;
+            captured = 0;
+        }
+        double e = 0.0;
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < n; ++i)
+                e += (double) io[c][i] * (double) io[c][i];
+        if (n <= 0 || e / (2.0 * n) < 1.0e-7)   // silence / not playing
+            return;
+        const int take = std::min (n, captureLength - captured);
+        for (int c = 0; c < 2; ++c)
+            std::memcpy (capture[(size_t) c].data() + captured, io[c], sizeof (float) * (size_t) take);
+        captured += take;
+        if (captured >= captureLength)
+        {
+            capturedParams = params;
+            capturedUnlinked = domainUnlinked;
+        }
+        learnCapture.publish (request, (unsigned) captured, captured >= captureLength ? LearnCaptureMailbox::Captured
+                                                                                   : LearnCaptureMailbox::Listening);
+    }
+
+    // Message thread: integrated loudness of the simulated output at a gain.
+    float simulateLufs (double gainDb, Impl& simulator)
+    {
+        simulator.params.gainDb = (float) gainDb;
+        simulator.resetAll();
+        simMeter.reset();
+        float* io[2] { simBuf[0], simBuf[1] };
+        const int latency = simulator.latTotal;
+        const int end = captureLength + latency;
+        for (int start = 0; start < end; start += kChunk)
+        {
+            const int n = std::min (kChunk, end - start);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < n; ++i)
+                    simBuf[ch][i] = start + i < captureLength ? capture[(size_t) ch][(size_t) (start + i)] : 0.0f;
+            simulator.processChunk (io, nullptr, false, n);
+            const int skip = std::clamp (latency - start, 0, n);
+            if (n > skip)
+                simMeter.process (simBuf[0] + skip, simBuf[1] + skip, n - skip);
+        }
+        return simMeter.integratedLufs();
+    }
+
+    bool takeLearned (float& gainDbOut)
+    {
+        const auto request = learnCapture.load();
+        if (LearnCaptureMailbox::state (request) != LearnCaptureMailbox::Captured)
+            return false;
+
+        const double target = capturedParams.learnTargetLufs;
+        // This method runs only on the message thread. The completed request keeps its capture immutable until
+        // the result is consumed, while a separate pipeline makes the simulation independent of live audio state.
+        Impl simulator;
+        simulator.params = capturedParams;
+        simulator.domainUnlinked = capturedUnlinked;
+        simulator.haveParams = true;
+        simulator.prepare (sr);
+        DenormalGuard denormals;
+
+        double lo = 0.0, hi = 20.0, result;
+        const float atLo = simulateLufs (lo, simulator);
+        const float atHi = simulateLufs (hi, simulator);
+        if (! hasValue (atLo) || ! hasValue (atHi))
+            result = 0.0;
+        else if (atLo >= target)
+            result = 0.0;
+        else if (atHi <= target)
+            result = 20.0;
+        else
+        {
+            for (int it = 0; it < 10; ++it)
+            {
+                const double mid = 0.5 * (lo + hi);
+                const float l = simulateLufs (mid, simulator);
+                if (l < target)
+                    lo = mid;
+                else
+                    hi = mid;
+            }
+            result = 0.5 * (lo + hi);
+        }
+        gainDbOut = (float) (std::round (result * 10.0) / 10.0);
+        learnCapture.publish (request, (unsigned) captureLength, LearnCaptureMailbox::Idle);
+        return true;
+    }
 };
 
+//==============================================================================
 Maximizer::Maximizer() : impl (std::make_unique<Impl>()) {}
 Maximizer::~Maximizer() = default;
 
-void Maximizer::prepare (double, int) {}
-void Maximizer::reset() noexcept {}
-void Maximizer::setParams (ParamValues) noexcept {}
-void Maximizer::process (float* const*, int, const ProcessContext&) noexcept {}
-int Maximizer::getLatencySamples() const noexcept { return 0; }
-const MaximizerMeters& Maximizer::getMeters() const noexcept { return impl->meters; }
+void Maximizer::prepare (double sampleRate, int)
+{
+    impl->prepare (sampleRate);
+    impl->reportedLatency.store (impl->modeLatency[(size_t) (int) impl->targetMode]);
+}
 
-void Maximizer::startLearn() noexcept {}
-void Maximizer::cancelLearn() noexcept {}
-bool Maximizer::isLearning() const noexcept { return false; }
-float Maximizer::getLearnProgress() const noexcept { return 0.0f; }
-bool Maximizer::takeLearnedGain (float&) noexcept { return false; }
+void Maximizer::reset() noexcept { impl->resetAll(); }
+
+void Maximizer::setParams (ParamValues v) noexcept { impl->setParams (v); }
+
+void Maximizer::process (float* const* channels, int numSamples, const ProcessContext& ctx) noexcept
+{
+    auto& m = *impl;
+    if (! m.prepared || numSamples <= 0)
+        return;
+    DenormalGuard denormals;
+
+    const bool unlinked = ctx.channelMode == ChannelMode::MidSide || ctx.channelMode == ChannelMode::LeftRight;
+    if (m.domainUnlinked != unlinked)
+    {
+        m.domainUnlinked = unlinked;
+        m.settingsDirty = true;
+        // The host supplies the channel domain only with process(). On the first
+        // block after reset there is no old audio to crossfade from.
+        if (m.counter == 0)
+            m.configure (m.activeMode);
+    }
+
+    m.captureLearn (channels, numSamples);
+
+    for (int c = 0; c < 2; ++c)
+    {
+        m.core.minGain[c] = m.guard.minGain[c] = m.fine.minGain[c] = 1.0;
+        m.spectral.minGain[c] = m.multiband.minGain[c] = 1.0;
+    }
+
+    double upMax = 0.0;
+    for (int start = 0; start < numSamples; start += kChunk)
+    {
+        const int n = std::min (kChunk, numSamples - start);
+        float* io[2] { channels[0] + start, channels[1] + start };
+        float* d[2] { nullptr, nullptr };
+        if (ctx.deltaOut != nullptr)
+        {
+            d[0] = ctx.deltaOut[0] + start;
+            d[1] = ctx.deltaOut[1] + start;
+        }
+        m.processChunk (io, ctx.deltaOut != nullptr ? d : nullptr, ctx.deltaOut == nullptr && ctx.delta, n);
+        upMax = std::max (upMax, m.upMeterDb);
+    }
+
+    double grTotal = 0.0;
+    for (int c = 0; c < 2; ++c)
+    {
+        double g = m.guard.minGain[c] * m.fine.minGain[c];
+        if (m.activeMode != MaximizerMode::LowLatency)
+            g *= m.core.minGain[c];
+        if (m.activeMode == MaximizerMode::Spectral)
+            g *= m.spectral.minGain[c];
+        if (m.activeMode == MaximizerMode::Multiband)
+            g *= m.multiband.minGain[c];
+        const double db = std::min (0.0, 20.0 * std::log10 (std::max (g, 1.0e-10)));
+        m.meters.gainReductionDb[c].store ((float) db);
+        grTotal = std::min (grTotal, db);
+    }
+    m.meters.upwardGainDb.store ((float) upMax);
+    if ((float) grTotal < m.meters.peakGainReductionDb.load())
+        m.meters.peakGainReductionDb.store ((float) grTotal);
+}
+
+int Maximizer::getLatencySamples() const noexcept { return impl->reportedLatency.load (std::memory_order_relaxed); }
+
+const MaximizerMeters& Maximizer::getMeters() const noexcept { return impl->meters; }
+MaximizerMeters& Maximizer::getMeters() noexcept { return impl->meters; }
+
+void Maximizer::startLearn() noexcept
+{
+    auto& m = *impl;
+    if (m.captureLength <= 0)
+        return;
+    m.learnCapture.start();
+}
+
+void Maximizer::cancelLearn() noexcept
+{
+    impl->learnCapture.cancel();
+}
+
+bool Maximizer::isLearning() const noexcept
+{
+    return maxi::LearnCaptureMailbox::state (impl->learnCapture.load()) != maxi::LearnCaptureMailbox::Idle;
+}
+
+float Maximizer::getLearnProgress() const noexcept
+{
+    return (float) maxi::LearnCaptureMailbox::count (impl->learnCapture.load()) / (float) std::max (1, impl->captureLength);
+}
+
+bool Maximizer::takeLearnedGain (float& gainDb) noexcept { return impl->takeLearned (gainDb); }
+
 } // namespace ps

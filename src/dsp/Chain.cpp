@@ -13,7 +13,7 @@
 #include <cstring>
 #include <iterator>
 
-// The chain host. Choices beyond the header (reference parity where the research documents it, otherwise what a mastering
+// The chain host. Choices beyond the header (reference-suite parity where the research documents it, otherwise what a mastering
 // engineer would expect):
 //
 // - Every state change that would click is crossfaded over 20 ms: module power / solo, channel on/off, channel solo,
@@ -23,11 +23,17 @@
 //   Powering back on reset()s the module, lets it run silently for its latency (so a lookahead / FIR module has valid
 //   output) and then fades it in. Module::reset() is therefore called on the audio thread (also for a module that
 //   joins the chain) and must be realtime safe.
-// - Delta: the slot's change (processed - aligned dry, or the module's own delta when handlesDelta()) goes onto a
-//   separate "delta bus" that travels through the following slots' delays only (not through their processing), and
-//   replaces the chain output while any delta is on. So "Delta" plays exactly what that module changes, latency-aligned
-//   to the chain output, and is not re-processed by the modules after it (a Maximizer after an EQ would otherwise
-//   boost the EQ's delta). Several deltas at once sum. The normal path keeps running so nothing glitches on release.
+// - Delta: every slot's change (processed - aligned dry, or the module's own delta, written to
+//   ProcessContext::deltaOut, when handlesDelta(); its normal output stays on the normal path and feeds the modules
+//   after it) runs continuously through a per-slot delay line set to the latency of the slots after it, so it is
+//   aligned to the chain output and has real signal the moment Delta is switched on, whatever the downstream latency.
+//   The output crossfades (20 ms) between the normal signal and the sum of the gated deltas of the slots whose Delta
+//   is on. So "Delta" plays exactly what that module changes, and is not re-processed by the modules after it (a
+//   Maximizer after an EQ would otherwise boost the EQ's delta). Several deltas at once sum; switching from one to
+//   another crossfades; on release the gates hold while the output fades back to normal.
+// - Channel-mode change (e.g. Stereo -> M/S): the module's buffered audio belongs to the old domain, so the slot fades
+//   to its aligned dry signal in the old mode, then switches, reset()s the module, lets it run silently for its
+//   latency and fades it in (the power-cycle path): ~40 ms + latency of dry signal, never reinterpreted audio.
 // - Channel solo (M/S, L/R modes): the other channel of the module's domain is muted (Mid solo = mono Mid on both
 //   speakers; Side solo = Side, -Side; Left solo = left speaker only). Applied at the slot output, so downstream
 //   modules process what is heard. Channel on/off and channel solo are ignored in Stereo mode.
@@ -37,15 +43,17 @@
 //   measurements (and so the match gain) are frozen while a monitoring function is active (module solo, delta, channel
 //   solo, band solo, EQ audition, detector solo): the monitored audio says nothing about the processed loudness.
 //   Smoothing: one-pole, 0.35 s time constant (settles in ~1 s). Classic mode also levels the dry signal heard while a
-//   powered-off module is soloed.
+//   powered-off module is soloed, by that module's own loudness change (not the whole chain's): every slot measures
+//   the K-weighted loudness of its aligned dry input and its output (mean squares, ~1 s) while it processes at full
+//   wet with no monitor active, and keeps the last estimate while powered off.
 // - Global bypass = the raw input (before input gain) delayed by the chain latency; the chain keeps running.
 // - Difference meter: RMS of the slot output vs the aligned dry input, measured in the module's channel domain,
 //   before channel solo; one-pole 300 ms on the mean squares; 0 dB for silence.
 // - True-peak meters: a continuous 4x interpolator (same design as core/TruePeak) that reports a per-block maximum,
 //   since core's TruePeakMeter only offers a max since reset.
-// - Delay lines: per slot (dry + delta bus) max(0.75 s, 16384) samples rounded up to a power of two (Digital EQ at
-//   192 kHz, ~70k samples, fits); bypass line max(2 s, 65536). A latency beyond that is clamped (alignment then breaks,
-//   the reported latency stays exact).
+// - Delay lines: per slot, dry max(0.75 s, 16384) and delta max(1.3 s, 32768) samples (it holds the latency of all
+//   the slots after it), rounded up to a power of two (Digital EQ at 192 kHz, ~70k samples, fits); bypass line
+//   max(2 s, 65536). A latency beyond that is clamped (alignment then breaks, the reported latency stays exact).
 // - Chain order and monitor requests are handed to the audio thread through seqlocks of atomics (the reader never
 //   waits: if it races a writer it keeps the previous value and picks the new one up next block).
 namespace ps
@@ -356,19 +364,87 @@ struct DcFilter
 };
 
 //==============================================================================
+// K-weighted loudness of a slot's aligned dry input and its output (classic gain match of a soloed, powered-off
+// module). Mean squares smoothed over ~1 s; frozen while the slot is not measured.
+struct SlotLoudness
+{
+    KBiquad shelf[2][2], highPass[2][2];   // [input / output][channel]
+    double msIn = 0.0, msOut = 0.0;
+    double matchDb = 0.0;                  // output - input (dB), last valid estimate
+
+    void design (double sr)
+    {
+        for (int side = 0; side < 2; ++side)
+            for (int c = 0; c < 2; ++c)
+                designKWeighting (sr, shelf[side][c], highPass[side][c]);
+    }
+
+    void reset() noexcept
+    {
+        for (int side = 0; side < 2; ++side)
+            for (int c = 0; c < 2; ++c)
+            {
+                shelf[side][c].reset();
+                highPass[side][c].reset();
+            }
+        msIn = msOut = 0.0;
+        matchDb = 0.0;
+    }
+
+    // K-weighted sum of squares of both channels
+    double weigh (int side, const float* l, const float* r, int n) noexcept
+    {
+        double acc = 0.0;
+        const float* src[2] { l, r };
+        for (int c = 0; c < 2; ++c)
+        {
+            auto& s = shelf[side][c];
+            auto& h = highPass[side][c];
+            for (int i = 0; i < n; ++i)
+            {
+                const double y = h.process (s.process ((double) src[c][i]));
+                acc += y * y;
+            }
+            if (std::abs (s.z1) < 1.0e-30) s.z1 = 0.0;
+            if (std::abs (s.z2) < 1.0e-30) s.z2 = 0.0;
+            if (std::abs (h.z1) < 1.0e-30) h.z1 = 0.0;
+            if (std::abs (h.z2) < 1.0e-30) h.z2 = 0.0;
+        }
+        return acc;
+    }
+
+    void update (double eIn, double eOut, int n, double sampleRate) noexcept
+    {
+        const double mIn = eIn / (double) n, mOut = eOut / (double) n;
+        if (mIn < 1.0e-7 || mOut < 1.0e-7)
+            return;   // (near) silence on either side says nothing about the module's gain
+        const double a = 1.0 - std::exp (-(double) n / (1.0 * sampleRate));
+        msIn += a * (mIn - msIn);
+        msOut += a * (mOut - msOut);
+        if (msIn > 1.0e-6 && msOut > 1.0e-6)
+            matchDb = std::clamp (10.0 * std::log10 (msOut / msIn), -24.0, 24.0);
+    }
+};
+
+//==============================================================================
 struct Slot
 {
-    StereoDelay dry, deltaBus;
+    StereoDelay dry, deltaLine;
     Ramp wet, channelOn[2], keep[2], deltaGain;
     bool processing = true;
+    bool enabled = true;        // power on, not soloed out, no channel-mode change pending (this block)
     bool fresh = true;          // snap every ramp on the next block (prepare, reset, joined the chain)
     long long warmup = 0;
     int latency = 0;
+    int downstream = 0;         // aligned latency of the slots after this one (delta line delay)
     double msIn = 0.0, msOut = 0.0;
     SlotParams params;
+    ChannelMode activeMode = ChannelMode::Stereo;   // the domain the module currently processes in
     ModuleMonitor monitor;
     unsigned monitorSeq = 0;
     bool deltaRequested = false;
+    bool monitorActive = false; // band solo / audition / detector solo: the module's output is a monitor signal
+    SlotLoudness loudness;
 };
 } // namespace
 
@@ -406,6 +482,7 @@ struct Chain::Impl
     DcFilter dcFilter;
     Ramp inGain[2], outGain[2], mono, swap, bypass, deltaMix, dcAmount, classicAmount, modernAmount, soloClassicAmount;
     double matchDb = 0.0, matchTargetDb = 0.0, matchCoeff = 0.0;
+    double soloMatchDb = 0.0;   // classic: level of the soloed, powered-off slot's dry signal (that slot's own gain)
 
     LoudnessMeter inputMs, inputIntegrated, outputMs, outputIntegrated, matchInput, matchOutput;
     BlockTruePeak inputTp, outputTp;
@@ -441,6 +518,17 @@ struct Chain::Impl
                 r->setLength (n);
     }
 
+    void clearSlot (Slot& s) noexcept
+    {
+        s.dry.clear();
+        s.deltaLine.clear();
+        s.processing = true;
+        s.fresh = true;
+        s.warmup = 0;
+        s.msIn = s.msOut = 0.0;
+        s.loudness.reset();
+    }
+
     void pullOrder() noexcept
     {
         int newOrder[kNumModuleTypes] {};
@@ -458,13 +546,7 @@ struct Chain::Impl
             if (nowIn[t] && ! audioInChain[t])
             {
                 modules[t]->reset();
-                auto& s = slots[t];
-                s.dry.clear();
-                s.deltaBus.clear();
-                s.processing = true;
-                s.fresh = true;
-                s.warmup = 0;
-                s.msIn = s.msOut = 0.0;
+                clearSlot (slots[t]);
             }
             if (! nowIn[t])
                 ioMeters.moduleDifferenceDb[t].store (0.0f);
@@ -504,6 +586,14 @@ struct Chain::Impl
 
         for (int k = 0; k < audioCount; ++k)
         {
+            auto& s = slots[audioOrder[k]];
+            s.deltaRequested = delta[audioOrder[k]].load (std::memory_order_relaxed);
+            anyDelta = anyDelta || s.deltaRequested;
+        }
+        const bool deltaIdle = deltaMix.isAt (0.0f) || firstBlock;
+
+        for (int k = 0; k < audioCount; ++k)
+        {
             const int t = audioOrder[k];
             auto& s = slots[t];
             auto& m = *modules[t];
@@ -522,16 +612,22 @@ struct Chain::Impl
             if (t == soloType)
                 soloValid = true;
 
-            const bool enabled = s.params.power && (soloType < 0 || soloType == t);
             const bool fresh = s.fresh || firstBlock;
-            const ChannelMode mode = s.params.channelMode;
+
+            // Channel-mode change: the module's buffered state belongs to the old domain. The slot fades to its
+            // aligned dry signal in the old mode, stops, switches, reset()s the module and warms it up silently for
+            // its latency, then fades the module in again (the power-cycle path).
+            if (fresh || ! s.processing)
+                s.activeMode = s.params.channelMode;
+            const bool modePending = s.activeMode != s.params.channelMode;
+
+            const ChannelMode mode = s.activeMode;
             const bool dual = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight;
             const int chSolo = dual ? channelSolo[t].load (std::memory_order_relaxed) : -1;
+            s.enabled = s.params.power && (soloType < 0 || soloType == t) && ! modePending;
+            s.monitorActive = s.monitor.soloBand >= 0 || s.monitor.auditionOn || s.monitor.soloDetectionFilter;
 
-            s.deltaRequested = delta[t].load (std::memory_order_relaxed);
-            anyDelta = anyDelta || s.deltaRequested;
-            monitoring = monitoring || s.deltaRequested || chSolo >= 0 || s.monitor.soloBand >= 0
-                         || s.monitor.auditionOn || s.monitor.soloDetectionFilter;
+            monitoring = monitoring || s.deltaRequested || chSolo >= 0 || s.monitorActive;
 
             float onTarget[2], keepTarget[2];
             for (int c = 0; c < 2; ++c)
@@ -539,13 +635,13 @@ struct Chain::Impl
                 onTarget[c] = (! dual || s.params.channelOn[c]) ? 1.0f : 0.0f;
                 keepTarget[c] = (chSolo < 0 || chSolo == c) ? 1.0f : 0.0f;
             }
-            const float deltaTarget = (s.deltaRequested && ! m.handlesDelta()) ? 1.0f : 0.0f;
+            const float deltaTarget = s.deltaRequested ? 1.0f : 0.0f;
 
             if (fresh)
             {
-                s.processing = enabled;
+                s.processing = s.enabled;
                 s.warmup = 0;
-                s.wet.snap (enabled ? 1.0f : 0.0f);
+                s.wet.snap (s.enabled ? 1.0f : 0.0f);
                 for (int c = 0; c < 2; ++c)
                 {
                     s.channelOn[c].snap (onTarget[c]);
@@ -558,12 +654,27 @@ struct Chain::Impl
 
             for (int c = 0; c < 2; ++c)
             {
-                s.channelOn[c].setTarget (onTarget[c]);
-                s.keep[c].setTarget (keepTarget[c]);
+                if (s.processing)
+                {
+                    s.channelOn[c].setTarget (onTarget[c]);
+                    s.keep[c].setTarget (keepTarget[c]);
+                }
+                else
+                {
+                    s.channelOn[c].snap (onTarget[c]);   // (only heard through the module)
+                    s.keep[c].setTarget (keepTarget[c]);
+                }
             }
-            s.deltaGain.setTarget (deltaTarget);
 
-            if (enabled && ! s.processing)
+            // Delta gates (applied where the slot's latency-aligned delta joins the delta sum). While the output is
+            // fully normal they follow the requests at once; while Delta is heard they crossfade; when the last
+            // Delta is released they hold, so the delta sum keeps its signal while the output fades back to normal.
+            if (deltaIdle)
+                s.deltaGain.snap (deltaTarget);
+            else if (anyDelta)
+                s.deltaGain.setTarget (deltaTarget);
+
+            if (s.enabled && ! s.processing)
             {
                 m.reset();
                 s.processing = true;
@@ -571,7 +682,7 @@ struct Chain::Impl
                 s.wet.snap (0.0f);
             }
 
-            if (s.processing && enabled)
+            if (s.processing && s.enabled)
             {
                 if (s.warmup > 0)
                     s.warmup -= numSamples;   // runs silently (wet 0) for its latency, fades in next block
@@ -584,6 +695,15 @@ struct Chain::Impl
             }
         }
 
+        // delta lines: each slot's change is delayed by the latency of the slots after it (chain-output aligned)
+        int downstream = 0;
+        for (int k = audioCount - 1; k >= 0; --k)
+        {
+            auto& s = slots[audioOrder[k]];
+            s.downstream = downstream;
+            downstream += s.latency;
+        }
+
         latency.store (totalLatency, std::memory_order_relaxed);
         bypassDelay.setDelay (alignedLatency);
         monitoringActive = monitoring;
@@ -591,6 +711,8 @@ struct Chain::Impl
         const bool classic = io.gainMatch && ! io.gainMatchModern;
         const bool modern = io.gainMatch && io.gainMatchModern;
         const bool soloOfPoweredOff = classic && soloValid && ! slots[soloType].params.power;
+        if (soloValid)
+            soloMatchDb = slots[soloType].loudness.matchDb;
         const bool maximizerInChain = audioInChain[(int) ModuleType::Maximizer];
 
         const float targets[] = {
@@ -628,14 +750,8 @@ struct Chain::Impl
         for (int k = 0; k < audioCount; ++k)
         {
             auto& s = slots[audioOrder[k]];
-            if (s.processing && s.wet.isAt (0.0f) && s.warmup <= 0)
-            {
-                const int t = audioOrder[k];
-                const bool enabled = s.params.power && (solo.load (std::memory_order_relaxed) < 0
-                                                        || solo.load (std::memory_order_relaxed) == t);
-                if (! enabled)
-                    s.processing = false;
-            }
+            if (s.processing && s.wet.isAt (0.0f) && s.warmup <= 0 && ! s.enabled)
+                s.processing = false;
         }
     }
 
@@ -675,13 +791,16 @@ struct Chain::Impl
         s.dry.setDelay (s.latency);
         s.dry.process (x[0], x[1], d[0], d[1], n);
 
-        const ChannelMode mode = s.params.channelMode;
+        const ChannelMode mode = s.activeMode;
         const bool dual = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight;
         const bool ms = mode == ChannelMode::MidSide;
         const bool keepActive = dual && (! s.keep[0].isAt (1.0f) || ! s.keep[1].isAt (1.0f));
         const bool needDomain = ms && (s.processing || keepActive);
         const bool handles = m.handlesDelta();
-        const bool moduleDelta = handles && s.deltaRequested && s.processing;
+
+        // loudness of the module's own effect (L/R, aligned dry vs output), for classic gain match while soloed
+        const bool measure = s.processing && s.params.power && s.wet.isAt (1.0f) && ! keepActive && ! s.monitorActive;
+        const double eIn = measure ? s.loudness.weigh (0, d[0], d[1], n) : 0.0;
 
         if (needDomain)
         {
@@ -693,7 +812,15 @@ struct Chain::Impl
         {
             ProcessContext ctx = baseCtx;
             ctx.channelMode = mode == ChannelMode::TransientSustain ? ChannelMode::Stereo : mode;
-            ctx.delta = moduleDelta;
+            ctx.delta = s.deltaRequested;
+            if (handles)
+            {
+                // the module writes its own delta here and keeps its normal output in x (Module.h); always passed,
+                // so the delta line is warm whenever Delta is switched on
+                std::fill (dt[0], dt[0] + n, 0.0f);
+                std::fill (dt[1], dt[1] + n, 0.0f);
+                ctx.deltaOut = dt;
+            }
             m.process (x, n, ctx);
 
             for (int c = 0; c < 2; ++c)
@@ -703,8 +830,9 @@ struct Chain::Impl
                 for (int i = 0; i < n; ++i)
                 {
                     const float g = s.channelOn[c].next();
-                    const float ref = moduleDelta ? 0.0f : d[c][i];
-                    x[c][i] = mixExact (ref, x[c][i], g);
+                    x[c][i] = mixExact (d[c][i], x[c][i], g);
+                    if (handles)
+                        dt[c][i] *= g;
                 }
             }
 
@@ -715,57 +843,44 @@ struct Chain::Impl
                     const float w = s.wet.next();
                     for (int c = 0; c < 2; ++c)
                     {
-                        const float ref = moduleDelta ? 0.0f : d[c][i];
-                        x[c][i] = mixExact (ref, x[c][i], w);
+                        x[c][i] = mixExact (d[c][i], x[c][i], w);
+                        if (handles)
+                            dt[c][i] *= w;
                     }
                 }
             }
+
+            if (! handles)
+                for (int c = 0; c < 2; ++c)
+                    for (int i = 0; i < n; ++i)
+                        dt[c][i] = x[c][i] - d[c][i];
         }
         else
         {
             std::memcpy (x[0], d[0], sizeof (float) * (size_t) n);
             std::memcpy (x[1], d[1], sizeof (float) * (size_t) n);
+            std::fill (dt[0], dt[0] + n, 0.0f);
+            std::fill (dt[1], dt[1] + n, 0.0f);
         }
 
         // difference meter (module domain, before channel solo)
-        if (! moduleDelta)
         {
-            double eIn = 0.0, eOut = 0.0;
+            double eDry = 0.0, eOut = 0.0;
             for (int c = 0; c < 2; ++c)
                 for (int i = 0; i < n; ++i)
                 {
-                    eIn += (double) d[c][i] * (double) d[c][i];
+                    eDry += (double) d[c][i] * (double) d[c][i];
                     eOut += (double) x[c][i] * (double) x[c][i];
                 }
             const double a = 1.0 - std::exp (-(double) n / (0.3 * sampleRate));
-            s.msIn += a * (eIn / (2.0 * n) - s.msIn);
+            s.msIn += a * (eDry / (2.0 * n) - s.msIn);
             s.msOut += a * (eOut / (2.0 * n) - s.msOut);
             const float diff = (s.msIn > 1.0e-14 && s.msOut > 1.0e-14) ? (float) (10.0 * std::log10 (s.msOut / s.msIn))
                                                                        : 0.0f;
             ioMeters.moduleDifferenceDb[t].store (diff);
         }
 
-        // delta contribution (module domain)
-        const bool contributes = handles ? moduleDelta : ! s.deltaGain.isAt (0.0f);
-        if (contributes)
-        {
-            if (moduleDelta)
-            {
-                std::memcpy (dt[0], x[0], sizeof (float) * (size_t) n);
-                std::memcpy (dt[1], x[1], sizeof (float) * (size_t) n);
-            }
-            else
-            {
-                for (int i = 0; i < n; ++i)
-                {
-                    const float g = s.deltaGain.next();
-                    dt[0][i] = g * (x[0][i] - d[0][i]);
-                    dt[1][i] = g * (x[1][i] - d[1][i]);
-                }
-            }
-        }
-
-        // channel solo
+        // channel solo (normal output and delta alike)
         if (keepActive)
         {
             for (int i = 0; i < n; ++i)
@@ -774,8 +889,7 @@ struct Chain::Impl
                 {
                     const float k = s.keep[c].next();
                     x[c][i] *= k;
-                    if (contributes)
-                        dt[c][i] *= k;
+                    dt[c][i] *= k;
                 }
             }
         }
@@ -783,18 +897,26 @@ struct Chain::Impl
         if (needDomain)
         {
             decodeMs (x[0], x[1], n);
-            if (contributes)
-                decodeMs (dt[0], dt[1], n);
+            decodeMs (dt[0], dt[1], n);
         }
 
-        // delta bus: upstream deltas aligned through this slot, plus this slot's change
-        float* b[2] { bus[0].data(), bus[1].data() };
-        s.deltaBus.setDelay (s.latency);
-        s.deltaBus.process (b[0], b[1], b[0], b[1], n);
-        if (contributes)
-            for (int c = 0; c < 2; ++c)
-                for (int i = 0; i < n; ++i)
-                    b[c][i] += dt[c][i];
+        if (measure)
+            s.loudness.update (eIn, s.loudness.weigh (1, x[0], x[1], n), n, sampleRate);
+
+        // This slot's delta, delayed by the latency of the slots after it: chain-output aligned. The line always
+        // runs, so switching Delta on plays real signal at once whatever the downstream latency.
+        s.deltaLine.setDelay (s.downstream);
+        s.deltaLine.process (dt[0], dt[1], dt[0], dt[1], n);
+        if (! s.deltaGain.isAt (0.0f))
+        {
+            float* b[2] { bus[0].data(), bus[1].data() };
+            for (int i = 0; i < n; ++i)
+            {
+                const float g = s.deltaGain.next();
+                b[0][i] += g * dt[0][i];
+                b[1][i] += g * dt[1][i];
+            }
+        }
 
         if (tapped)
             modulePostFifo.push (x[0], x[1], n);
@@ -926,7 +1048,8 @@ struct Chain::Impl
             if (! gainsIdle)
             {
                 const float cA = classicAmount.next(), mA = modernAmount.next(), sA = soloClassicAmount.next();
-                const double procDb = matchDb * (double) (sA - mA);
+                // classic + soloed powered-off slot: its dry signal gets that slot's own loudness change
+                const double procDb = soloMatchDb * (double) sA - matchDb * (double) mA;
                 const double bypDb = matchDb * (double) cA;
                 gp = procDb != 0.0 ? (float) std::exp (procDb * kLn10Over20) : 1.0f;
                 gb = bypDb != 0.0 ? (float) std::exp (bypDb * kLn10Over20) : 1.0f;
@@ -977,10 +1100,12 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
             v.assign ((size_t) d.maxBlock, 0.0f);
 
     const int slotCapacity = std::max (16384, (int) std::ceil (0.75 * d.sampleRate));
+    const int deltaCapacity = std::max (32768, (int) std::ceil (1.3 * d.sampleRate));   // downstream latency
     for (auto& s : d.slots)
     {
         s.dry.prepare (slotCapacity);
-        s.deltaBus.prepare (slotCapacity);
+        s.deltaLine.prepare (deltaCapacity);
+        s.loudness.design (d.sampleRate);
     }
     d.bypassDelay.prepare (std::max (65536, (int) std::ceil (2.0 * d.sampleRate)));
     d.dcFilter.design (d.sampleRate);
@@ -1026,14 +1151,7 @@ void Chain::reset() noexcept
     for (auto& m : d.modules)
         m->reset();
     for (auto& s : d.slots)
-    {
-        s.dry.clear();
-        s.deltaBus.clear();
-        s.processing = true;
-        s.fresh = true;
-        s.warmup = 0;
-        s.msIn = s.msOut = 0.0;
-    }
+        d.clearSlot (s);
     d.bypassDelay.clear();
     d.dcFilter.reset();
     d.dither.reset();
@@ -1042,6 +1160,7 @@ void Chain::reset() noexcept
     d.inputTp.clear();
     d.outputTp.clear();
     d.matchDb = d.matchTargetDb = 0.0;
+    d.soloMatchDb = 0.0;
     d.firstBlock = true;
 }
 

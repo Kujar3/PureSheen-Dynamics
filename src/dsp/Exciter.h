@@ -4,7 +4,7 @@
 
 #include <memory>
 
-// Multiband harmonic Exciter (reference parity, seven saturation models). Owner: dsp-stereo. Implementation: Exciter.cpp.
+// Multiband harmonic Exciter (reference-suite parity, seven saturation models). Owner: dsp-stereo. Implementation: Exciter.cpp.
 //   - per band: wet = saturate_mode (band * driveGain), level-compensated so drive changes harmonics more than level;
 //     out = dry * (1 - mix) + wet * mix
 //   - models (our own static + dynamic curves):

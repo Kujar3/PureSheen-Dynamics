@@ -21,7 +21,7 @@ struct FullState
 };
 
 // Monitoring parameters (global Bypass, Gain Match on / modern): never recorded in the history, never restored by
-// undo / snapshots / presets (they are listening aids, reference parity).
+// undo / snapshots / presets (they are listening aids, reference-suite parity).
 bool isMonitoringParam (int index) noexcept;
 
 // Parameters a preset of this scope stores (-1 = global: every parameter except the monitoring ones; module: that

@@ -32,7 +32,7 @@ struct ModuleInfo
 
 const ModuleInfo& moduleInfo (ModuleType);   // Types.cpp
 
-// The chain a fresh instance starts with (the reference starts empty; we start with a useful default so the plug-in does
+// The chain a fresh instance starts with (the reference suite starts empty; we start with a useful default so the plug-in does
 // something sensible straight away): EQ 1 -> Dynamics -> Imager -> Exciter -> Maximizer, everything at neutral
 // settings except the Maximizer (Gain 0 dB, Output -1.0 dBFS, True Peak on), which only catches overs.
 inline constexpr std::array<ModuleType, 5> kDefaultChain {
@@ -40,7 +40,7 @@ inline constexpr std::array<ModuleType, 5> kDefaultChain {
 };
 
 //==============================================================================
-// Per-module channel processing (the reference's "channel modes"). Parameter set A = Stereo / Mid / Left, set B = Side / Right.
+// Per-module channel processing ("channel modes"). Parameter set A = Stereo / Mid / Left, set B = Side / Right.
 //   Stereo     : both channels use set A, detectors / gain stages stereo-linked
 //   MidSide    : the host M/S-encodes (M = (L+R)/2, S = (L-R)/2), ch0 = Mid with set A, ch1 = Side with set B, decodes
 //   LeftRight  : ch0 = Left with set A, ch1 = Right with set B, unlinked
@@ -101,7 +101,7 @@ enum class ExciterMode : int { Analog = 0, Retro, Tape, Tube, Warm, Triode, Dual
 enum class StereoizeMode : int { ModeI = 0, ModeII };
 
 //==============================================================================
-// Maximizer algorithms (our own; behaviour modelled on the published descriptions of the reference's limiter modes).
+// Maximizer algorithms (our own; behaviour modelled on published descriptions of mastering limiters).
 enum class MaximizerMode : int
 {
     LowLatency = 0,   // single-band lookahead limiter, ~1 ms lookahead

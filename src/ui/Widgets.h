@@ -25,7 +25,7 @@ namespace fmt
 
 //==============================================================================
 // Rotary knob bound to one parameter: caption above, value text below (editable on double-click is NOT used:
-// double-click resets to default, reference parity is "Alt/Option-click resets"; we do: double-click = reset,
+// double-click resets to default, the reference suite does "Alt/Option-click resets"; we do: double-click = reset,
 // Ctrl-drag = fine, right-click = menu "Reset to default / Enter value... / (MIDI learn reserved)").
 // One undo step per drag (begin/end gesture through juce::SliderParameterAttachment).
 class ParamKnob : public juce::Component, public juce::SettableTooltipClient

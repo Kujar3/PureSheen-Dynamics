@@ -1,9 +1,12 @@
 #include "plugin/FactoryPresets.h"
 
 // Factory presets. Values are musically conservative starting points: the Maximizer always keeps True Peak on with
-// the ceiling at -1 dBTP (-0.5 for the loud club styles), low bands are narrowed rather than widened, and the
-// compressor settings aim at 1-3 dB of gain reduction on typical mixes. The Streaming preset aims at roughly
-// -14 LUFS integrated on a typical -20 LUFS premaster (and sets the Learn target to -14), the loud ones at -9..-7 LUFS.
+// the ceiling at -1 dBTP (-0.5 for the loud club styles), low bands are narrowed rather than widened, EQ moves stay
+// within +-2 dB and the compressor settings aim at 1-3 dB of gain reduction on typical mixes.
+// The Maximizer gains are tuned on a -20 LUFS premaster (peaks at -4 dBFS, LRA 5 LU; the integration test mix):
+// "Streaming Ready" lands at about -14 LUFS, "Loud and Clear" about -9.5, "Club Loud" about -8 (-0.5 dBTP), the
+// Pop / Rock / Hip-Hop / EDM styles at -11..-15, and the Gentle presets stay within 1-2 LU of the input. Every preset that
+// pushes loudness sets the Learn target to its intended level, so Learn Input Gain adapts it to other mixes.
 namespace psplug
 {
 namespace
@@ -147,7 +150,7 @@ std::vector<FactoryPreset> build()
             .comp (1, -20.0f, 1.8f, 25.0f, 180.0f, 8.0f)
             .set ("dyn.adaptRel", 1.0f)
             .bands ("img", 2, 150.0f).width (1, -25.0f)
-            .maximizer (MM::Transparent, 4.0f, -1.0f, 4.0f)
+            .maximizer (MM::Transparent, 9.5f, -1.0f, 4.0f)
             .set ("max.learnTarget", -14.0f)));
 
     all.push_back (global ("Loud and Clear", "Start Here",
@@ -161,7 +164,7 @@ std::vector<FactoryPreset> build()
             .comp (3, -24.0f, 2.0f, 10.0f, 80.0f)
             .bands ("exc", 2, 4000.0f).excite (2, EM::Tape, 15.0f, 50.0f)
             .bands ("img", 2, 180.0f).width (1, -30.0f).width (2, 10.0f)
-            .maximizer (MM::Transparent, 8.0f, -1.0f, 2.5f)
+            .maximizer (MM::Transparent, 15.0f, -1.0f, 2.5f)
             .set ("max.upward", 1.5f)
             .set ("max.learnTarget", -9.0f)));
 
@@ -176,12 +179,12 @@ std::vector<FactoryPreset> build()
             .comp (3, -22.0f, 2.0f, 5.0f, 60.0f)
             .bands ("img", 2, 150.0f).width (1, -100.0f).width (2, 15.0f)
             .bands ("exc", 2, 5000.0f).excite (2, EM::Analog, 15.0f, 40.0f)
-            .maximizer (MM::Aggressive, 10.0f, -0.5f, 1.5f)
+            .maximizer (MM::Aggressive, 15.0f, -0.5f, 1.5f)
             .set ("max.style3", (float) ps::AggressiveStyle::Balanced)
             .set ("max.clip.on", 1.0f)
             .set ("max.clip.mode", (float) ps::SoftClipMode::Moderate)
             .set ("max.clip.amount", 50.0f)
-            .set ("max.learnTarget", -7.0f)));
+            .set ("max.learnTarget", -7.5f)));
 
     all.push_back (global ("Wide Supersaw Master", "EDM",
         Builder()
@@ -193,9 +196,9 @@ std::vector<FactoryPreset> build()
             .set ("img.stz.on", 1.0f).set ("img.stz.mode", (float) ps::StereoizeMode::ModeII).set ("img.stz.amount", 20.0f)
             .set ("img.antiphase", 1.0f)
             .bands ("exc", 2, 6000.0f).excite (2, EM::Analog, 20.0f, 60.0f)
-            .maximizer (MM::Transparent, 7.0f, -0.5f, 3.0f)
+            .maximizer (MM::Transparent, 13.0f, -0.5f, 3.0f)
             .set ("max.si.trans", 20.0f)
-            .set ("max.learnTarget", -8.0f)));
+            .set ("max.learnTarget", -11.5f)));
 
     all.push_back (global ("Deep Bass Anchor", "EDM",
         Builder()
@@ -205,7 +208,8 @@ std::vector<FactoryPreset> build()
             .comp (1, -22.0f, 3.0f, 25.0f, 120.0f)
             .comp (2, -20.0f, 1.5f, 15.0f, 100.0f, 10.0f)
             .bands ("img", 2, 140.0f).width (1, -100.0f)
-            .maximizer (MM::Smooth, 6.0f, -1.0f, 5.0f)));
+            .maximizer (MM::Smooth, 8.0f, -1.0f, 5.0f)
+            .set ("max.learnTarget", -14.5f)));
 
     all.push_back (global ("Acoustic Air", "Gentle",
         Builder()
@@ -215,7 +219,7 @@ std::vector<FactoryPreset> build()
             .comp (1, -24.0f, 1.3f, 50.0f, 300.0f, 15.0f)
             .bands ("exc", 2, 6000.0f).excite (2, EM::Tube, 12.0f, 40.0f)
             .width (1, 5.0f)
-            .maximizer (MM::Transparent, 2.0f, -1.0f, 6.0f)));
+            .maximizer (MM::Transparent, 3.0f, -1.0f, 6.0f)));
 
     all.push_back (global ("Warm Glue", "Gentle",
         Builder()
@@ -241,10 +245,10 @@ std::vector<FactoryPreset> build()
             .comp (2, -20.0f, 2.0f, 15.0f, 100.0f)
             .comp (3, -24.0f, 2.5f, 5.0f, 60.0f)
             .bands ("img", 2, 200.0f).width (1, -20.0f).width (2, 10.0f)
-            .maximizer (MM::Aggressive, 7.0f, -1.0f, 3.0f)
+            .maximizer (MM::Aggressive, 12.0f, -1.0f, 3.0f)
             .set ("max.style3", (float) ps::AggressiveStyle::Crisp)
             .set ("max.upward", 2.0f)
-            .set ("max.learnTarget", -9.0f)));
+            .set ("max.learnTarget", -11.0f)));
 
     all.push_back (global ("Rock Drive", "Pop and Rock",
         Builder()
@@ -253,8 +257,9 @@ std::vector<FactoryPreset> build()
             .eq1 ('a', 3, EqShape::ProportionalQ, 2500.0f, 1.0f, 0.8f)
             .comp (1, -18.0f, 2.0f, 20.0f, 120.0f)
             .bands ("exc", 3, 200.0f, 3000.0f).excite (2, EM::Triode, 20.0f, 60.0f).excite (3, EM::Tape, 10.0f, 50.0f)
-            .maximizer (MM::Aggressive, 8.0f, -1.0f, 2.0f)
-            .set ("max.style3", (float) ps::AggressiveStyle::Clipping)));
+            .maximizer (MM::Aggressive, 11.0f, -1.0f, 2.0f)
+            .set ("max.style3", (float) ps::AggressiveStyle::Clipping)
+            .set ("max.learnTarget", -12.0f)));
 
     all.push_back (global ("Hip-Hop Knock", "Hip-Hop",
         Builder()
@@ -265,9 +270,10 @@ std::vector<FactoryPreset> build()
             .comp (1, -18.0f, 2.5f, 40.0f, 150.0f)
             .comp (2, -20.0f, 2.0f, 20.0f, 120.0f)
             .bands ("img", 2, 120.0f).width (1, -100.0f).width (2, 10.0f)
-            .maximizer (MM::Transparent, 7.0f, -1.0f, 3.0f)
+            .maximizer (MM::Transparent, 10.0f, -1.0f, 3.0f)
             .set ("max.trans.on", 1.0f)
-            .set ("max.trans.amount", 30.0f)));
+            .set ("max.trans.amount", 30.0f)
+            .set ("max.learnTarget", -11.0f)));
 
     all.push_back (global ("Mid-Side Clarity", "Mastering",
         Builder()
@@ -280,7 +286,8 @@ std::vector<FactoryPreset> build()
             .eq1 ('b', 2, EqShape::HighShelfBaxandall, 9000.0f, 2.0f)
             .comp (1, -20.0f, 1.5f, 30.0f, 150.0f, 10.0f)
             .bands ("img", 2, 150.0f).width (1, -40.0f).width (2, 10.0f)
-            .maximizer (MM::Transparent, 4.0f, -1.0f, 4.0f)));
+            .maximizer (MM::Transparent, 7.0f, -1.0f, 4.0f)
+            .set ("max.learnTarget", -15.5f)));
 
     //==============================================================================
     // Equalizer presets (shared by EQ 1 and EQ 2)

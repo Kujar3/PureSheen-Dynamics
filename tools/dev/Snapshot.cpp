@@ -14,12 +14,12 @@
 // meter / spectrum option variants, and the sizes 980x600, 1180x720, 1600x1000 and 1800x1100.
 //
 // A deterministic synthetic song (kick, bass, chords, hats; LCG noise, no time) is played through the real processor
-// in 1600-sample blocks between editor ticks, so meters and spectra show real measurements. While the chain is still a
-// stub that does not feed its UI taps, the tool feeds the FIFOs and the loudness meters itself from the same audio
-// (stated in the console output) so the shots stay meaningful.
+// in 1600-sample blocks between editor ticks, so meters and spectra show real measurements (the chain feeds its own UI
+// taps and meters).
 //
-// UI checks (any failure fails the command): every module panel builds controls, nothing in the editor takes keyboard
-// focus, the History popup and Help overlay open, a chain drag reorders the processor's chain.
+// UI checks (any failure fails the command): every module panel builds controls, the chain feeds its UI taps, nothing
+// in the editor takes keyboard focus, the History popup and Help overlay open, a chain drag reorders the processor's
+// chain.
 namespace juce::detail
 {
 bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
@@ -138,8 +138,6 @@ struct Rig
     {
         processor.setPlayConfigDetails (2, 2, kSampleRate, kBlock);
         processor.prepareToPlay (kSampleRate, kBlock);
-        inputLoudness.prepare (kSampleRate);
-        outputLoudness.prepare (kSampleRate);
         buffer.setSize (2, kBlock);
     }
 
@@ -151,71 +149,21 @@ struct Rig
         for (int b = 0; b < blocks; ++b)
         {
             song.render (buffer.getWritePointer (0), buffer.getWritePointer (1), kBlock);
-            const juce::AudioBuffer<float> input (buffer);
             const auto before = chain.getOutputFifo().getWriteCount();
             juce::MidiBuffer midi;
             processor.processBlock (buffer, midi);
 
             if (chain.getOutputFifo().getWriteCount() == before)
-                feedTaps (input);
+                tapsFed = false;
 
             editor.updateNow();
         }
     }
 
-    // The chain does not feed its taps yet (stub): feed FIFOs and loudness meters from the same audio.
-    void feedTaps (const juce::AudioBuffer<float>& input)
-    {
-        if (! reportedFallback)
-        {
-            std::cout << "note: the chain does not feed its UI taps yet - the snapshot feeds them from the played audio\n";
-            reportedFallback = true;
-        }
-
-        auto& chain = processor.getChain();
-        const float* inL = input.getReadPointer (0);
-        const float* inR = input.getReadPointer (1);
-        const float* outL = buffer.getReadPointer (0);
-        const float* outR = buffer.getReadPointer (1);
-        chain.getInputFifo().push (inL, inR, kBlock);
-        chain.getOutputFifo().push (outL, outR, kBlock);
-
-        // Module taps: the "post" side gets a gentle tilt so pre and post curves can be told apart.
-        std::vector<float> postL ((size_t) kBlock), postR ((size_t) kBlock);
-
-        for (int i = 0; i < kBlock; ++i)
-        {
-            tiltState[0] += 0.08f * (inL[i] - tiltState[0]);
-            tiltState[1] += 0.08f * (inR[i] - tiltState[1]);
-            postL[(size_t) i] = 1.12f * inL[i] - 0.25f * tiltState[0];
-            postR[(size_t) i] = 1.12f * inR[i] - 0.25f * tiltState[1];
-        }
-
-        chain.getModulePreFifo().push (inL, inR, kBlock);
-        chain.getModulePostFifo().push (postL.data(), postR.data(), kBlock);
-
-        inputLoudness.process (inL, inR, kBlock);
-        outputLoudness.process (outL, outR, kBlock);
-        auto& m = const_cast<ps::IoMeters&> (chain.getIoMeters());
-        m.inputMomentaryLufs.store (inputLoudness.momentaryLufs());
-        m.inputShortTermLufs.store (inputLoudness.shortTermLufs());
-        m.inputIntegratedLufs.store (inputLoudness.integratedLufs());
-        m.outputMomentaryLufs.store (outputLoudness.momentaryLufs());
-        m.outputShortTermLufs.store (outputLoudness.shortTermLufs());
-        m.outputIntegratedLufs.store (outputLoudness.integratedLufs());
-        m.outputLra.store (outputLoudness.loudnessRange());
-
-        const float diffs[ps::kNumModuleTypes] { 1.4f, 0.6f, -2.3f, 0.2f, 0.9f, 3.1f };
-        for (int t = 0; t < ps::kNumModuleTypes; ++t)
-            m.moduleDifferenceDb[t].store (diffs[t]);
-    }
-
     PureSheenProcessor processor;
     SongGenerator song;
     juce::AudioBuffer<float> buffer;
-    ps::LoudnessMeter inputLoudness, outputLoudness;
-    float tiltState[2] {};
-    bool reportedFallback = false;
+    bool tapsFed = true;
 };
 
 void set (PureSheenProcessor& p, const juce::String& id, float v)
@@ -402,7 +350,7 @@ int runSnapshot (const juce::File& outputDir)
     // 07: a chain drag in progress (Imager dragged towards the front), then dropped
     {
         editor->selectModule ((int) ps::ModuleType::Dynamics);
-        rig.play (*editor, 2);
+        rig.play (*editor, 24);
         auto* strip = findChild<ps::ui::ChainStrip> (*editor);
 
         if (strip == nullptr)
@@ -434,7 +382,8 @@ int runSnapshot (const juce::File& outputDir)
     {
         editor->setSize (s.w, s.h);
 
-        for (auto type : { ps::ModuleType::Equalizer1, ps::ModuleType::Dynamics, ps::ModuleType::Maximizer })
+        for (auto type : { ps::ModuleType::Equalizer1, ps::ModuleType::Dynamics, ps::ModuleType::Imager,
+                           ps::ModuleType::Exciter, ps::ModuleType::Maximizer })
         {
             editor->selectModule ((int) type);
             rig.play (*editor, 6);
@@ -524,6 +473,58 @@ int runSnapshot (const juce::File& outputDir)
         ok &= band > -30.0f && band < -6.0f;
     }
 
+    // 10c: mode variants: Maximizer Spectral, EQ 1 Digital, Dynamics 4 bands in Mid/Side (Side shown), Imager with
+    //      Stereoize and 4 bands, Exciter 4 bands in Mid/Side
+    {
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+
+        editor->selectModule ((int) ps::ModuleType::Maximizer);
+        set (proc, "max.mode", (float) ps::MaximizerMode::Spectral);
+        rig.play (*editor, 40);
+        ok &= writePng (*editor, file ("10_max_spectral_1180x720"));
+        set (proc, "max.mode", (float) ps::MaximizerMode::Transparent);
+
+        editor->selectModule ((int) ps::ModuleType::Equalizer1);
+        set (proc, "eq1.mode", 1.0f);
+        rig.play (*editor, 40);
+        ok &= writePng (*editor, file ("10_eq1_digital_1180x720"));
+        set (proc, "eq1.mode", 0.0f);
+
+        editor->selectModule ((int) ps::ModuleType::Dynamics);
+        set (proc, "dyn.bands", 4.0f);
+        set (proc, "dyn.xover3", 8000.0f);
+        set (proc, "dyn.chMode", 1.0f);
+        set (proc, "dyn.link", 0.0f);
+        set (proc, "dyn.b.b4.comp.thr", -26.0f);
+        set (proc, "dyn.b.b4.comp.ratio", 3.0f);
+        rig.play (*editor, 6);
+        if (auto* panel = editor->getCurrentPanel())
+            panel->setChannelSet (1);
+        rig.play (*editor, 30);
+        ok &= writePng (*editor, file ("10_dyn_4band_midside_1180x720"));
+        if (auto* panel = editor->getCurrentPanel())
+            panel->setChannelSet (0);
+
+        editor->selectModule ((int) ps::ModuleType::Imager);
+        set (proc, "img.bands", 4.0f);
+        set (proc, "img.b4.width", 40.0f);
+        set (proc, "img.stz.on", 1.0f);
+        rig.play (*editor, 40);
+        ok &= writePng (*editor, file ("10_img_4band_1180x720"));
+
+        editor->selectModule ((int) ps::ModuleType::Exciter);
+        set (proc, "exc.xover1", 150.0f);
+        set (proc, "exc.xover2", 1200.0f);
+        set (proc, "exc.xover3", 5000.0f);
+        set (proc, "exc.a.b3.drive", 20.0f);
+        set (proc, "exc.a.b4.mode", (float) ps::ExciterMode::Tube);
+        set (proc, "exc.a.b4.drive", 35.0f);
+        set (proc, "exc.bands", 4.0f);
+        set (proc, "exc.chMode", 1.0f);
+        rig.play (*editor, 40);
+        ok &= writePng (*editor, file ("10_exc_4band_midside_1180x720"));
+    }
+
     // 11: nothing takes keyboard focus
     ok &= checkNoFocus (*editor);
 
@@ -535,6 +536,9 @@ int runSnapshot (const juce::File& outputDir)
         std::cout << (saved ? "editor size saved in the UI state: ok\n" : "FAILED: editor size not saved\n");
         ok &= saved;
     }
+
+    std::cout << (rig.tapsFed ? "chain feeds its UI taps: ok" : "FAILED: the chain did not feed its output FIFO") << "\n";
+    ok &= rig.tapsFed;
 
     holder.reset();
     std::cout << (ok ? "snapshot: OK\n" : "snapshot: FAILED\n");

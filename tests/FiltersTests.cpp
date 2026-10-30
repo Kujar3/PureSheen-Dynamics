@@ -436,6 +436,134 @@ TEST_CASE ("filters. SmoothedBiquad stays stable under fast high-Q sweeps")
     CHECK (peak < 50.0);
 }
 
+TEST_CASE ("filters. designs never put a pole next to the unit circle (narrow bells and resonant passes near Nyquist)")
+{
+    // Regression: the refinement fit could move a pole to within 1e-6 of |z| = 1 near Nyquist (e.g. a +12 dB, Q 12
+    // bell at 21.2 kHz / 44.1 kHz: r = 0.9999992, ringing for ~30 s; a Q 7.3 high pass at 20.4 kHz: a pole at z = -1).
+    // Bound: at most half the distance to the circle of the analog prototype's impulse-invariant poles.
+    auto maxRadius = [] (const BiquadCoeffs& c)
+    {
+        const std::complex<double> d = std::sqrt (std::complex<double> (c.a1 * c.a1 - 4.0 * c.a2, 0.0));
+        return std::max (std::abs ((-c.a1 + d) * 0.5), std::abs ((-c.a1 - d) * 0.5));
+    };
+    int checked = 0, bad = 0;
+    double worstRatio = 0.0;
+    for (double sr : { 44100.0, 48000.0, 96000.0 })
+        for (double hz = 20.0; hz < 0.49 * sr; hz *= 1.04)
+            for (double q : { 0.5, 1.0, 2.0, 4.0, 7.3, 12.0, 24.0 })
+                for (int kind = 0; kind < 5; ++kind)
+                {
+                    const double db = kind == 0 ? 3.0 : (kind == 1 ? 12.0 : 24.0);
+                    const bool bell = kind < 3;
+                    const BiquadCoeffs c = bell ? design::peak (sr, hz, q, db)
+                                                : (kind == 3 ? design::highPass (sr, hz, q) : design::lowPass (sr, hz, q));
+                    const double w0 = 2.0 * kPi * hz / sr;
+                    const double zeta = bell ? 0.5 / (q * std::pow (10.0, db / 40.0)) : 0.5 / q;
+                    if (zeta >= 1.0)
+                        continue;
+                    const double ra = std::exp (-zeta * w0);
+                    const double r = maxRadius (c);
+                    const double ratio = (1.0 - ra) / std::max (1.0 - r, 1.0e-300);   // ringing time vs analog
+                    worstRatio = std::max (worstRatio, ratio);
+                    ++checked;
+                    if (! (r < 1.0 && ratio <= 2.0 + 1.0e-6))
+                        ++bad;
+                }
+    pstest::note ("designs checked", checked);
+    pstest::note ("worst ringing time vs the analog prototype (x)", worstRatio);
+    CHECK_EQ (bad, 0);
+}
+
+TEST_CASE ("filters. SmoothedBiquad is stable under any modulation (alternating 30 Hz / 500 Hz Q 12 bells)")
+{
+    // Regression: interpolated direct-form coefficients went unstable here (an impulse grew to ~1e51 in 1 s).
+    const double sr = 44100.0;
+    const auto lowBell = design::peak (sr, 30.0, 12.0, 15.0);
+    const auto midBell = design::peak (sr, 500.0, 12.0, 15.0);
+    SmoothedBiquad sm;
+    sm.setRampLength (64);
+    sm.setTarget (lowBell);
+    sm.snapToTarget();
+
+    double peak = 0.0, tailEnergy = 0.0;
+    bool finite = true;
+    const int n = (int) sr;
+    for (int i = 0; i < n; ++i)
+    {
+        if (i % 64 == 0)
+            sm.setTarget ((i / 64) % 2 == 0 ? midBell : lowBell);
+        const double y = sm.processSample (i == 0 ? 1.0 : 0.0);
+        finite = finite && std::isfinite (y);
+        peak = std::max (peak, std::abs (y));
+        if (i >= n - 4410)
+            tailEnergy += y * y;
+    }
+    pstest::note ("impulse response peak under 64-sample alternation", peak);
+    pstest::note ("energy of the last 100 ms", tailEnergy);
+    CHECK (finite);
+    CHECK (peak < 10.0);          // a +15 dB bell's impulse response peaks near its b0 (~1)
+    CHECK (tailEnergy < 1.0e-6);  // and it decays
+
+    // the same with white noise: bounded by the gain of the bells (+15 dB = 5.6x), no build-up
+    const auto noise = pstest::whiteNoise (0.5, 2.0, sr, 4u);
+    SmoothedBiquad s2;
+    s2.setRampLength (64);
+    double outPeak = 0.0;
+    for (size_t i = 0; i < noise.size(); ++i)
+    {
+        if (i % 64 == 0)
+            s2.setTarget ((i / 64) % 2 == 0 ? midBell : lowBell);
+        outPeak = std::max (outPeak, std::abs (s2.processSample (noise[i])));
+    }
+    pstest::note ("noise output peak under the same alternation (input peak 0.5)", outPeak);
+    CHECK (std::isfinite (outPeak) && outPeak < 25.0);
+}
+
+TEST_CASE ("filters. SmoothedBiquad stays bounded under random designs, rates and ramp lengths")
+{
+    // Every kind of design, frequencies up to Nyquist, Q 0.1..24, +-24 dB, retargeted every 1..80 samples with ramps
+    // of 1..128 samples, at 44.1 and 192 kHz. The lattice can only lose state energy, so the output stays bounded by
+    // (input energy) x (largest ladder tap): no blow-up, ever.
+    pstest::Lcg lcg (77u);
+    auto uni = [&] { return 0.5 + 0.5 * (double) lcg.next(); };
+    double worst = 0.0;
+    bool finite = true;
+    for (double sr : { 44100.0, 192000.0 })
+    {
+        const auto noise = pstest::whiteNoise (0.5, 1.0, sr, 5u);
+        SmoothedBiquad sm;
+        int next = 0;
+        for (size_t i = 0; i < noise.size(); ++i)
+        {
+            if ((int) i == next)
+            {
+                const double hz = 10.0 * std::pow (sr * 0.049, uni());
+                const double q = 0.1 * std::pow (240.0, uni());
+                const double db = -24.0 + 48.0 * uni();
+                BiquadCoeffs c;
+                switch ((int) (uni() * 6.0))
+                {
+                    case 0: c = design::peak (sr, hz, q, db); break;
+                    case 1: c = design::lowShelf (sr, hz, std::max (q, 0.1), db); break;
+                    case 2: c = design::highShelf (sr, hz, q, db); break;
+                    case 3: c = design::highPass (sr, hz, q); break;
+                    case 4: c = design::lowPass (sr, hz, q); break;
+                    default: c = design::allPass (sr, hz, q); break;
+                }
+                sm.setRampLength (1 + (int) (uni() * 127.0));
+                sm.setTarget (c);
+                next = (int) i + 1 + (int) (uni() * 79.0);
+            }
+            const double y = sm.processSample (noise[i]);
+            finite = finite && std::isfinite (y);
+            worst = std::max (worst, std::abs (y));
+        }
+    }
+    pstest::note ("output peak, random modulation (input peak 0.5)", worst);
+    CHECK (finite);
+    CHECK (worst < 1000.0);
+}
+
 TEST_CASE ("filters. design cost")
 {
     // closed form (low / narrow) vs refined (wide, high) designs; the EQ may redesign per block while automating

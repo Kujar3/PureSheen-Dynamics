@@ -408,6 +408,117 @@ TEST_CASE ("xover. one band is a passthrough and band-count changes keep the sum
     }
 }
 
+TEST_CASE ("xover. type switches crossfade from a warmed engine (no jump, no gap)")
+{
+    // Regression: switching type reset the new engine, so Analog -> Hybrid jumped (start-up transient of every
+    // filter) and a switch to Digital played D samples of silence (its history was cleared).
+    const double sr = 48000.0;
+    const double seconds = 5.0;
+    auto mix = [&] (double f1, double f2, double f3)
+    {
+        auto a = pstest::sine (f1, -14.0, seconds, sr), b = pstest::sine (f2, -14.0, seconds, sr), c = pstest::sine (f3, -14.0, seconds, sr);
+        return pstest::added (pstest::added (a, b), c);
+    };
+    const auto L = mix (60.0, 250.0, 900.0), R = mix (80.0, 330.0, 1100.0);
+    float hz[2] { 200.0f, 2000.0f };
+
+    // the switch schedule: Analog -> Hybrid (1 s), -> Analog and straight back to Hybrid 5 ms later (2 s, reversal
+    // mid-fade), -> Digital (3 s), -> Analog (4 s)
+    struct Switch { size_t at; CrossoverType type; };
+    const Switch plan[] { { 48000, CrossoverType::Hybrid }, { 96000, CrossoverType::Analog }, { 96240, CrossoverType::Hybrid },
+                          { 144000, CrossoverType::Digital }, { 192000, CrossoverType::Analog } };
+    Crossover x;
+    x.prepare (sr, 480);
+    x.setup (3, hz, CrossoverType::Analog);
+    const auto bands = run (x, L, R, 240, [&] (size_t start)
+    {
+        CrossoverType t = CrossoverType::Analog;
+        for (const auto& s : plan)
+            if (start >= s.at)
+                t = s.type;
+        x.setup (3, hz, t);
+    });
+
+    // references: each type running on its own from the start
+    Bands ref[3];
+    for (int t = 0; t < 3; ++t)
+    {
+        Crossover r;
+        r.prepare (sr, 480);
+        r.setup (3, hz, (CrossoverType) t);
+        ref[t] = run (r, L, R, 240);
+    }
+
+    // 1. no splatter: the input has nothing above 1.1 kHz, so above 12 kHz every band is silent unless it jumps
+    double worstHf = -400.0, floorHf = -400.0;
+    for (int b = 0; b < 3; ++b)
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const auto hp = highPassed (bands[(size_t) b][(size_t) ch], sr, 12000.0);
+            floorHf = std::max (floorHf, pstest::dbOf (pstest::peakOf (hp, 24000, 20000)));
+            for (const auto& s : plan)
+                worstHf = std::max (worstHf, pstest::dbOf (pstest::peakOf (hp, s.at - 480, 9600)));
+        }
+    pstest::note ("HF (> 12 kHz) floor of the bands before any switch (dBFS)", floorHf);
+    pstest::note ("HF (> 12 kHz) peak of the bands around the type switches (dBFS)", worstHf);
+    CHECK (worstHf < -85.0);
+
+    // 2. after each switch (20 ms fade + margin) the bands are those of the new type running all along
+    auto worstVs = [&] (const Bands& r, size_t from, size_t to)
+    {
+        double e = 0.0;
+        for (int b = 0; b < 3; ++b)
+            for (int ch = 0; ch < 2; ++ch)
+                for (size_t i = from; i < to; ++i)
+                    e = std::max (e, std::abs ((double) bands[(size_t) b][(size_t) ch][i] - (double) r[(size_t) b][(size_t) ch][i]));
+        return pstest::dbOf (e);
+    };
+    const double eHybrid = worstVs (ref[(int) CrossoverType::Hybrid], 48000 + 1440, 96000);
+    const double eHybrid2 = worstVs (ref[(int) CrossoverType::Hybrid], 96240 + 1440, 144000);
+    const double eDigital = worstVs (ref[(int) CrossoverType::Digital], 144000 + 1440, 192000);
+    const double eAnalog = worstVs (ref[(int) CrossoverType::Analog], 192000 + 1440, L.size());
+    pstest::note ("after Analog -> Hybrid: bands vs Hybrid reference (dB)", eHybrid);
+    pstest::note ("after the mid-fade reversal: bands vs Hybrid reference (dB)", eHybrid2);
+    pstest::note ("after Hybrid -> Digital: bands vs Digital reference (dB, no history gap)", eDigital);
+    pstest::note ("after Digital -> Analog: bands vs Analog reference (dB)", eAnalog);
+    CHECK (eHybrid < -100.0);
+    CHECK (eHybrid2 < -100.0);
+    CHECK (eDigital < -100.0);
+    CHECK (eAnalog < -100.0);
+
+    // 3. the switch to Digital has signal at once: the band sum never drops out (10 ms RMS of the sum, L)
+    const auto s = sumOf (bands, 3, 0);
+    double lowest = 0.0;
+    for (size_t start = 144000 - 4800; start + 480 < 144000 + 9600; start += 240)
+        lowest = std::min (lowest, pstest::dbOf (pstest::rmsOf (s, start, 480)) - pstest::dbOf (pstest::rmsOf (s, 24000, 48000)));
+    pstest::note ("lowest 10 ms level of the sum around the switch to Digital (dB re steady)", lowest);
+    CHECK (lowest > -12.0);
+}
+
+TEST_CASE ("xover. Analog -> Hybrid with a 30 Hz crossover settles before it is heard")
+{
+    const double sr = 48000.0;
+    const auto L = pstest::added (pstest::sine (25.0, -10.0, 3.0, sr), pstest::sine (40.0, -10.0, 3.0, sr));
+    float hz[1] { 30.0f };
+    Crossover x, ref;
+    x.prepare (sr, 512);
+    ref.prepare (sr, 512);
+    x.setup (2, hz, CrossoverType::Analog);
+    ref.setup (2, hz, CrossoverType::Hybrid);
+    const auto bands = run (x, L, L, 256, [&] (size_t start) { x.setup (2, hz, start >= 48000 ? CrossoverType::Hybrid : CrossoverType::Analog); });
+    const auto r = run (ref, L, L, 256);
+
+    double e = 0.0;
+    for (int b = 0; b < 2; ++b)
+        for (size_t i = 48000 + 9600; i < L.size(); ++i)
+            e = std::max (e, std::abs ((double) bands[(size_t) b][0][i] - (double) r[(size_t) b][0][i]));
+    const auto hp = highPassed (bands[0][0], sr, 2000.0);
+    pstest::note ("30 Hz LR8: bands vs Hybrid reference 200 ms after the switch (dB)", pstest::dbOf (e));
+    pstest::note ("30 Hz LR8: band 1 above 2 kHz around the switch (dBFS)", pstest::dbOf (pstest::peakOf (hp, 47000, 12000)));
+    CHECK (pstest::dbOf (e) < -80.0);
+    CHECK (pstest::dbOf (pstest::peakOf (hp, 47000, 12000)) < -90.0);
+}
+
 TEST_CASE ("xover. setup and process do not allocate")
 {
     const double sr = 48000.0;
@@ -434,7 +545,7 @@ TEST_CASE ("xover. setup and process do not allocate")
         {
             hz[0] = 50.0f + (float) (start % 4000);
             hz[1] = 1000.0f + (float) (start % 3000);
-            x.setup (1 + (int) ((start / 512) % 4), hz, type);
+            x.setup (1 + (int) ((start / 512) % 4), hz, (CrossoverType) (((int) type + (int) (start / 512 / 7)) % 3));   // + type switches
             const float* in[2] { L.data() + start, L.data() + start };
             x.process (in, ptrs, 512);
         }

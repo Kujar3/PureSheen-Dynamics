@@ -42,6 +42,9 @@
 //          the low-pass outputs, so the bands still sum exactly to the delayed input during the fade.
 //
 // The input may alias any band buffer (each sample is read before any band sample at that index is written).
+// Type changes (see Crossover.h): Analog and Hybrid are two separate engines (LR4 / LR8); the FIR engine's input side
+// (FDL, dry delay, kernel jobs) runs whatever type is heard. During a transition both engines run on a copy of the
+// input (so aliasing stays safe) and their bands are crossfaded.
 namespace ps
 {
 namespace
@@ -260,6 +263,19 @@ namespace
                 }
             }
 
+            flushAll();
+        }
+
+        // Runs one stereo sample through the tree without producing output (warm-up from history).
+        void tick (double l, double r) noexcept
+        {
+            double b[kMaxBands];
+            split (st[0], l, b);
+            split (st[1], r, b);
+        }
+
+        void flushAll() noexcept
+        {
             for (auto& c : st)
             {
                 for (auto& xo : c.lp) for (auto& s : xo) { flush (s.ic1); flush (s.ic2); }
@@ -637,6 +653,27 @@ namespace
             }
         }
 
+        // Input side only (FDL, dry delay, kernel design jobs): keeps the history warm while another crossover type
+        // is heard, so switching to Digital has valid output at once. Cost: one FFT per partition.
+        void feed (const float* const* input, int numSamples) noexcept
+        {
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const cf xin { input[0][i], input[1][i] };
+                inCur[(size_t) pos] = xin;
+                dry[(size_t) dryPos] = xin;
+                dryPos = (dryPos + 1) & dryMask;
+                if (++pos == P)
+                {
+                    pos = 0;
+                    blockBoundary();
+                }
+            }
+        }
+
+        // The input `age` samples ago (1 = newest), age <= D.
+        cf history (int age) const noexcept { return dry[(size_t) ((dryPos - age) & dryMask)]; }
+
         void process (const float* const* input, float* const* const* out, int numSamples, int numBands) noexcept
         {
             for (int i = 0; i < numSamples; ++i)
@@ -682,28 +719,189 @@ namespace
 //==============================================================================
 struct Crossover::Impl
 {
-    IirEngine iir;
-    FirEngine fir;
-    int numBands = 1;
-    CrossoverType type = CrossoverType::Analog;
+    IirEngine analog, hybrid;   // fixed orders: LR4 / LR8
+    FirEngine fir;              // its input side always runs (history for an instant switch to Digital)
+    int numBands = 1, maxBlock = 512, fadeLen = 960;
+    CrossoverType type = CrossoverType::Analog;        // heard (no transition) / unused during a transition
+    CrossoverType requested = CrossoverType::Analog;   // last setup() type
+    CrossoverType from = CrossoverType::Analog, to = CrossoverType::Analog;
+    bool transition = false;
+    long long settle = 0;       // samples the new engine still runs silently before the fade
+    int fadePos = 0;
     float lastHz[kMaxCrossovers] { 120.0f, 1000.0f, 6000.0f };
     bool fresh = true;
     bool prepared = false;
     double sr = 48000.0;
 
-    void applyType (CrossoverType t) noexcept
+    std::vector<float> inCopy[2];
+    std::vector<float> tmp[kMaxBands][2];
+    float* tmpCh[kMaxBands][2] {};
+    float* const* tmpBands[kMaxBands] {};
+
+    IirEngine& iirFor (CrossoverType t) noexcept { return t == CrossoverType::Hybrid ? hybrid : analog; }
+    static bool isIir (CrossoverType t) noexcept { return t != CrossoverType::Digital; }
+
+    void updateFirActive() noexcept
     {
-        type = t;
-        if (t == CrossoverType::Digital)
+        const bool digital = transition ? (from == CrossoverType::Digital || to == CrossoverType::Digital)
+                                        : type == CrossoverType::Digital;
+        fir.setActiveCount (digital ? numBands - 1 : 0);
+    }
+
+    // Reset an IIR engine and run it over the input history the FIR keeps (D samples, ~70-75 ms at any rate), so it
+    // starts from (nearly) its steady state instead of from zero.
+    void warm (IirEngine& e) noexcept
+    {
+        e.reset();
+        e.snap();
+        for (int age = fir.D; age >= 1; --age)
         {
-            fir.reset();
+            const cf x = fir.history (age);
+            e.tick ((double) x.real(), (double) x.imag());
+        }
+        e.flushAll();
+    }
+
+    // Extra silent run after the warm-up so ~10 time constants of the slowest section at the lowest crossover have
+    // passed before the new engine is heard (0 above ~45 Hz for LR8, ~25 Hz for LR4).
+    long long settleSamples (CrossoverType target) const noexcept
+    {
+        const double fLow = std::max (10.0, (double) std::min (lastHz[0], std::min (lastHz[1], lastHz[2])));
+        const double q = target == CrossoverType::Hybrid ? 1.3065629648763766 : 0.7071067811865476;
+        const double need = 10.0 * q / (kPi * fLow) * sr;
+        return std::max (0LL, (long long) std::ceil (need) - (long long) fir.D);
+    }
+
+    void startTransition() noexcept
+    {
+        if (transition)
+        {
+            if (requested == from)
+            {
+                if (settle > 0)
+                {
+                    transition = false;              // nothing of the new type was heard yet
+                    type = from;
+                }
+                else
+                {
+                    std::swap (from, to);            // fade back from where the fade is
+                    fadePos = fadeLen - fadePos;
+                }
+                updateFirActive();
+            }
+            return;                                  // any other request waits for the end of this fade
+        }
+
+        if (requested == type)
+            return;
+
+        from = type;
+        to = requested;
+        transition = true;
+        fadePos = 0;
+        settle = 0;
+        if (isIir (to))
+        {
+            warm (iirFor (to));
+            if (isIir (from))
+                settle = settleSamples (to);
+        }
+        updateFirActive();
+    }
+
+    void finishTransition() noexcept
+    {
+        type = to;
+        transition = false;
+        settle = 0;
+        updateFirActive();
+        startTransition();   // a request that arrived during the fade
+    }
+
+    void runPlain (const float* const* input, float* const* const* bandsOut, int n) noexcept
+    {
+        if (type == CrossoverType::Digital)
+        {
+            fir.process (input, bandsOut, n, numBands);
         }
         else
         {
-            iir.setOrder (t == CrossoverType::Hybrid ? kLrOrderHybrid : kLrOrderAnalog);
-            iir.reset();
+            fir.feed (input, n);   // reads the input before the IIR writes (they may alias)
+            iirFor (type).process (input, bandsOut, n, numBands);
         }
-        fresh = true;
+    }
+
+    void processTransition (const float* const* input, float* const* const* bandsOut, int numSamples) noexcept
+    {
+        int offset = 0;
+        while (offset < numSamples)
+        {
+            float* outCh[kMaxBands][2];
+            float* const* outBands[kMaxBands];
+            for (int b = 0; b < kMaxBands; ++b)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                    outCh[b][ch] = b < numBands ? bandsOut[b][ch] + offset : nullptr;
+                outBands[b] = outCh[b];
+            }
+
+            if (! transition)
+            {
+                const float* in[2] { input[0] + offset, input[1] + offset };
+                runPlain (in, outBands, numSamples - offset);
+                return;
+            }
+
+            const int n = std::min (maxBlock, numSamples - offset);
+            for (int ch = 0; ch < 2; ++ch)
+                std::copy (input[ch] + offset, input[ch] + offset + n, inCopy[ch].begin());
+            const float* in[2] { inCopy[0].data(), inCopy[1].data() };
+
+            bool fed = false;
+            for (int k = 0; k < 2; ++k)
+            {
+                const CrossoverType t = k == 0 ? from : to;
+                float* const* const* dst = k == 0 ? tmpBands : outBands;
+                if (t == CrossoverType::Digital)
+                {
+                    fir.process (in, dst, n, numBands);
+                    fed = true;
+                }
+                else
+                {
+                    iirFor (t).process (in, dst, n, numBands);
+                }
+            }
+            if (! fed)
+                fir.feed (in, n);
+
+            for (int i = 0; i < n; ++i)
+            {
+                if (settle > 0)
+                {
+                    --settle;
+                    for (int b = 0; b < numBands; ++b)
+                        for (int ch = 0; ch < 2; ++ch)
+                            outCh[b][ch][i] = tmpCh[b][ch][i];
+                }
+                else if (fadePos < fadeLen)
+                {
+                    const float r = (float) (0.5 - 0.5 * std::cos (((double) fadePos + 0.5) * kPi / (double) fadeLen));
+                    ++fadePos;
+                    for (int b = 0; b < numBands; ++b)
+                        for (int ch = 0; ch < 2; ++ch)
+                        {
+                            const float o = tmpCh[b][ch][i];
+                            outCh[b][ch][i] = o + (outCh[b][ch][i] - o) * r;
+                        }
+                }
+            }
+
+            offset += n;
+            if (settle == 0 && fadePos >= fadeLen)
+                finishTransition();
+        }
     }
 };
 
@@ -712,31 +910,50 @@ Crossover::~Crossover() = default;
 
 void Crossover::prepare (double sampleRate, int maxBlockSize)
 {
-    (void) maxBlockSize;   // the engines process sample by sample / per partition, any block size works
-    impl->sr = sampleRate > 0.0 ? sampleRate : 48000.0;
-    impl->iir.prepare (impl->sr);
-    impl->fir.prepare (impl->sr);
-    impl->prepared = true;
-    impl->applyType (impl->type);
-    impl->iir.passTarget = impl->numBands <= 1 ? 1.0 : 0.0;
-    impl->fir.setActiveCount (impl->type == CrossoverType::Digital ? impl->numBands - 1 : 0);
+    auto& m = *impl;
+    m.sr = sampleRate > 0.0 ? sampleRate : 48000.0;
+    m.maxBlock = std::max (1, maxBlockSize);
+    m.fadeLen = std::max (1, (int) std::lround (0.020 * m.sr));
+    m.analog.prepare (m.sr);
+    m.hybrid.prepare (m.sr);
+    m.hybrid.setOrder (kLrOrderHybrid);
+    m.fir.prepare (m.sr);
+
+    for (int ch = 0; ch < 2; ++ch)
+        m.inCopy[ch].assign ((size_t) m.maxBlock, 0.0f);
+    for (int b = 0; b < kMaxBands; ++b)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            m.tmp[b][ch].assign ((size_t) m.maxBlock, 0.0f);
+            m.tmpCh[b][ch] = m.tmp[b][ch].data();
+        }
+        m.tmpBands[b] = m.tmpCh[b];
+    }
+
+    m.prepared = true;
+    m.analog.passTarget = m.hybrid.passTarget = m.numBands <= 1 ? 1.0 : 0.0;
     reset();
 }
 
 void Crossover::reset() noexcept
 {
-    impl->iir.reset();
-    impl->fir.reset();
-    impl->fresh = true;
+    auto& m = *impl;
+    m.analog.reset();
+    m.hybrid.reset();
+    m.fir.reset();
+    m.transition = false;
+    m.settle = 0;
+    m.type = m.requested;
+    m.fresh = true;
+    if (m.prepared)
+        m.updateFirActive();
 }
 
 void Crossover::setup (int numBands, const float* crossoverHz, CrossoverType type) noexcept
 {
     auto& m = *impl;
     numBands = std::clamp (numBands, 1, kMaxBands);
-
-    if (type != m.type)
-        m.applyType (type);
 
     for (int k = 0; k < numBands - 1 && crossoverHz != nullptr; ++k)
     {
@@ -749,21 +966,32 @@ void Crossover::setup (int numBands, const float* crossoverHz, CrossoverType typ
 
     for (int k = 0; k < kMaxCrossovers; ++k)
     {
-        m.iir.tgtLog[k] = std::log ((double) m.lastHz[k]);
+        m.analog.tgtLog[k] = m.hybrid.tgtLog[k] = std::log ((double) m.lastHz[k]);
         m.fir.xo[k].target = (double) m.lastHz[k];
     }
 
-    m.iir.passTarget = numBands <= 1 ? 1.0 : 0.0;
+    m.analog.passTarget = m.hybrid.passTarget = numBands <= 1 ? 1.0 : 0.0;
+    m.numBands = numBands;
 
     if (m.fresh && m.prepared)
     {
-        m.iir.snap();
+        // first setup after prepare / reset: everything applies at once (the engines are clean)
+        m.transition = false;
+        m.settle = 0;
+        m.type = m.requested = type;
+        m.analog.snap();
+        m.hybrid.snap();
         m.fir.snapAll();
     }
+    else if (type != m.requested)
+    {
+        m.requested = type;
+        if (m.prepared)
+            m.startTransition();
+    }
 
-    m.numBands = numBands;
     if (m.prepared)
-        m.fir.setActiveCount (m.type == CrossoverType::Digital ? numBands - 1 : 0);
+        m.updateFirActive();
 }
 
 void Crossover::process (const float* const* input, float* const* const* bandsOut, int numSamples) noexcept
@@ -773,10 +1001,10 @@ void Crossover::process (const float* const* input, float* const* const* bandsOu
         return;
 
     m.fresh = false;
-    if (m.type == CrossoverType::Digital)
-        m.fir.process (input, bandsOut, numSamples, m.numBands);
+    if (m.transition)
+        m.processTransition (input, bandsOut, numSamples);
     else
-        m.iir.process (input, bandsOut, numSamples, m.numBands);
+        m.runPlain (input, bandsOut, numSamples);
 }
 
 int Crossover::getLatencySamples (CrossoverType type) const noexcept

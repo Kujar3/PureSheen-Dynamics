@@ -271,6 +271,106 @@ TEST_CASE ("env. SlidingMax equals the brute-force maximum")
     CHECK (same);
 }
 
+TEST_CASE ("env. SlidingMax keeps its history when the window grows")
+{
+    // Regression: the peak that had left a short window was lost when the window grew.
+    {
+        SlidingMax m;
+        m.prepare (4);
+        m.setWindow (1);
+        m.process (1.0f);
+        m.process (0.1f);
+        m.setWindow (4);
+        const float got = m.process (0.0f);
+        pstest::note ("max over [1, 0.1, 0] after growing 1 -> 4 (expect 1)", got);
+        CHECK_EQ (got, 1.0f);
+    }
+
+    // random window changes (grow and shrink, every 1..300 samples) against brute force, also before the history
+    // is full and with negative inputs
+    const auto x = pstest::whiteNoise (1.0, 1.0, 48000.0, 78u);
+    for (int maxWindow : { 1, 3, 64, 700 })
+    {
+        SlidingMax m;
+        m.prepare (maxWindow);
+        pstest::Lcg lcg ((std::uint32_t) maxWindow);
+        int w = 1, nextChange = 0;
+        m.setWindow (w);
+        bool same = true;
+        int changes = 0;
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            if ((int) i == nextChange)
+            {
+                w = 1 + (int) ((0.5 + 0.5 * lcg.next()) * (maxWindow - 1) + 0.5);
+                w = std::clamp (w, 1, maxWindow);
+                m.setWindow (w);
+                nextChange = (int) i + 1 + (int) ((0.5 + 0.5 * lcg.next()) * 299.0);
+                ++changes;
+            }
+            const float got = m.process (x[i]);
+            float ref = x[i];
+            for (int k = 1; k < w && (size_t) k <= i; ++k)
+                ref = std::max (ref, x[i - (size_t) k]);
+            same = same && got == ref;
+        }
+        CHECK (same);
+        CHECK (changes > 100);
+    }
+
+    // reset forgets the history (a grown window after reset only covers the new samples)
+    SlidingMax m;
+    m.prepare (8);
+    m.setWindow (2);
+    m.process (5.0f);
+    m.reset();
+    m.process (-3.0f);
+    m.setWindow (8);
+    CHECK_EQ (m.process (-4.0f), -3.0f);
+}
+
+TEST_CASE ("env. GainSmoother converges at the longest release, also at 192 kHz")
+{
+    // Regression: a float one-pole stalled short of the target (+24 dB target, 5000 ms release: 22.1 .. 23.5 dB).
+    for (double sr : { 44100.0, 192000.0 })
+    {
+        for (bool adaptive : { false, true })
+        {
+            GainSmoother s;
+            s.prepare (sr);
+            s.setTimes (0.1f, 5000.0f, adaptive);
+            s.reset (0.0f);
+            // sustained (constant) detector: adaptive release runs at 2x = 10 s
+            const double tau = adaptive ? 10.0 : 5.0;
+            const double seconds = 12.0 * tau;
+            const long long n = (long long) (seconds * sr);
+            float y = 0.0f, yAtTau = 0.0f;
+            for (long long i = 0; i < n; ++i)
+            {
+                y = s.process (24.0f, -10.0f);
+                if (i == (long long) (tau * sr) - 1)
+                    yAtTau = y;
+            }
+            const double expectedAtTau = 24.0 * (1.0 - std::exp (-1.0));
+            pstest::note (std::string ("rate ") + std::to_string ((int) sr) + (adaptive ? " adaptive" : "")
+                              + ": gain after 12 time constants (dB, target 24)", y);
+            pstest::note ("  gain after one time constant (dB, expect 15.17)", yAtTau);
+            CHECK (std::abs (y - 24.0f) < 1.0e-3f);
+            CHECK (std::abs (yAtTau - expectedAtTau) < 0.05);
+        }
+    }
+
+    // and back down (attack side) with a long attack is exact too
+    GainSmoother s;
+    s.prepare (192000.0);
+    s.setTimes (500.0f, 5000.0f, false);
+    s.reset (24.0f);
+    float y = 24.0f;
+    for (int i = 0; i < (int) (12.0 * 0.5 * 192000.0); ++i)
+        y = s.process (0.0f, -10.0f);
+    CHECK (std::abs (y) < 1.0e-3f);
+}
+
 TEST_CASE ("env. DelayLine and LinearSmoother are exact")
 {
     const auto x = pstest::whiteNoise (1.0, 0.2, 48000.0, 13u);

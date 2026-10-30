@@ -20,7 +20,7 @@
 //   after the last gesture ended, so a drag, a double-click reset or a mouse-wheel burst is one step. Host automation
 //   (value changes without a gesture) is never recorded by itself. Bypass and Gain Match are listening aids: they are
 //   not recorded, not restored by undo / snapshots and not stored in presets (the host project state keeps them).
-// - addModule() brings a module in at its default settings (a fresh module, like the reference), as part of the "Added X"
+// - addModule() brings a module in at its default settings (a fresh module, like the reference suite), as part of the "Added X"
 //   step; setChainOrder() keeps the parameters as they are (drag reorder / re-add from undo).
 // - resetModule() resets every parameter of the module except its power switch.
 // - Presets: a global preset sets every parameter except Bypass / Gain Match plus the chain; a module preset sets that
@@ -70,9 +70,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                 juce::NormalisableRange<float> range (s.minValue, s.maxValue, s.interval);
                 if (s.skewCentre > s.minValue && s.skewCentre < s.maxValue)
                     range.setSkewForCentre (s.skewCentre);
+                // Host text: 2 decimals (1 from 1000 up), so text -> value -> text round-trips exactly (the default
+                // 7-decimal text drifts in the last digit through the skewed range; CLAP hosts check this).
                 layout.add (std::make_unique<juce::AudioParameterFloat> (
                     pid, name, range, s.defaultValue,
-                    juce::AudioParameterFloatAttributes().withLabel (juce::String (s.unit))));
+                    juce::AudioParameterFloatAttributes()
+                        .withLabel (juce::String (s.unit))
+                        .withStringFromValueFunction ([] (float v, int) { return juce::String (v, std::abs (v) >= 1000.0f ? 1 : 2); })
+                        .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
                 break;
             }
         }
@@ -949,6 +954,13 @@ void PureSheenProcessor::startMaximizerLearn()
 {
     impl->maximizer().startLearn();
     impl->maxLearnActive = true;
+    sendChangeMessage();
+}
+
+void PureSheenProcessor::cancelMaximizerLearn()
+{
+    impl->maximizer().cancelLearn();
+    impl->maxLearnActive = false;
     sendChangeMessage();
 }
 

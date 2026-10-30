@@ -209,6 +209,10 @@ struct DitherPanel::Impl
 
         drawCard (g, settingsCard, "Settings");
         drawCard (g, bitCard, "Bit meter");
+        g.setFont (font (11.0f, 600));
+        g.setColour (Colours::textSubtle);
+        g.drawText ("click to clear the hold", bitCard.reduced (12.0f, 0.0f).withHeight (31.0f),
+                    juce::Justification::centredRight, true);
         drawCard (g, dcCard, "DC offset");
         drawCard (g, spectrumCard, "Output spectrum");
         g.setFont (font (11.0f, 600));
@@ -350,5 +354,14 @@ void DitherPanel::tick()
 
 void DitherPanel::paint (juce::Graphics& g) { impl->paint (g); }
 void DitherPanel::resized() { impl->layout(); }
+
+void DitherPanel::mouseUp (const juce::MouseEvent& e)
+{
+    if (isLeftClick (e) && impl->bitCard.contains (e.position))
+    {
+        impl->proc.getChain().resetDitherPeakBits();
+        repaint (impl->bitCard.toNearestInt());
+    }
+}
 
 } // namespace ps::ui

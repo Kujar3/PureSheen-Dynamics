@@ -69,13 +69,15 @@ public:
     float process (float targetGainDb, float detectorDb) noexcept;
 
 private:
+    // double state and coefficients: at long releases / high rates the per-sample step of a float one-pole falls
+    // below the float resolution of the state and the gain stalls short of its target
     double sr = 48000.0;
-    float attCoeff = 0.0f, relCoeff = 0.0f, state = 0.0f;
+    double attCoeff = 0.0, relCoeff = 0.0, state = 0.0;
     float releaseMs = 100.0f;
     bool adaptive = false;
-    float fastEnv = -200.0f, slowEnv = -200.0f;
-    float fastDecay = 0.0025f, slowDecay = 0.0004f;   // dB per sample
-    float releaseScale = 1.0f;
+    double fastEnv = -200.0, slowEnv = -200.0;
+    double fastDecay = 0.0025, slowDecay = 0.0004;   // dB per sample
+    double releaseScale = 1.0;
     int counter = 0;
 };
 
@@ -98,6 +100,8 @@ private:
 
 //==============================================================================
 // Running maximum over the last `window` samples (monotonic deque in a ring; O(1) amortised). For lookahead limiters.
+// The last maxWindow inputs are kept, so a window that grows covers the older samples at once (setWindow rebuilds the
+// deque from that history, O(new window) once per growth); a window that shrinks just drops the expired entries.
 class SlidingMax
 {
 public:
@@ -107,9 +111,13 @@ public:
     float process (float x) noexcept;
 
 private:
+    void push (float x, int stamp) noexcept;
+
     std::vector<float> values;
     std::vector<int> stamps;
+    std::vector<float> history;     // the last capacity - 1 inputs (ring)
     int head = 0, tail = 0, capacity = 0, window = 1, time = 0;
+    int histPos = 0, histFill = 0;
 };
 
 //==============================================================================

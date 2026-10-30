@@ -1,3 +1,4 @@
+#include "DspTestUtil.h"
 #include "TestFramework.h"
 #include "TestSignals.h"
 
@@ -5,9 +6,13 @@
 #include "dsp/Chain.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Chain host tests (dsp/Chain.cpp). Prefix "chain.". The chain's real modules are replaced by small test modules
@@ -56,7 +61,10 @@ public:
             {
                 ring[c][(size_t) pos] = ch[c][i];
                 const float delayed = ring[c][(size_t) ((pos - latency) & mask)];
-                ch[c][i] = (ctx.delta && deltaAware) ? delayed * (gain[c] - 1.0f) : delayed * gain[c];
+                ch[c][i] = delayed * gain[c];
+                // handlesDelta contract (Module.h): own delta into deltaOut, normal output kept
+                if (deltaAware && ctx.deltaOut != nullptr)
+                    ctx.deltaOut[c][i] = delayed * (gain[c] - 1.0f);
             }
             pos = (pos + 1) & mask;
         }
@@ -135,14 +143,18 @@ struct Rig
     }
 };
 
-// max |a[i] - b[i - delay]| over i in [from, a.size())
+// max |a[i] - b[i - delay]| over i in [from, a.size()); +infinity if any compared sample is NaN / Inf (a plain
+// std::max would silently skip a NaN and let a broken output pass a null test)
 double maxDiffDelayed (const std::vector<float>& a, const std::vector<float>& b, int delay, size_t from, float bGain = 1.0f)
 {
     double worst = 0.0;
     for (size_t i = from; i < a.size(); ++i)
     {
         const double ref = i >= (size_t) delay ? (double) bGain * b[i - (size_t) delay] : 0.0;
-        worst = std::max (worst, std::abs ((double) a[i] - ref));
+        const double diff = std::abs ((double) a[i] - ref);
+        if (! std::isfinite (diff))
+            return std::numeric_limits<double>::infinity();
+        worst = std::max (worst, diff);
     }
     return worst;
 }
@@ -531,9 +543,225 @@ TEST_CASE ("chain. order edits are published, new modules reset, removed modules
     CHECK_EQ (rig.chain.getLatencySamples(), 20);
     CHECK (! rig.chain.isInChain (ModuleType::Equalizer1));
 
-    // bigger blocks than prepared are processed in chunks
-    std::vector<float> big ((size_t) 5000, 0.25f), bigR = big;
+    // bigger blocks than prepared (480) are processed in chunks: after flushing the delays with silence, one
+    // 5000-sample call of varying input must come out as the whole input delayed by the latency (20, Imager)
+    std::vector<float> zeros ((size_t) 4800, 0.0f), zerosR = zeros;
+    rig.run (zeros, zerosR);
+    const auto bigIn = pstest::pinkNoise (0.3, 5000.0 / 48000.0 + 0.01, 48000.0, 14u);
+    const auto bigInR = pstest::pinkNoise (0.3, 5000.0 / 48000.0 + 0.01, 48000.0, 15u);
+    std::vector<float> big (bigIn.begin(), bigIn.begin() + 5000), bigR (bigInR.begin(), bigInR.begin() + 5000);
+    const auto refL = big, refR = bigR;
     float* ch[2] { big.data(), bigR.data() };
     rig.chain.process (ch, 5000, rig.values.data(), HostInfo {});
-    CHECK_EQ (big[4999], 0.25f);
+    const double errL = maxDiffDelayed (big, refL, 20, 0), errR = maxDiffDelayed (bigR, refR, 20, 0);
+    note ("5000-sample block (prepared 480): worst error vs input delayed by 20 (L, R)", std::max (errL, errR));
+    CHECK (errL == 0.0);
+    CHECK (errR == 0.0);
+}
+
+TEST_CASE ("chain. null comparisons reject NaN and Inf")
+{
+    std::vector<float> a { 0.0f, 1.0f, 2.0f }, b = a;
+    CHECK (maxDiffDelayed (a, b, 0, 0) == 0.0);
+    a[1] = std::numeric_limits<float>::quiet_NaN();
+    CHECK (maxDiffDelayed (a, b, 0, 0) > 1.0e30);
+    a[1] = std::numeric_limits<float>::infinity();
+    CHECK (maxDiffDelayed (a, b, 0, 0) > 1.0e30);
+}
+
+TEST_CASE ("chain. delta has real signal at once with 4096 samples of downstream latency")
+{
+    // Regression: the delta signal entered the bus only when Delta was switched on, so with 4096 samples of
+    // downstream latency the output faded to 85 ms of silence before the delta arrived.
+    const int L = 4096;
+    auto* a = new TestModule (ModuleType::Equalizer1, 1.5f, 0);
+    auto* b = new TestModule (ModuleType::Maximizer, 1.0f, L);
+    Rig rig ({ { ModuleType::Equalizer1, a }, { ModuleType::Maximizer, b } });
+    const auto x = pstest::pinkNoise (0.3, 1.0, 48000.0, 21u);
+    auto l = x, r = x;
+    const size_t sw = 24000;
+    for (size_t pos = 0; pos < l.size(); pos += 480)
+    {
+        if (pos == sw)
+            rig.chain.setDelta (ModuleType::Equalizer1, true);
+        float* ch[2] { l.data() + pos, r.data() + pos };
+        rig.chain.process (ch, 480, rig.values.data(), HostInfo {});
+    }
+
+    double before = 0.0, outside = 0.0, after = 0.0;
+    for (size_t i = (size_t) L; i < l.size(); ++i)
+    {
+        const double xd = (double) x[i - (size_t) L], y = (double) l[i];
+        if (i < sw)
+            before = std::max (before, std::abs (y - 1.5 * xd));
+        else if (i < sw + 960)
+            outside = std::max (outside, (y - 0.5 * xd) * (y - 1.5 * xd));   // <= 0: between normal and delta
+        else
+            after = std::max (after, std::abs (y - 0.5 * xd));
+    }
+    double lowest = 0.0;
+    for (size_t s = sw; s + 480 <= l.size(); s += 240)
+        lowest = std::min (lowest, toDb (pstest::rmsOf (l, s, 480)) - toDb (0.5 * pstest::rmsOf (x, s - (size_t) L, 480)));
+    note ("normal output before Delta (error vs 1.5 x)", before);
+    note ("during the 20 ms crossfade: outside [0.5 x, 1.5 x] by (product)", outside);
+    note ("after the crossfade (error vs the 0.5 x delta)", after);
+    note ("lowest 10 ms level after the switch vs the delta level (dB)", lowest);
+    CHECK (before < 1.0e-6);
+    CHECK (outside < 1.0e-9);
+    CHECK (after < 1.0e-6);
+    CHECK (lowest > -1.0);
+}
+
+TEST_CASE ("chain. a handlesDelta module's normal output still feeds the modules after it")
+{
+    auto* a = new TestModule (ModuleType::Equalizer1, 2.0f, 50);
+    a->deltaAware = true;
+    auto* b = new TestModule (ModuleType::Dynamics, 3.0f, 30);
+    Rig rig ({ { ModuleType::Equalizer1, a }, { ModuleType::Dynamics, b } });
+    rig.chain.setTapModule ((int) ModuleType::Dynamics);
+    rig.chain.setDelta (ModuleType::Equalizer1, true);
+    const auto x = pstest::pinkNoise (0.3, 1.0, 48000.0, 22u);
+    auto l = x, r = x;
+    rig.run (l, r);
+
+    // heard: EQ1's own delta (2 - 1) x, aligned to the chain output (50 + 30)
+    const double eDelta = maxDiffDelayed (l, x, 80, 0, 1.0f);
+    // Dynamics processed EQ1's NORMAL output (2 x, delayed by 50)
+    std::vector<float> pl (4096), pr (4096);
+    REQUIRE (rig.chain.getModulePreFifo().pull (pl.data(), pr.data(), 4096) == 4096);
+    double eFeed = 0.0;
+    for (size_t i = 0; i < 4096; ++i)
+    {
+        const size_t n = x.size() - 4096 + i;
+        eFeed = std::max (eFeed, std::abs ((double) pl[i] - 2.0 * (double) x[n - 50]));
+    }
+    note ("delta output vs EQ1's own delta (1 x, aligned)", eDelta);
+    note ("Dynamics input vs EQ1's normal output (2 x)", eFeed);
+    CHECK (a->lastCtx.delta);
+    CHECK (a->lastCtx.deltaOut != nullptr);
+    CHECK (eDelta < 1.0e-6);
+    CHECK (eFeed < 1.0e-6);
+
+    // delta off: the normal chain (2 * 3)
+    rig.chain.setDelta (ModuleType::Equalizer1, false);
+    rig.run (l = x, r = x);
+    CHECK (maxDiffDelayed (l, x, 80, 4800, 6.0f) < 1.0e-5);
+}
+
+TEST_CASE ("chain. classic gain match of a soloed, powered-off module levels by that module's own gain")
+{
+    // Regression: EQ x2 then Dynamics x3, classic gain match: the soloed, powered-off EQ played its dry signal
+    // levelled by the whole chain's +15.6 dB (x6) instead of the EQ's own +6 dB.
+    const double sr = 48000.0;
+    const auto x = pstest::pinkNoise (0.1, 4.0, sr, 23u);
+    const float inLufs = measureIntegratedLufs (x.data(), x.data(), (long long) x.size(), sr);
+    Rig rig ({ { ModuleType::Equalizer1, new TestModule (ModuleType::Equalizer1, 2.0f) },
+               { ModuleType::Dynamics, new TestModule (ModuleType::Dynamics, 3.0f) } });
+    setValue (rig.values, "io.gainMatch", 1.0f);
+    auto l = x, r = x;
+    rig.run (l, r);                                  // learn the chain (+15.6 dB)
+    rig.chain.setSolo ((int) ModuleType::Equalizer1);
+    rig.run (l = x, r = x);                          // EQ soloed, on: x2
+    setValue (rig.values, "eq1.on", 0.0f);
+    rig.run (l = x, r = x);                          // EQ soloed, off: dry, levelled
+    const size_t tail = (size_t) (2.0 * sr);
+    const float outLufs = measureIntegratedLufs (l.data() + l.size() - tail, r.data() + r.size() - tail, (long long) tail, sr);
+    note ("soloed, powered-off EQ (x2) in a x6 chain: dry level vs input (LU, expect +6.02)", outLufs - inLufs);
+    note ("applied match gain (dB)", rig.chain.getIoMeters().gainMatchDb.load());
+    CHECK (std::abs (outLufs - inLufs - 6.02) < 0.3);
+
+    // soloing the Dynamics (powered on) is unaffected: x3 of the dry input
+    setValue (rig.values, "eq1.on", 1.0f);
+    rig.chain.setSolo ((int) ModuleType::Dynamics);
+    rig.run (l = x, r = x);
+    CHECK (maxDiffDelayed (l, x, 0, 4800, 3.0f) < 1.0e-5);
+}
+
+TEST_CASE ("chain. channel-mode change never reinterprets buffered audio")
+{
+    // Regression: Stereo -> M/S on a module with 1000 samples of latency decoded the module's buffered L/R audio as
+    // M/S (out L = L + R) for 1000 samples. Now the slot fades to its aligned dry signal, resets the module, warms it
+    // up and fades it in: every sample lies between the dry and the processed signal (both aligned).
+    auto* a = new TestModule (ModuleType::Equalizer1, 2.0f, 1000);
+    Rig rig ({ { ModuleType::Equalizer1, a } });
+    const auto xl = pstest::pinkNoise (0.3, 3.0, 48000.0, 24u), xr = pstest::pinkNoise (0.3, 3.0, 48000.0, 25u);
+    auto l = xl, r = xr;
+    const size_t switches[] { 24000, 48000, 72000, 96000 };
+    const float modes[] { 1.0f, 2.0f, 0.0f, 1.0f };   // M/S, L/R, Stereo, M/S
+    const int resetsBefore = a->resets;
+    for (size_t pos = 0; pos < l.size(); pos += 480)
+    {
+        for (int k = 0; k < 4; ++k)
+            if (pos == switches[k])
+                setValue (rig.values, "eq1.chMode", modes[k]);
+        float* ch[2] { l.data() + pos, r.data() + pos };
+        rig.chain.process (ch, 480, rig.values.data(), HostInfo {});
+    }
+
+    double outside = 0.0, settled = 0.0;
+    for (size_t i = 1000; i < l.size(); ++i)
+        for (int c = 0; c < 2; ++c)
+        {
+            const double xd = (double) (c == 0 ? xl : xr)[i - 1000], y = (double) (c == 0 ? l : r)[i];
+            outside = std::max (outside, (y - xd) * (y - 2.0 * xd));   // <= 0 (+ M/S rounding): between dry and processed
+            if (i > 96000 + 9600)
+                settled = std::max (settled, std::abs (y - 2.0 * xd));
+        }
+    note ("mode changes: worst excursion outside [dry, processed] (product)", outside);
+    note ("after the last change: error vs the processed signal", settled);
+    CHECK (outside < 1.0e-6);   // reinterpreted audio would be ~1e-1
+    CHECK (settled < 1.0e-6);
+    CHECK_EQ (a->resets, resetsBefore + 4);   // one reset per change
+    CHECK_EQ (a->lastCtx.channelMode, ChannelMode::MidSide);
+}
+
+TEST_CASE ("chain. tap FIFO never returns overwritten samples (stalled consumer)")
+{
+    // Regression: the producer overwrote samples the consumer was copying (data race). Producer: a counting
+    // pattern (left = n, right = -n, mod 2^24) in blocks of 1..64; consumer: small FIFO (64), pulls of up to 64 with
+    // pauses. Every returned run must be consecutive counts with matching channels.
+    StereoSampleFifo fifo;
+    fifo.prepare (64);
+    std::atomic<bool> stop { false };
+    std::thread producer ([&]
+    {
+        std::vector<float> l (64), r (64);
+        unsigned n = 0, k = 0;
+        while (! stop.load (std::memory_order_relaxed))
+        {
+            const int len = 1 + (int) (k++ * 37u % 64u);
+            for (int i = 0; i < len; ++i, ++n)
+            {
+                l[(size_t) i] = (float) (n & 0xFFFFFFu);
+                r[(size_t) i] = -(float) (n & 0xFFFFFFu);
+            }
+            fifo.push (l.data(), r.data(), len);
+        }
+    });
+
+    std::vector<float> l (64), r (64);
+    long long pulls = 0, samples = 0, broken = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds (300))
+    {
+        const int got = fifo.pull (l.data(), r.data(), 64);
+        ++pulls;
+        samples += got;
+        for (int i = 0; i < got; ++i)
+        {
+            if (r[(size_t) i] != -l[(size_t) i])
+                ++broken;
+            if (i > 0 && (((unsigned) l[(size_t) i] - (unsigned) l[(size_t) i - 1]) & 0xFFFFFFu) != 1u)
+                ++broken;
+        }
+        for (volatile int spin = 0; spin < (int) (pulls % 200); ++spin) {}   // irregular consumer
+    }
+    stop = true;
+    producer.join();
+    note ("pulls", (double) pulls);
+    note ("samples returned", (double) samples);
+    note ("torn or non-consecutive samples", (double) broken);
+    CHECK (pulls > 1000);
+    CHECK (samples > 0);
+    CHECK_EQ (broken, 0LL);
 }

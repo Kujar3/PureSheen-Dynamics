@@ -24,11 +24,16 @@
 //
 // Dither: TPDF (sum of two uniform LCG values, seeded per channel), +-1 LSB peak (Strong), scaled 0.7 (Medium) and
 // 0.5 (Low). "1.0 / 0.7 / 0.5" in the header are read as scale factors of standard full TPDF.
-// Harmonic Suppression (Amount Off only): a deterministic Nyquist-rate pattern (-1)^n * a[n] with a sawtooth
-// amplitude a[n] = 0.5 LSB * (n mod 61) / 61. Averaged over the pattern the quantiser's low-frequency transfer becomes
-// linear (like rectangular dither) so the in-band harmonics of low-level signals drop by ~20..35 dB, while the residue
-// lands around Nyquist (lines at fs/2 +- k * fs/61, decaying with k) instead of a broadband floor. Measured in-band
-// floor is below plain rounding and ~5 dB below TPDF.
+// Harmonic Suppression (Amount Off only): high-pass TPDF dither d[n] = (r[n] - r[n-1]) LSB, r uniform in [-0.5, 0.5)
+// (one new LCG value per sample and channel). Its marginal PDF is triangular (+-1 LSB), so the mean and the power of
+// the total error do not depend on the signal (Wannamaker's conditions: the dither's characteristic function and its
+// first derivative vanish at every non-zero multiple of 1/LSB). The joint characteristic function of neighbouring
+// samples, phi(-u) phi(u - v) phi(v), has a zero of order >= 2 at every non-zero lattice point too, so the error's
+// autocorrelation, i.e. its spectrum, is also signal-independent: no harmonics, no idle tones, no noise modulation,
+// whatever the input (DC, sub-LSB, low-level tones). The dither's own noise is shaped by |1 - z^-1|^2 (zero at DC,
+// rising to Nyquist): 20 Hz..6 kHz at 44.1 kHz the floor is ~1 dB above plain rounding's q^2/12 (~4 dB below flat
+// TPDF), the extra noise lies near Nyquist. (Replaces a deterministic periodic pattern, which left spectral lines at
+// multiples of fs / period on DC and sub-LSB inputs.)
 // Limit Peaks: clamps the feedback term so that |y - x| <= 4 LSB.
 // Auto-blank: after >= 0.7 s of input frames that are exactly 0 on both channels, the output is exactly 0 (no dither,
 // error history cleared) until the input is non-zero again.
@@ -136,7 +141,8 @@ void Dither::reset() noexcept
         for (auto& e : ch)
             e = 0.0f;
     silentSamples = 0;
-    harmonicPhase = 0;
+    for (int c = 0; c < 2; ++c)
+        hpPrev[c] = uniform01 (rng[c]) - 0.5;
     dcState[0] = dcState[1] = 0.0;
     for (int c = 0; c < 2; ++c)
     {
@@ -156,6 +162,9 @@ void Dither::setParams (const DitherParams& p) noexcept
         for (auto& ch : errorHistory)
             for (auto& e : ch)
                 e = 0.0f;
+        // The peak hold describes the current bit depth: a new depth (or dither on / off) starts a fresh hold.
+        if (lastBits >= 0)
+            resetPeakBits();
         lastBits = bits;
         lastOn = p.on;
     }
@@ -170,7 +179,7 @@ void Dither::setParams (const DitherParams& p) noexcept
     }
 
     const bool harmonic = ditherScale == 0.0 && p.harmonicSuppression;
-    const double ditherPeak = ditherScale > 0.0 ? ditherScale : (harmonic ? 0.5 : 0.0);
+    const double ditherPeak = ditherScale > 0.0 ? ditherScale : (harmonic ? 1.0 : 0.0);
     feedbackLimit = 4.0 - 0.5 - ditherPeak;
 
     const double amount = std::clamp ((double) p.noiseShaping, 0.0, 100.0);
@@ -205,12 +214,6 @@ void Dither::process (float* const* channels, int numSamples) noexcept
                 for (auto& e : ch)
                     e = 0.0f;
 
-        const double harmonicValue = harmonic ? ((harmonicPhase & 1) != 0 ? -1.0 : 1.0) * 0.5 * q
-                                                    * (double) (harmonicPhase % 61) / 61.0
-                                              : 0.0;
-        if (harmonic)
-            harmonicPhase = (harmonicPhase + 1) % 122;
-
         for (int c = 0; c < 2; ++c)
         {
             float* data = channels[c];
@@ -236,7 +239,13 @@ void Dither::process (float* const* channels, int numSamples) noexcept
                 }
 
                 const double u = x + s;
-                double d = harmonicValue;
+                double d = 0.0;
+                if (harmonic)
+                {
+                    const double r = uniform01 (rng[c]) - 0.5;
+                    d = (r - hpPrev[c]) * q;   // high-pass TPDF
+                    hpPrev[c] = r;
+                }
                 if (ditherScale > 0.0)
                 {
                     const double r1 = uniform01 (rng[c]);
