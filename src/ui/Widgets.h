@@ -190,8 +190,8 @@ struct UiOptions
 FreqAxis makeFreqAxis (const UiOptions&, juce::Rectangle<float> area, double sampleRate = 0.0);
 
 //==============================================================================
-// UI-thread spectrum analyser: pulls from a StereoSampleFifo, Hann-windowed FFT (ps::Fft, 50 % overlap), averaging /
-// peak hold / tilt from UiOptions, output as dB at the display points of a FreqAxis.
+// UI-thread spectrum analyser: pulls from a StereoSampleFifo, Hann-windowed FFT (ps::Fft, one frame per pull from the
+// newest samples), averaging / peak hold / tilt from UiOptions, output as dB at the display points of a FreqAxis.
 class SpectrumAnalyser
 {
 public:
@@ -200,7 +200,8 @@ public:
 
     void setOptions (const UiOptions&);
     void setSampleRate (double);
-    // Pulls new audio (call from the 30 Hz tick). Returns true if the spectrum changed. channelMix: 0 = (L+R)/2,
+    // Pulls new audio (call once per display frame). Returns true if the shown spectrum changed (a new frame, or the
+    // display glide still moving). channelMix: 0 = (L+R)/2,
     // 1 = L, 2 = R, 3 = Mid, 4 = Side.
     bool update (StereoSampleFifo&, int channelMix = 0);
     // (added) Same, for audio the caller already pulled (the editor pulls each FIFO once and shares the block between
@@ -254,6 +255,8 @@ public:
 
     // Derived panels that override tick / refresh / paint / resized call the base version (it runs the header).
     virtual void tick();                                // 30 Hz from the editor (meters, spectra, animations)
+    virtual void frameTick() {}                         // every display refresh with new spectrum data: repaint the
+                                                        // spectrum views only (they move at the screen's rate)
     virtual void refresh();                             // parameters / channel set / chain changed
     virtual bool hasLearn() const { return false; }
     virtual void channelSetChanged() {}

@@ -6,9 +6,14 @@
 #include <cmath>
 
 // UI-thread spectrum analyser (owner: ui-shell).
-//   - Hann window, 50 % overlap, ps::Fft. Levels are calibrated so a full-scale sine reads 0 dB in its bin.
-//   - Averaging (power domain): "real time" = exponential, tau 100 ms (steady but responsive); N s = exponential with
-//     tau N s; infinite = running mean since clear(). A separate running mean feeds getBinMagnitudesDb() (Learn).
+//   - Hann window, ps::Fft. One frame per pull (process / update, called once per display frame) from the newest
+//     fftSize samples, so the display moves at the screen's rate whatever the FFT size (a fixed 50 % hop gave only
+//     ~23 frames/s at 4096 points). Levels are calibrated so a full-scale sine reads 0 dB in its bin.
+//   - Display glide: the shown levels follow each frame's levels with a 20 ms time constant in wall-clock time, so the
+//     curve keeps moving on screen refreshes that bring no new audio (host blocks arrive less often than a 144 Hz
+//     screen refreshes). The first frame after clear() or a pause of 250 ms is shown at once.
+//   - Averaging (power domain, over the audio time between frames): "real time" = exponential, tau 100 ms (steady but
+//     responsive); N s = exponential with tau N s; infinite = running mean of the frames since clear(). A separate running mean feeds getBinMagnitudesDb() (Learn).
 //   - Tilt (dB/oct around 1 kHz) is added to every displayed value (default 3 dB/oct), not to the Learn data.
 //   - Display types: Linear (per bin; columns show the loudest bin they cover), 1/3-octave (ISO centres 20 Hz..20 kHz),
 //     Critical (24 Bark bands, Zwicker edges), Octave (31.5 Hz..16 kHz). Band values are the mean power of the bins
@@ -19,6 +24,9 @@ namespace ps::ui
 namespace
 {
 constexpr int kScratch = 16384;
+constexpr int kMinNewSamples = 64;   // fewer new samples than this since the last frame: keep the frame shown
+constexpr double kGlideMs = 20.0, kGlideSnapMs = 250.0;
+constexpr float kGlideStillDb = 0.02f;   // the glide is done once no shown level moves more than this per step
 
 struct Band
 {
@@ -94,10 +102,12 @@ struct SpectrumAnalyser::Impl
         avgPower.assign (bins, 0.0);
         longPower.assign (bins, 0.0);
         levelDb.assign (bins, -200.0f);
+        targetDb.assign (bins, -200.0f);
         peakDb.assign (bins, -200.0f);
         longDb.clear();
         bands = makeBands (options.spectrumType);
         bandLevel.assign (bands.size(), -200.0f);
+        bandTarget.assign (bands.size(), -200.0f);
         bandPeak.assign (bands.size(), -200.0f);
         resetState();
     }
@@ -108,8 +118,11 @@ struct SpectrumAnalyser::Impl
         std::fill (avgPower.begin(), avgPower.end(), 0.0);
         std::fill (longPower.begin(), longPower.end(), 0.0);
         std::fill (levelDb.begin(), levelDb.end(), -200.0f);
+        std::fill (targetDb.begin(), targetDb.end(), -200.0f);
         std::fill (peakDb.begin(), peakDb.end(), -200.0f);
         std::fill (bandLevel.begin(), bandLevel.end(), -200.0f);
+        std::fill (bandTarget.begin(), bandTarget.end(), -200.0f);
+        snapNext = true;
         std::fill (bandPeak.begin(), bandPeak.end(), -200.0f);
         longDb.clear();
         ringPos = 0;
@@ -131,12 +144,7 @@ struct SpectrumAnalyser::Impl
         ring[(size_t) ringPos] = x;
         ringPos = (ringPos + 1) & (fftSize - 1);
         filled = juce::jmin (fftSize, filled + 1);
-
-        if (++sinceFrame >= fftSize / 2 && filled >= fftSize)
-        {
-            sinceFrame = 0;
-            computeFrame();
-        }
+        ++sinceFrame;
     }
 
     void computeFrame()
@@ -146,7 +154,8 @@ struct SpectrumAnalyser::Impl
 
         fft->forward (buffer.data());
 
-        const double dt = (double) (fftSize / 2) / sampleRate;
+        const double dt = (double) sinceFrame / sampleRate;
+        sinceFrame = 0;
         ++frames;
         ++longFrames;
         double alpha = 1.0;
@@ -164,8 +173,8 @@ struct SpectrumAnalyser::Impl
             const double p = (double) std::norm (buffer[k]) * powerScale;
             avgPower[k] += alpha * (p - avgPower[k]);
             longPower[k] += (p - longPower[k]) / (double) longFrames;
-            levelDb[k] = (float) (10.0 * std::log10 (avgPower[k] + 1.0e-20)) + tiltAt ((float) k * bHz);
-            peakDb[k] = juce::jmax (peakDb[k], levelDb[k]);
+            targetDb[k] = (float) (10.0 * std::log10 (avgPower[k] + 1.0e-20)) + tiltAt ((float) k * bHz);
+            peakDb[k] = juce::jmax (peakDb[k], targetDb[k]);
         }
 
         for (size_t b = 0; b < bands.size(); ++b)
@@ -184,11 +193,40 @@ struct SpectrumAnalyser::Impl
             else
                 power /= (double) count;
 
-            bandLevel[b] = (float) (10.0 * std::log10 (power + 1.0e-20)) + tiltAt (band.centre);
-            bandPeak[b] = juce::jmax (bandPeak[b], bandLevel[b]);
+            bandTarget[b] = (float) (10.0 * std::log10 (power + 1.0e-20)) + tiltAt (band.centre);
+            bandPeak[b] = juce::jmax (bandPeak[b], bandTarget[b]);
         }
 
         longDbDirty = true;
+    }
+
+    // Moves the shown levels towards the latest frame. Returns true if anything visibly moved.
+    bool glide (double nowMs)
+    {
+        const double elapsed = nowMs - lastGlideMs;
+        lastGlideMs = nowMs;
+
+        if (frames == 0)
+            return false;
+
+        const bool snap = snapNext || elapsed > kGlideSnapMs;
+        snapNext = false;
+        const float a = snap ? 1.0f : (float) (1.0 - std::exp (-juce::jmax (0.0, elapsed) / kGlideMs));
+        float moved = 0.0f;
+
+        auto follow = [a, &moved] (std::vector<float>& shown, const std::vector<float>& target)
+        {
+            for (size_t i = 0; i < shown.size(); ++i)
+            {
+                const float step = (target[i] - shown[i]) * a;
+                shown[i] += step;
+                moved = juce::jmax (moved, std::abs (step));
+            }
+        };
+
+        follow (levelDb, targetDb);
+        follow (bandLevel, bandTarget);
+        return snap || moved > kGlideStillDb;
     }
 
     double interpolatedPower (float bin) const noexcept
@@ -231,11 +269,13 @@ struct SpectrumAnalyser::Impl
     std::vector<std::complex<float>> buffer;
     float powerScale = 1.0f;
     std::vector<double> avgPower, longPower;
-    std::vector<float> levelDb, peakDb;
+    std::vector<float> levelDb, targetDb, peakDb;   // levelDb = shown (glides towards targetDb)
     mutable std::vector<float> longDb;
     mutable bool longDbDirty = false;
     std::vector<Band> bands;
-    std::vector<float> bandLevel, bandPeak;
+    std::vector<float> bandLevel, bandTarget, bandPeak;
+    double lastGlideMs = 0.0;
+    bool snapNext = true;
     int ringPos = 0, filled = 0, sinceFrame = 0;
     long long frames = 0, longFrames = 0;
     std::vector<float> scratchL = std::vector<float> ((size_t) kScratch), scratchR = std::vector<float> ((size_t) kScratch);
@@ -277,13 +317,14 @@ bool SpectrumAnalyser::update (StereoSampleFifo& fifo, int channelMix)
 bool SpectrumAnalyser::process (const float* left, const float* right, int numSamples, int channelMix)
 {
     auto& d = *impl;
+    const double now = juce::Time::getMillisecondCounterHiRes();
 
     if (left == nullptr || numSamples <= 0)
-        return false;
+        return d.glide (now);
 
-    const auto before = d.frames;
-    // Only the newest samples can reach a frame that is still shown: skip what the next frames would overwrite.
-    const int start = juce::jmax (0, numSamples - 4 * d.fftSize);
+    // Only the newest fftSize samples reach the frame; the skipped ones still count as elapsed time for the averaging.
+    const int start = juce::jmax (0, numSamples - d.fftSize);
+    d.sinceFrame += start;
 
     for (int i = start; i < numSamples; ++i)
     {
@@ -302,7 +343,12 @@ bool SpectrumAnalyser::process (const float* left, const float* right, int numSa
         d.push (x);
     }
 
-    return d.frames != before;
+    const bool newFrame = d.filled >= d.fftSize && d.sinceFrame >= kMinNewSamples;
+
+    if (newFrame)
+        d.computeFrame();
+
+    return d.glide (now) || newFrame;
 }
 
 bool SpectrumAnalyser::hasData() const noexcept { return impl->frames > 0; }

@@ -12,3 +12,6 @@ dist/
 installer/payload/
 test_audio/
 *.log
+
+# Third-party presets kept locally for format inspection (never commit)
+ignore_*/

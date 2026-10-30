@@ -28,6 +28,7 @@ public:
     ~ImagerPanel() override;
 
     void tick() override;
+    void frameTick() override;
     void refresh() override;
     bool hasLearn() const override { return true; }
 

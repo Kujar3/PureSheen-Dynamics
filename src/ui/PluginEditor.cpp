@@ -26,6 +26,8 @@ constexpr int kScreenMarginW = 40, kScreenMarginH = 90;
 constexpr float kMaxZoom = 1.3f;
 constexpr juce::uint32 kNoticeMs = 3500;
 constexpr int kIoWidth = 176;
+constexpr double kMinFrameMs = 6.5;          // display-refresh pulls: at most ~150 per second (a 240 Hz screen gets 120)
+constexpr double kFrameFallbackMs = 100.0;   // no display refresh for this long (hidden, dev tool): the tick pulls
 
 const juce::Identifier kUiTag ("PureSheenUi"), kEditorW ("editorW"), kEditorH ("editorH"), kSelected ("selected"),
     kLinkIn ("linkInput"), kLinkOut ("linkOutput");
@@ -324,7 +326,10 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     }
 
     //==========================================================================
-    void tick()
+    // Pulls the chain's FIFOs (the editor is their only consumer) and feeds the meters, the scope and the three
+    // spectrum analysers. Returns true if a spectrum got a new frame. The meters and the scope only accumulate here;
+    // their ballistics run in tick().
+    bool pullAudio()
     {
         auto& chain = processor.getChain();
         const double sr = chain.getSampleRate();
@@ -338,11 +343,39 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
 
         n = chain.getOutputFifo().pull (scratchL.data(), scratchR.data(), kScratch);
         io.processOutput (scratchL.data(), scratchR.data(), n);
-        output.process (scratchL.data(), scratchR.data(), n);
+        bool changed = output.process (scratchL.data(), scratchR.data(), n);
         ps::ui::Vectorscope::publishOutput (processor, scratchL.data(), scratchR.data(), n);   // single FIFO consumer
 
-        modulePre.update (chain.getModulePreFifo());
-        modulePost.update (chain.getModulePostFifo());
+        changed |= modulePre.update (chain.getModulePreFifo());
+        changed |= modulePost.update (chain.getModulePostFifo());
+        return changed;
+    }
+
+    // Every display refresh (VBlankAttachment): the spectra move at the screen's rate instead of the 30 Hz tick, each
+    // frame computed from the newest audio.
+    void frame()
+    {
+        const double now = juce::Time::getMillisecondCounterHiRes();
+
+        if (now - lastFrameMs < kMinFrameMs)
+            return;
+
+        lastFrameMs = now;
+
+        if (! pullAudio())
+            return;
+
+        if (panel != nullptr)
+            panel->frameTick();
+
+        if (dither.isVisible())
+            dither.frameTick();
+    }
+
+    void tick()
+    {
+        if (juce::Time::getMillisecondCounterHiRes() - lastFrameMs > kFrameFallbackMs)
+            pullAudio();
 
         if (++learnCountdown >= 15)
         {
@@ -411,6 +444,9 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     juce::String notice;
     juce::uint32 noticeShownMs = 0;
     int focusSweep = 30, learnCountdown = 0, historyCountdown = 0;
+    double lastFrameMs = -1.0e9;
+
+    juce::VBlankAttachment vblank { &owner, [this] { frame(); } };   // last: its callback uses everything above
 };
 
 //==============================================================================

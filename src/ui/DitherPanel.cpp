@@ -352,6 +352,8 @@ void DitherPanel::tick()
     repaint (impl->bitCard.getUnion (impl->dcCard).getUnion (impl->spectrumCard).toNearestInt());
 }
 
+void DitherPanel::frameTick() { repaint (impl->spectrumCard.toNearestInt()); }
+
 void DitherPanel::paint (juce::Graphics& g) { impl->paint (g); }
 void DitherPanel::resized() { impl->layout(); }
 

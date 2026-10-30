@@ -26,6 +26,7 @@ public:
     ~ExciterPanel() override;
 
     void tick() override;
+    void frameTick() override;
     void refresh() override;
     void channelSetChanged() override;
     bool hasLearn() const override { return true; }

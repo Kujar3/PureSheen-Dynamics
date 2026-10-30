@@ -471,6 +471,35 @@ int runSnapshot (const juce::File& outputDir)
         const float band = analyser.levelDbAt ((float) hz);
         std::cout << "1/3-octave band around 1 kHz: " << band << " dB (mean power of the band's bins)" << std::endl;
         ok &= band > -30.0f && band < -6.0f;
+
+        // Cadence: pulled once per 60 Hz display frame (800 samples at 48 kHz, arriving in 512-sample host blocks), every
+        // pull yields a new frame at every FFT size, so the display never holds a spectrum for two frames.
+        for (int size : { 2048, 4096, 8192, 16384 })
+        {
+            ps::ui::SpectrumAnalyser cadence;
+            o.spectrumType = ps::ui::UiOptions::SpectrumType::Linear;
+            o.fftSize = size;
+            cadence.setOptions (o);
+            cadence.setSampleRate (kSampleRate);
+            int fresh = 0, pulls = 0, consumed = 0;
+
+            for (int frame = 1; frame <= 120; ++frame)
+            {
+                const int arrived = frame * 800 / 512 * 512;   // whole host blocks delivered by this display frame
+                const int n = arrived - consumed;               // 512 or 1024
+                const float* x = sine.data() + consumed % 8192;
+                const bool changed = cadence.process (x, x, n);
+                consumed = arrived;
+
+                if (frame >= 30)   // past the first fill of a 16384-point window
+                    ++pulls, fresh += changed ? 1 : 0;
+            }
+
+            const bool smooth = fresh == pulls;
+            std::cout << (smooth ? "spectrum cadence " : "FAILED: spectrum cadence ") << size << ": " << fresh << " / "
+                      << pulls << " pulls gave a new frame" << std::endl;
+            ok &= smooth;
+        }
     }
 
     // 10c: mode variants: Maximizer Spectral, EQ 1 Digital, Dynamics 4 bands in Mid/Side (Side shown), Imager with

@@ -29,7 +29,8 @@
       +------------------------------------------------------------------------+---------------------+
 
     The editor implements EditorServices (options, the three SpectrumAnalysers fed from the chain's FIFOs, hints),
-    runs one 30 Hz timer that ticks the visible panel, the strip and the I/O panel, tells the processor which module
+    pulls the FIFOs and repaints the spectrum views on every display refresh (VBlankAttachment), and runs one 30 Hz
+    timer that ticks the visible panel, the strip and the I/O panel, tells the processor which module
     to tap (setTapModule = selected module), and feeds processor.feedLearnSpectrum for the selected multiband module.
     Nothing takes keyboard focus away from the host (FL keeps its shortcuts); right-clicks never act as left clicks.
 */

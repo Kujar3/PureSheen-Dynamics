@@ -387,6 +387,8 @@ void EqPanel::tick()
     impl->display.tick();
 }
 
+void EqPanel::frameTick() { impl->display.repaint(); }
+
 void EqPanel::refresh()
 {
     ModulePanel::refresh();

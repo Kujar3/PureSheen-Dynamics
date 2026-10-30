@@ -14,6 +14,7 @@ public:
     ~DitherPanel() override;
 
     void tick();
+    void frameTick();   // every display refresh with new output-spectrum data: repaints the spectrum card
 
     void paint (juce::Graphics&) override;
     void resized() override;

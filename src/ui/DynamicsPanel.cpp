@@ -999,6 +999,8 @@ void DynamicsPanel::tick()
     impl->tick();
 }
 
+void DynamicsPanel::frameTick() { impl->display.repaint(); }
+
 void DynamicsPanel::refresh()
 {
     ModulePanel::refresh();

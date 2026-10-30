@@ -19,6 +19,7 @@ public:
     ~EqPanel() override;
 
     void tick() override;
+    void frameTick() override;
     void refresh() override;
     void channelSetChanged() override;
     void paint (juce::Graphics&) override;

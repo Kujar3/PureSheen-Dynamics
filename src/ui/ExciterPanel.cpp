@@ -597,6 +597,8 @@ void ExciterPanel::tick()
     impl->update();
 }
 
+void ExciterPanel::frameTick() { impl->display.repaint(); }
+
 void ExciterPanel::refresh()
 {
     ModulePanel::refresh();

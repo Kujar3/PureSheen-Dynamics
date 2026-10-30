@@ -548,6 +548,8 @@ void ImagerPanel::tick()
     impl->update (false);
 }
 
+void ImagerPanel::frameTick() { impl->display.repaint(); }
+
 void ImagerPanel::refresh()
 {
     ModulePanel::refresh();
