@@ -162,4 +162,6 @@ Known limitations:
 - Imager / Exciter: topology changes (band count, crossover type, oversampling) crossfade between two complete
   engines; the second engine roughly doubles their CPU cost (heaviest Exciter case still ~12x realtime).
 - Dynamics: removing bands folds the removed band into the last remaining one at that band's gain.
-- Not done: listening tests in FL Studio, the installer for this product.
+- Installer: `scripts\build-installer.bat` -> `dist\PureSheen-Dynamics-Setup-<version>.exe` (Inno Setup 6, static
+  runtime). Icon: `PureSheenDev icon resources/icon/logo_512.png 512`; `installer/puresheen.ico` holds 16-256 px renders.
+- Not done: listening tests in FL Studio; the installer has been built but not run yet.

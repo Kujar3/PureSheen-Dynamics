@@ -1,0 +1,35 @@
+PURESHEEN DYNAMICS - QUICK START
+================================
+
+PureSheen Dynamics is installed. In FL Studio:
+
+1. Options > Manage plugins > "Find installed plugins" (or "Start scan").
+2. Open the Mixer, select the MASTER track and add PureSheen Dynamics in
+   the LAST effect slot. Pick the VST3 version.
+3. Keep FL's Master fader at 0 dB - PureSheen works before that fader.
+
+GET A GOOD MASTER FAST
+- Click the preset name at the top and pick a starting point, for example
+  "Streaming Ready" (about -14 LUFS, for Spotify / YouTube) or
+  "Loud and Clear" (louder, for club and EDM tracks).
+- On the Maximizer, click "Learn" while the loudest part of your song plays.
+  It sets the gain so the song lands on the loudness target next to it.
+- Turn on "Gain Match" (bottom right) and switch "Bypass" on and off. Gain
+  Match plays both at the same loudness, so you hear whether the master
+  really sounds better - not just louder.
+
+THE CHAIN
+- The strip at the top is your processing chain, left to right: EQ,
+  Dynamics, Imager, Exciter, Maximizer. Drag a module to reorder it, click
+  "Add" for more (a second EQ, for example), click a module to edit it.
+- S solos a module, the triangle (Delta) lets you hear only what that
+  module changes.
+- Snapshots A-D store complete settings so you can compare versions.
+- Undo / redo and the history (clock icon) are in the header.
+
+BEFORE YOU EXPORT
+- Dither (bottom right) is only needed when you export at 16 bit (CD or
+  some streaming uploads). Leave it off for 24 / 32 bit files.
+- Keep the Maximizer's Output at -1 dB with True Peak on for streaming.
+
+The "?" button in the top-right corner of the plugin explains everything.

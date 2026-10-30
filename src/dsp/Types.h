@@ -69,7 +69,7 @@ enum class EqShape : int
     BandShelf,           // flat-topped band (two shelves)
     LowShelfAnalog,
     LowShelfBaxandall,   // fixed, very gentle slope (Q not used)
-    LowShelfVintage,     // shelf with a resonant dip above the corner
+    LowShelfVintage,     // shelf with a resonant dip above the corner (classic passive-EQ style)
     LowShelfResonant,    // shelf with a resonant bump at the corner
     HighShelfAnalog,
     HighShelfBaxandall,

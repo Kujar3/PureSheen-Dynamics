@@ -40,7 +40,11 @@ if errorlevel 8 goto fail
 copy /y "%ART%\CLAP\PureSheen Dynamics.clap" "installer\payload\CLAP\" >nul || goto fail
 copy /y "%ART%\Standalone\PureSheen Dynamics.exe" "installer\payload\Standalone\" >nul || goto fail
 
-"%ISCC%" /Q %* "installer\PureSheen.iss" || goto fail
+rem The installer version is the project() version in CMakeLists.txt.
+set "APPVER="
+for /f "tokens=3" %%v in ('findstr /r /c:"^project(PureSheen VERSION" CMakeLists.txt') do set "APPVER=%%v"
+if "%APPVER%"=="" goto fail
+"%ISCC%" /Q /DAppVersion=%APPVER% %* "installer\PureSheen.iss" || goto fail
 echo.
 echo Installer ready in %CD%\dist
 popd
