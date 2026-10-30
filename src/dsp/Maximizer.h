@@ -26,7 +26,8 @@
 //   reduction.
 // Upward Compress: parallel-style upward compression of quiet passages, max gain upwardCompressDb, level-matched so
 //   0 dBFS peaks stay put.
-// Delta (handlesDelta): output = what the limiting stages removed / added, excluding Gain and Output Level.
+// Delta (handlesDelta): ProcessContext::deltaOut receives what the limiting stages removed / added (excluding Gain
+//   and Output Level), aligned with the output; the normal output is unchanged.
 // Learn Input Gain: startLearn() listens for 5 s of input (playing audio only), then publishes the gain that brings
 //   the output to learnTargetLufs (integrated, ps::LoudnessMeter on a simulated output); the processor writes it to
 //   "max.gain".

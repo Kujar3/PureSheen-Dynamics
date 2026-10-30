@@ -53,7 +53,7 @@ inline constexpr int kNumChannelSets = 2;   // A, B
 // Crossovers of the multiband modules (Dynamics, Imager, Exciter).
 //   Analog  : 4th-order Linkwitz-Riley (zero latency, phase shift, magnitude-flat sum)
 //   Digital : linear-phase FIR crossover (latency, phase-perfect, perfect reconstruction)
-//   Hybrid  : perfect-reconstruction IIR (LR4 with allpass phase compensation of the other bands, zero latency)
+//   Hybrid  : steep LR8 (48 dB/oct) IIR tree with allpass phase compensation of the other bands, zero latency
 enum class CrossoverType : int { Analog = 0, Digital, Hybrid };
 
 inline constexpr int kMaxBands = 4;                 // multiband modules

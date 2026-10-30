@@ -13,7 +13,8 @@
 //   - Recover Sides (bands with width < 0 only): the S energy removed by narrowing is re-introduced into M with
 //     recoverSidesGainDb (keeps the level of hard-panned elements when narrowing)
 //   - Prevent antiphase: per band, limits |S| so the band's correlation stays >= 0 (smoothed)
-//   - Crossover: ps::Crossover (default Digital = linear phase, so width changes cause no phase smear)
+//   - Crossover: ps::Crossover (default Analog: 0 latency, compensated tree so every band carries the same phase;
+//     Digital = linear phase)
 // Meters are computed by the UI from the chain's output FIFO (vectorscope always shows the final output, reference
 // parity); the module publishes per-band correlation for its band display.
 namespace ps

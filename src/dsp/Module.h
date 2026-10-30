@@ -24,6 +24,11 @@ struct ProcessContext
     ChannelMode channelMode = ChannelMode::Stereo;  // Stereo: ch0/ch1 use set A, linked. MidSide/LeftRight: ch0 = A,
                                                     // ch1 = B, unlinked
     bool delta = false;                             // only passed to modules whose handlesDelta() is true
+    // handlesDelta() modules only: when non-null, the module writes its own Delta signal here (2 channels, same
+    // latency and channel domain as its output) and keeps its NORMAL output in `channels`. The chain may pass it
+    // whether or not delta is audible (it keeps the delta bus running so enabling Delta needs no warm-up and its
+    // crossfades have real signal on both sides). Null = no delta wanted.
+    float* const* deltaOut = nullptr;
     double bpm = 120.0;                             // host tempo (Punch sync etc.; 120 when unknown)
     bool isPlaying = false;
 };
@@ -61,8 +66,8 @@ public:
     // Latency of the current settings (after the last setParams). Must be identical for both channels.
     virtual int getLatencySamples() const noexcept = 0;
 
-    // true: the module computes its own Delta signal from ProcessContext::delta (the Maximizer excludes Gain and
-    // Output Level from Delta, reference parity).
+    // true: the module computes its own Delta signal into ProcessContext::deltaOut (the Maximizer excludes Gain and
+    // Output Level from Delta: delta = what the limiting stages removed / added). Its normal output is unaffected.
     virtual bool handlesDelta() const noexcept { return false; }
 };
 
