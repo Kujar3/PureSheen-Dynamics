@@ -8,8 +8,10 @@ namespace ps::ui
 {
 namespace
 {
-constexpr int kGap = 8;
-constexpr int kPlusW = 58;
+constexpr int kGap = 8, kCompactGap = 6;
+constexpr int kPlusW = 58, kCompactPlusW = 44;
+constexpr float kFullTileMinW = 104.0f;   // below this the tiles switch to the compact layout (up to 14 modules)
+constexpr float kCompactTileMinW = 50.0f;
 constexpr float kEase = 0.38f;
 
 enum class Part { none, body, led, solo, delta, close, plus };
@@ -27,15 +29,27 @@ struct ChainStrip::Impl
         return owner.getLocalBounds().toFloat().reduced (10.0f, 8.0f);
     }
 
-    float tileWidth() const
+    // Full tiles (104..232 px) while they fit; with many modules (phase 2: up to 14) a compact tile (name on two
+    // lines, LED / S / Delta below, a thin difference bar) down to 50 px, so every module stays visible from 980 px.
+    float naturalWidth (int gapPx, int plusPx) const
     {
         const auto area = tilesArea();
         const int n = juce::jmax (1, (int) order.size());
-        const float w = (area.getWidth() - (float) kPlusW - (float) kGap * (float) n) / (float) n;
-        return juce::jlimit (104.0f, 232.0f, w);
+        return (area.getWidth() - (float) plusPx - (float) gapPx * (float) n) / (float) n;
     }
 
-    float slotX (int slot) const { return tilesArea().getX() + (float) slot * (tileWidth() + (float) kGap); }
+    bool compact() const { return naturalWidth (kGap, kPlusW) < kFullTileMinW; }
+    float gap() const { return (float) (compact() ? kCompactGap : kGap); }
+    float plusWidth() const { return (float) (compact() ? kCompactPlusW : kPlusW); }
+
+    float tileWidth() const
+    {
+        if (! compact())
+            return juce::jlimit (kFullTileMinW, 232.0f, naturalWidth (kGap, kPlusW));
+        return juce::jlimit (kCompactTileMinW, kFullTileMinW, naturalWidth (kCompactGap, kCompactPlusW));
+    }
+
+    float slotX (int slot) const { return tilesArea().getX() + (float) slot * (tileWidth() + gap()); }
 
     juce::Rectangle<float> tileRectAt (float x) const
     {
@@ -47,7 +61,7 @@ struct ChainStrip::Impl
     {
         const auto area = tilesArea();
         const float x = slotX ((int) order.size());
-        return { x, area.getY(), (float) kPlusW, area.getHeight() };
+        return { x, area.getY(), plusWidth(), area.getHeight() };
     }
 
     // Target x of every tile (by type) for the current drag state.
@@ -133,12 +147,37 @@ struct ChainStrip::Impl
         Part part = Part::none;
     };
 
-    juce::Rectangle<float> ledRect (juce::Rectangle<float> t) const   { return { t.getX() + 10.0f, t.getY() + 8.0f, 18.0f, 18.0f }; }
-    juce::Rectangle<float> closeRect (juce::Rectangle<float> t) const { return { t.getRight() - 24.0f, t.getY() + 6.0f, 18.0f, 18.0f }; }
-    juce::Rectangle<float> soloRect (juce::Rectangle<float> t) const  { return { t.getX() + 10.0f, t.getBottom() - 23.0f, 22.0f, 16.0f }; }
-    juce::Rectangle<float> deltaRect (juce::Rectangle<float> t) const { return { t.getX() + 36.0f, t.getBottom() - 23.0f, 22.0f, 16.0f }; }
+    // compact tiles: LED, S and Delta share the bottom row evenly
+    juce::Rectangle<float> compactCell (juce::Rectangle<float> t, int i) const
+    {
+        const float step = (t.getWidth() - 8.0f) / 3.0f;
+        const float w = juce::jmin (18.0f, step - 1.0f);
+        return { t.getX() + 4.0f + step * ((float) i + 0.5f) - w * 0.5f, t.getBottom() - 21.0f, w, 14.0f };
+    }
+
+    juce::Rectangle<float> ledRect (juce::Rectangle<float> t) const
+    {
+        if (compact()) return compactCell (t, 0);
+        return { t.getX() + 10.0f, t.getY() + 8.0f, 18.0f, 18.0f };
+    }
+    juce::Rectangle<float> closeRect (juce::Rectangle<float> t) const
+    {
+        if (compact()) return { t.getRight() - 16.0f, t.getY() + 3.0f, 13.0f, 13.0f };
+        return { t.getRight() - 24.0f, t.getY() + 6.0f, 18.0f, 18.0f };
+    }
+    juce::Rectangle<float> soloRect (juce::Rectangle<float> t) const
+    {
+        if (compact()) return compactCell (t, 1);
+        return { t.getX() + 10.0f, t.getBottom() - 23.0f, 22.0f, 16.0f };
+    }
+    juce::Rectangle<float> deltaRect (juce::Rectangle<float> t) const
+    {
+        if (compact()) return compactCell (t, 2);
+        return { t.getX() + 36.0f, t.getBottom() - 23.0f, 22.0f, 16.0f };
+    }
     juce::Rectangle<float> meterRect (juce::Rectangle<float> t) const
     {
+        if (compact()) return { t.getX() + 6.0f, t.getBottom() - 5.0f, t.getWidth() - 12.0f, 2.0f };
         return { t.getX() + 66.0f, t.getBottom() - 23.0f, juce::jmax (10.0f, t.getWidth() - 76.0f), 16.0f };
     }
 
@@ -217,14 +256,21 @@ struct ChainStrip::Impl
         }
 
         const float alpha = dim ? 0.45f : 1.0f;
+        const bool small = compact();
 
         drawLed (g, ledRect (t).withSizeKeepingCentre (8.0f, 8.0f), power, colour);
 
-        // Name
-        const auto nameArea = juce::Rectangle<float> (t.getX() + 30.0f, t.getY() + 7.0f, t.getWidth() - 30.0f - (hovered ? 26.0f : 8.0f), 20.0f);
-        g.setFont (font (12.5f, 700));
+        // Name (compact: up to two lines across the top of the tile)
+        const auto nameArea = small ? juce::Rectangle<float> (t.getX() + 6.0f, t.getY() + 3.0f,
+                                                              t.getWidth() - (hovered ? 20.0f : 9.0f), 28.0f)
+                                    : juce::Rectangle<float> (t.getX() + 30.0f, t.getY() + 7.0f,
+                                                              t.getWidth() - 30.0f - (hovered ? 26.0f : 8.0f), 20.0f);
+        g.setFont (font (small ? 11.0f : 12.5f, 700));
         g.setColour (Colours::text.withMultipliedAlpha (selected ? 1.0f : 0.92f * alpha));
-        g.drawFittedText (ps::moduleInfo (type).shortName, nameArea.toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+        if (small)
+            g.drawFittedText (ps::moduleInfo (type).shortName, nameArea.toNearestInt(), juce::Justification::centredLeft, 2, 0.75f);
+        else
+            g.drawFittedText (ps::moduleInfo (type).shortName, nameArea.toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
 
         // Remove x on hover.
         if (hovered)
@@ -234,7 +280,7 @@ struct ChainStrip::Impl
             g.setColour (overClose ? Colours::major.withAlpha (0.25f) : Colours::panelRaised);
             g.fillEllipse (c);
             g.setColour (overClose ? Colours::major : Colours::textDim);
-            IconButton::paintIcon (g, IconButton::Icon::close, c.withSizeKeepingCentre (16.0f, 16.0f));
+            IconButton::paintIcon (g, IconButton::Icon::close, c.withSizeKeepingCentre (small ? 12.0f : 16.0f, small ? 12.0f : 16.0f));
         }
 
         // Solo
@@ -245,7 +291,7 @@ struct ChainStrip::Impl
             g.fillRoundedRectangle (s, 4.0f);
             g.setColour (solo ? Colours::minor.brighter (0.2f) : Colours::outline.brighter (over ? 0.3f : 0.1f));
             g.drawRoundedRectangle (s.reduced (0.5f), 4.0f, 1.0f);
-            g.setFont (font (10.5f, 700));
+            g.setFont (font (small ? 9.5f : 10.5f, 700));
             g.setColour (solo ? Colours::background : Colours::textDim.withMultipliedAlpha (alpha));
             g.drawText ("S", s, juce::Justification::centred, false);
         }
@@ -259,8 +305,9 @@ struct ChainStrip::Impl
             g.setColour (delta ? Colours::info.brighter (0.2f) : Colours::outline.brighter (over ? 0.3f : 0.1f));
             g.drawRoundedRectangle (s.reduced (0.5f), 4.0f, 1.0f);
             const auto c = s.getCentre();
+            const float k = small ? 0.8f : 1.0f;
             juce::Path tri;
-            tri.addTriangle (c.x, c.y - 4.0f, c.x - 4.5f, c.y + 3.5f, c.x + 4.5f, c.y + 3.5f);
+            tri.addTriangle (c.x, c.y - 4.0f * k, c.x - 4.5f * k, c.y + 3.5f * k, c.x + 4.5f * k, c.y + 3.5f * k);
             g.setColour (delta ? Colours::background : Colours::textDim.withMultipliedAlpha (alpha));
             g.strokePath (tri, juce::PathStrokeType (1.3f, juce::PathStrokeType::mitered));
         }
@@ -269,9 +316,9 @@ struct ChainStrip::Impl
         {
             const auto m = meterRect (t);
             const float diff = proc.getChain().getIoMeters().moduleDifferenceDb[(size_t) type].load();
-            const bool showText = m.getWidth() > 54.0f;
+            const bool showText = ! small && m.getWidth() > 54.0f;
             auto bar = showText ? m.withTrimmedRight (36.0f) : m;
-            bar = bar.withSizeKeepingCentre (bar.getWidth(), 5.0f);
+            bar = bar.withSizeKeepingCentre (bar.getWidth(), small ? 2.0f : 5.0f);
             g.setColour (juce::Colours::black.withAlpha (0.35f));
             g.fillRoundedRectangle (bar, 2.5f);
             const float cx = bar.getCentreX();
@@ -286,7 +333,8 @@ struct ChainStrip::Impl
             }
 
             g.setColour (Colours::textFaint);
-            g.fillRect (juce::Rectangle<float> (cx - 0.5f, bar.getY() - 2.0f, 1.0f, bar.getHeight() + 4.0f));
+            g.fillRect (juce::Rectangle<float> (cx - 0.5f, bar.getY() - (small ? 1.0f : 2.0f), 1.0f,
+                                                bar.getHeight() + (small ? 2.0f : 4.0f)));
 
             if (showText)
             {
@@ -309,13 +357,13 @@ struct ChainStrip::Impl
             g.setFont (font (12.5f, 600));
             g.setColour (Colours::textDim);
             g.drawText ("The chain is empty - click + to add a module",
-                        tilesArea().withTrimmedLeft ((float) kPlusW + 16.0f), juce::Justification::centredLeft, false);
+                        tilesArea().withTrimmedLeft (plusWidth() + 16.0f), juce::Justification::centredLeft, false);
         }
 
         // Flow arrows between tiles (behind them).
         for (size_t i = 0; i + 1 < order.size() && ! dragging; ++i)
         {
-            const float x = slotX ((int) i + 1) - (float) kGap * 0.5f;
+            const float x = slotX ((int) i + 1) - gap() * 0.5f;
             const float y = tilesArea().getCentreY();
             juce::Path arrow;
             arrow.startNewSubPath (x - 2.0f, y - 3.0f);
@@ -338,7 +386,7 @@ struct ChainStrip::Impl
             g.setColour (Colours::accent.withAlpha (0.65f));
             g.fillPath (dashed);
             const auto marker = juce::Rectangle<float> (3.0f, slot.getHeight() + 6.0f)
-                                    .withCentre ({ slot.getX() - (float) kGap * 0.5f, slot.getCentreY() });
+                                    .withCentre ({ slot.getX() - gap() * 0.5f, slot.getCentreY() });
             g.setColour (Colours::accent.withAlpha (0.25f));
             g.fillRoundedRectangle (marker.expanded (3.0f, 0.0f), 3.0f);
             g.setColour (Colours::accent);
@@ -390,6 +438,9 @@ struct ChainStrip::Impl
         for (int t = 0; t < ps::kNumModuleTypes; ++t)
         {
             const auto type = (ps::ModuleType) t;
+
+            if (t == ps::kNumCoreModuleTypes && count > 0)
+                menu.addSeparator();
 
             if (! proc.isModuleInChain (type))
             {
@@ -480,7 +531,7 @@ struct ChainStrip::Impl
         const float left = mouseX - grabOffset;
         const int n = (int) order.size();
         insertIndex = juce::jlimit (0, juce::jmax (0, n - 1),
-                                    juce::roundToInt ((left - tilesArea().getX()) / (tileWidth() + (float) kGap)));
+                                    juce::roundToInt ((left - tilesArea().getX()) / (tileWidth() + gap())));
     }
 
     ChainStrip& owner;
@@ -578,8 +629,14 @@ juce::String ChainStrip::getTooltip()
         case Part::solo:  return "Solo: hear only what this module does (the other modules are bypassed)";
         case Part::delta: return "Delta: hear only the difference this module makes";
         case Part::close: return "Remove from the chain";
-        case Part::body:  return "Click to edit, drag to change the order, right-click for more. The bar shows how much "
-                                 "louder (+) or quieter (-) the module makes the music.";
+        case Part::body:
+        {
+            const auto order = d.proc.getChainOrder();
+            const auto name = hit.index >= 0 && hit.index < (int) order.size()
+                                  ? juce::String (ps::moduleInfo (order[(size_t) hit.index]).name) + ": " : juce::String();
+            return name + "Click to edit, drag to change the order, right-click for more. The bar shows how much "
+                          "louder (+) or quieter (-) the module makes the music.";
+        }
         case Part::none:
         default: break;
     }

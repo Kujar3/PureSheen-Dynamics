@@ -12,7 +12,8 @@
 // Implementation: PluginProcessor.cpp, UndoHistory.cpp, Presets.cpp, FactoryPresets.cpp, PluginState.cpp (all in
 // src/plugin; the other headers there are internal helpers, not contracts).
 //
-// Parameters: one APVTS parameter per ps::paramSpecs() entry (same order, same ids, version hint 1). processBlock
+// Parameters: one APVTS parameter per ps::paramSpecs() entry (same order, same ids; version hint 1 for the 479
+// entries of 0.1.1, 2 for the phase 2 appendix). processBlock
 // copies the raw parameter values (getRawParameterValue atomics, plain values) into a preallocated float array and
 // calls ps::Chain::process. Stereo in / stereo out only (mono buses rejected in isBusesLayoutSupported).
 //
@@ -22,7 +23,10 @@
 //   - "Options" : ps::ui options (meter, spectrum, history depth ...) as properties (opaque to the processor)
 //   - "Snapshots": A..D (each a full copy of params + chain), "editorW" / "editorH"
 //   - "presetName", "presetModified"
-// Undo history is NOT saved (reference-suite parity).
+//   - (phase 2) "MatchEq": the Match EQ spectra of both instances (normal + T/S twin), see the Match EQ section below
+// Undo history is NOT saved (reference-suite parity). States and presets store parameters by id and the chain by
+// module id prefix, so a 0.1.x state (six module types, 479 parameters) loads unchanged: every phase 2 parameter
+// takes its (neutral) default.
 //
 // Threading: everything here is message-thread only except processBlock and the getters marked "any thread".
 class PureSheenProcessor final : public juce::AudioProcessor,
@@ -175,6 +179,23 @@ public:
 
     // "io.bypass" doubles as the host's bypass switch (latency-aligned bypass inside the chain).
     juce::AudioProcessorParameter* getBypassParameter() const override;
+
+    //==============================================================================
+    // (phase 2) Match EQ. The spectra live in the module (ps::MatchEq, getChain().getModule (MatchEq, part), part 1 =
+    // the T/S twin). The processor adds:
+    //   - persistence: the plug-in state, the A-D snapshots and global / Match EQ module presets carry the Reference
+    //     spectrum of both parts; the state and snapshots also carry the Current spectrum (presets do not). Child
+    //     "MatchEq" version 1: <Spectrum part="0" role="reference" source="..." seconds="..." sampleRate="..."
+    //     L="base64 float32 x 540" R=".." M=".." S=".."/> per stored spectrum.
+    //   - undo: a capture stop, Clear or a loaded file is one history step ("Match EQ: captured the reference").
+    //   - a reference spectrum from an audio file (WAV / AIFF / FLAC / MP3), analysed with ps::MatchAnalyser on the
+    //     processor's loader thread (never the audio or message thread; cancellable; up to 20 minutes of audio; mono
+    //     files count as L = R). When done, the result goes to setSpectrum (Reference) of that part on the message
+    //     thread with source "file:<name>" and a change message is sent.
+    bool startMatchReferenceFile (const juce::File&, int part = 0);   // false: unreadable / unsupported file
+    void cancelMatchReferenceFile();
+    float getMatchReferenceFileProgress() const;                     // 0..1 while loading, -1 when idle
+    juce::String getMatchReferenceFileError() const;                 // last failure (plain text), empty if none
 
 private:
     struct Impl;

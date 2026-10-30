@@ -3,6 +3,7 @@
 #include "dsp/Types.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 // The parameter table (single source of truth for ids, names, ranges, defaults) and the typed parameter structs the
@@ -17,8 +18,13 @@
 //   module          "<prefix>.<name>"                         e.g. "dyn.bands", "max.mode"
 //   module + set    "<prefix>.<a|b>.<name>"                   e.g. "exc.b.b2.drive"
 //   band            "<prefix>[.<a|b>].b<1..N>.<name>"         e.g. "eq1.a.b3.freq"
+//   T/S split       "<prefix>.ts.sens" / "<prefix>.ts.len"     every module that offers Transient/Sustain
+// Order: the 0.1.1 table (I/O, the six Core modules, Dither) is frozen; phase 2 appends after "dith.dc": first the
+// Core T/S additions (eq1 / eq2 ts params, the Imager channel slot and its set B, "exc.ts.on" and the exc ts params),
+// then each phase 2 module in ModuleType order (slot params, then its own params in struct order).
+// tests/ParamCompatTests.cpp guards the 0.1.1 part (index, id, name, range, default, choices of all 479 entries).
 // Host-visible names: "<shortName> <Band n> <Name> [(A)|(B)]", e.g. "EQ 1 Band 3 Freq (A)". Set B is labelled "(B)";
-// the UI shows A/B as "Mid"/"Side" or "Left"/"Right" depending on the channel mode.
+// the UI shows A/B as "Mid"/"Side", "Left"/"Right" or "Transient"/"Sustain" depending on the channel mode.
 namespace ps
 {
 enum class ParamKind { Float, Choice, Bool };
@@ -37,6 +43,7 @@ struct ParamSpec
 };
 
 const std::vector<ParamSpec>& paramSpecs();          // fixed order; append-only across versions
+inline constexpr int kNumParams_0_1_1 = 479;         // entries of the released 0.1.1 table (dith.dc is the last)
 int paramIndex (const std::string& id) noexcept;     // -1 when unknown (not realtime: string lookup)
 
 // Plain values, one per paramSpecs() entry (choices / bools as 0, 1, 2 ...).
@@ -58,21 +65,46 @@ struct IoParams
 void readIoParams (ParamValues, IoParams&) noexcept;
 
 // Per-module slot controls the host applies around every module.
-// Modules with a single channel mode (Imager, Maximizer: Stereo only) have only "<prefix>.on": no chMode (a choice
-// needs >= 2 entries), no a.on / b.on / link (no effect in Stereo; and "max.link" is the Maximizer's Gain/Output
-// link). readSlotParams then returns Stereo, both channels on, link on.
+// Modules with a single channel mode (Maximizer, Bass Shaper: Stereo only) have only "<prefix>.on": no chMode (a
+// choice needs >= 2 entries), no a.on / b.on / link (no effect in Stereo; and "max.link" is the Maximizer's
+// Gain/Output link). readSlotParams then returns Stereo, both channels on, link on. (The Imager was single-mode in
+// 0.1.x; its "img.chMode" / "img.a.on" / "img.b.on" / "img.link" are appended phase 2 entries.)
 struct SlotParams
 {
     bool power = true;                // "<prefix>.on"
     ChannelMode channelMode = ChannelMode::Stereo;   // "<prefix>.chMode" (choices the module supports, see below)
-    bool channelOn[kNumChannelSets] { true, true };  // "<prefix>.a.on" "<prefix>.b.on" (M/S, L/R only)
+    bool channelOn[kNumChannelSets] { true, true };  // "<prefix>.a.on" "<prefix>.b.on" (M/S, L/R, T/S)
     bool channelLink = true;          // "<prefix>.link": UI edits A and B together (no DSP effect)
+    // (phase 2) Transient/Sustain split, only used while channelMode == TransientSustain (defaults when the module has
+    // no T/S): "<prefix>.ts.sens" 0..100 % (higher = smaller level jumps count as hits), "<prefix>.ts.len" 5..100 ms
+    // log (how long the transient part lasts after an onset).
+    float tsSensitivity = 50.0f;
+    float tsLengthMs = 20.0f;
 };
 void readSlotParams (ParamValues, ModuleType, SlotParams&) noexcept;
 
-// Channel modes each module offers (reference-suite parity): EQ1/EQ2 all; Dynamics, Exciter Stereo + M/S; Imager,
-// Maximizer Stereo only (the choice list of "<prefix>.chMode" contains only these, in this order).
+// Channel modes each module offers (reference-suite parity), Stereo first, then M/S, L/R, T/S where offered:
+//   Equalizer 1 / 2, Dynamic EQ, Match EQ                                  Stereo, M/S, L/R, T/S
+//   Exciter, Tone Balance, Definition, Smoother, Low Contrast              Stereo, M/S, T/S
+//   Dynamics, Punch                                                        Stereo, M/S
+//   Imager                                                                 Stereo, T/S
+//   Maximizer, Bass Shaper                                                 Stereo
 std::vector<ChannelMode> supportedChannelModes (ModuleType);
+
+// (phase 2) The modes of the "<prefix>.chMode" choice, in choice order (empty for single-mode modules). Equal to
+// supportedChannelModes except for the Exciter: its released choice list is { Stereo, Mid/Side }, and its
+// Transient/Sustain mode is the appended switch "exc.ts.on" (on = T/S, overrides exc.chMode), so host automation of
+// exc.chMode recorded with 0.1.x keeps its meaning.
+std::vector<ChannelMode> channelModeChoices (ModuleType);
+
+// (phase 2) The parameter values that select `mode` for a module ("<prefix>.chMode" = choice index, plus "exc.ts.on"
+// for the Exciter). For the UI's channel-mode segments (one undo step) and the preset importer. Empty when the module
+// does not offer the mode.
+std::vector<std::pair<std::string, float>> channelModeParamValues (ModuleType, ChannelMode);
+
+// (phase 2) true when the module offers Transient/Sustain (it then has "<prefix>.ts.sens" / "<prefix>.ts.len" and the
+// chain builds a twin instance for it).
+bool supportsTransientSustain (ModuleType) noexcept;
 
 //==============================================================================
 // Equalizer ("eq1." / "eq2.")
@@ -146,6 +178,19 @@ void readDynamicsParams (ParamValues, DynamicsParams&) noexcept;
 
 //==============================================================================
 // Imager ("img.")
+// (phase 2) Per-set part of the Imager for Transient/Sustain: set A = the 0.1.x ids ("b<n>.width", "stz.*", "rec.*"),
+// set B = the appended "b.b<n>.width", "b.stz.*", "b.rec.*" (default neutral). Bands, crossovers, amount and antiphase
+// are shared (latency / band edges identical in both parts).
+struct ImagerSetParams
+{
+    float widthPercent[kMaxBands] { 0, 0, 0, 0 };
+    bool stereoizeOn = false;
+    StereoizeMode stereoizeMode = StereoizeMode::ModeII;
+    float stereoizeAmount = 0.0f;
+    bool recoverSidesOn = false;
+    float recoverSidesGainDb = 0.0f;
+};
+
 struct ImagerParams
 {
     int numBands = 1;                 // "bands" 1..4
@@ -159,8 +204,13 @@ struct ImagerParams
     bool recoverSidesOn = false;      // "rec.on"   only acts on bands with width < 0
     float recoverSidesGainDb = 0.0f;  // "rec.gain" -12..+12
     bool preventAntiphase = false;    // "antiphase"  keeps correlation >= 0 (limits side above mid)
+    ImagerSetParams setB;             // (phase 2) "b.b<n>.width", "b.stz.on|mode|amount", "b.rec.on|gain"
 };
 void readImagerParams (ParamValues, ImagerParams&) noexcept;
+// (phase 2) The fields of set A (widthPercent, stereoize*, recoverSides*) as an ImagerSetParams, and the reverse: an
+// Imager twin (getParamSet() == 1) runs with useSet (p, p.setB).
+ImagerSetParams imagerSetA (const ImagerParams&) noexcept;
+void useImagerSet (ImagerParams&, const ImagerSetParams&) noexcept;
 
 //==============================================================================
 // Exciter ("exc.")
@@ -222,5 +272,175 @@ struct DitherParams
     bool dcFilter = false;            // "dith.dc"     1 Hz high-pass ahead of the Maximizer (host applies it there)
 };
 void readDitherParams (ParamValues, DitherParams&) noexcept;
+
+//==============================================================================
+//==============================================================================
+// Phase 2 modules. Every module offering T/S also has "<prefix>.ts.sens" / ".ts.len" (SlotParams).
+// Neutral defaults: every module is transparent at its defaults (null < -120 dBFS against the input delayed by its
+// latency).
+
+//==============================================================================
+// Dynamic EQ ("deq.")
+struct DynamicEqBandParams
+{
+    bool on = false;                  // "b<n>.on"       off = that band is skipped (bit-exact passthrough)
+    DynEqShape shape = DynEqShape::ProportionalQ;   // "b<n>.shape"
+    float freqHz = 1000.0f;           // "b<n>.freq"     20..20000 log; defaults 60 / 200 / 500 / 1500 / 4000 / 10000
+    float gainDb = 0.0f;              // "b<n>.gain"     -30..+15: the band's full dynamic gain (direction rules)
+    float q = 0.707f;                 // "b<n>.q"        0.1..24 log (Baxandall shelves ignore it)
+    DynEqDirection direction = DynEqDirection::Down;  // "b<n>.dir"
+    float thresholdDb = -30.0f;       // "b<n>.thr"      -130..0 (skew centre -30): detector level where the move starts
+    float ratio = 2.0f;               // "b<n>.ratio"    1..20 log, ":1": dB of movement per dB over = 1 - 1/ratio
+    float kneeDb = 6.0f;              // "b<n>.knee"     0..24 (centred on the threshold)
+    float attackMs = 5.0f;            // "b<n>.att"      0.1..500 log (Auto Scale on: the time at 1 kHz)
+    float releaseMs = 80.0f;          // "b<n>.rel"      1..5000 log (Auto Scale on: the time at 1 kHz)
+    bool autoScale = true;            // "b<n>.auto"     times scaled by clamp (sqrt (1000 / f), 0.25, 4)
+    float offsetDb = 0.0f;            // "b<n>.offset"   -15..+15 static gain added (total clamped to -30..+15)
+    bool dynamic = true;              // "b<n>.dyn"      false = static band at gain + offset
+    DynEqSidechain sidechain = DynEqSidechain::Own;   // "b<n>.sc"
+};
+struct DynamicEqParams
+{
+    EqFilterMode filterMode = EqFilterMode::Analog;   // "mode"       Analog (0 latency) / Digital (linear phase)
+    int firSizeIndex = 1;             // "firSize"   4096 / 8192 / 16384 / 32768 at 44.1/48 kHz (x2 / x4 above)
+    float lookaheadMs = 0.0f;         // "lookahead" 0..10 ms (audio delayed, detector not; adds to the latency)
+    DynamicEqBandParams bands[kNumChannelSets][kDynEqBands];   // "<a|b>.b<1..6>.<name>"
+};
+void readDynamicEqParams (ParamValues, DynamicEqParams&) noexcept;
+
+//==============================================================================
+// Match EQ ("meq.")
+struct MatchEqSetParams
+{
+    float amountPercent = 50.0f;      // "amount"  0..100: scales the matched curve (dB)
+    float smoothPercent = 50.0f;      // "smooth"  0..100: smoothing width (1/48 oct .. 2 oct, see MatchAnalysis.h)
+    float lowHz = 20.0f;              // "lo"      20..20000 log: start of the processed region
+    float highHz = 20000.0f;          // "hi"      20..20000 log: end (readMatchEqParams keeps hi >= lo * 2^(1/6))
+    float maxBoostDb = 12.0f;         // "boost"   0..24: soft limit of positive gains
+    float maxCutDb = 12.0f;           // "cut"     0..24: soft limit of negative gains
+};
+struct MatchEqParams
+{
+    MatchPhase phase = MatchPhase::Linear;   // "phase"    Linear / Minimum (minimum = latency of one partition)
+    int firSizeIndex = 2;             // "firSize"  4096 / 8192 / 16384 / 32768 at 44.1/48 kHz (x2 / x4 above)
+    MatchEqSetParams sets[kNumChannelSets];  // "<a|b>.<name>"
+};
+void readMatchEqParams (ParamValues, MatchEqParams&) noexcept;
+
+//==============================================================================
+// Tone Balance ("tbal.")
+struct ToneBalanceSetParams
+{
+    float amountPercent = 0.0f;       // "amount"   0..100 (0 = transparent)
+    float speed = 50.0f;              // "speed"    0..100 (Shape / Boost)
+    float smoothing = 50.0f;          // "smooth"   0..100 (Shape / Boost)
+    float cutSpeed = 50.0f;           // "cutSpeed" 0..100 (Cut)
+    float sensitivity = 50.0f;        // "sens"     0..100 (Cut)
+    bool tameTransients = false;      // "tame"
+    float lowPercent = 100.0f;        // "low"      0..100: correction below 100 Hz
+    float midPercent = 100.0f;        // "mid"      0..100: 100 Hz .. 5.6 kHz
+    float highPercent = 100.0f;       // "high"     0..100: above 5.6 kHz
+};
+struct ToneBalanceParams
+{
+    ToneTarget target = ToneTarget::Balanced;        // "target"
+    ToneBalanceMode mode = ToneBalanceMode::Shape;   // "mode"
+    ToneBalanceSetParams sets[kNumChannelSets];      // "<a|b>.<name>"
+};
+void readToneBalanceParams (ParamValues, ToneBalanceParams&) noexcept;
+
+//==============================================================================
+// Definition ("defn.")
+struct DefinitionSetParams
+{
+    float amountPercent = 0.0f;       // "amount" 0..100 (0 = transparent)
+    float tiltDbPerOct = 0.0f;        // "tilt"   -6..+6 dB/oct target relative to pink (+ brighter)
+    float attackMs = 150.0f;          // "att"    5..1000 log
+    float releaseMs = 120.0f;         // "rel"    10..1000 log
+    float lowHz = 300.0f;             // "low"    300..20000 log: region start
+    float highHz = 20000.0f;          // "high"   300..20000 log (readDefinitionParams keeps high >= low * 2^(1/3))
+};
+struct DefinitionParams
+{
+    DefinitionSetParams sets[kNumChannelSets];       // "<a|b>.<name>"
+};
+void readDefinitionParams (ParamValues, DefinitionParams&) noexcept;
+
+//==============================================================================
+// Smoother ("smth.")
+struct SmootherSetParams
+{
+    float amountPercent = 0.0f;       // "amount" 0..100 (0 = transparent; higher = lower effective threshold)
+    SmootherMode mode = SmootherMode::Medium;   // "mode" Gentle / Medium / Strong
+    float attackMs = 8.0f;            // "att"    1..100 log
+    float releaseMs = 30.0f;          // "rel"    2..500 log
+    float tonePercent = 0.0f;         // "tone"   -100..+100 (+ = less reduction of the highs, brighter)
+    float lowHz = 2000.0f;            // "low"    20..20000 log: region start
+    float highHz = 12000.0f;          // "high"   20..20000 log (readSmootherParams keeps high >= low * 2^(1/6))
+};
+struct SmootherParams
+{
+    SmootherSetParams sets[kNumChannelSets];         // "<a|b>.<name>"
+};
+void readSmootherParams (ParamValues, SmootherParams&) noexcept;
+
+//==============================================================================
+// Punch ("pnch.")
+struct PunchBandParams
+{
+    bool on = true;                   // "b<n>.on"
+    float amountPercent = 0.0f;       // "b<n>.amount" -100..+100 (+ = punchier, - = denser)
+};
+struct PunchParams
+{
+    int numBands = 1;                 // "bands"     1..4 (1 = no split: neutral is bit-exact)
+    float crossoverHz[kMaxCrossovers] { 120.0f, 1000.0f, 6000.0f };   // "xover1..3"
+    CrossoverType crossoverType = CrossoverType::Analog;              // "xoverType"
+    float amountPercent = 100.0f;     // "amount"    0..100: scales every band's amount
+    float envelopeMs = 100.0f;        // "env"       10..1000 log (long envelope; short = env / 10, attack env / 100)
+    bool sync = false;                // "sync"      envelope from the host tempo
+    int syncNote = 7;                 // "syncNote"  index into kPunchSyncFractions (7 = 1/16)
+    bool stereoLink = false;          // "stLink"    Stereo mode: one gain for both channels from the mid
+    bool autoGain = false;            // "autoGain"  per-band make-up keeps the long-term level
+    bool linkBands = false;           // "bandLink"  UI only: dragging one band's amount moves all (no DSP effect)
+    PunchBandParams bands[kNumChannelSets][kMaxBands];               // "<a|b>.b<n>.*"
+};
+void readPunchParams (ParamValues, PunchParams&) noexcept;
+
+//==============================================================================
+// Low Contrast ("lowc.")
+struct LowContrastSetParams
+{
+    LowContrastMode mode = LowContrastMode::Punchy;  // "mode"
+    float contrastPercent = 0.0f;     // "contrast" -100..+100
+    float gainDb = 0.0f;              // "gain"     -12..+12: make-up gain of the region
+};
+struct LowContrastParams
+{
+    float lowHz = 20.0f;              // "low"      20..300 log: region start (shared by both sets)
+    float highHz = 250.0f;            // "high"     20..300 log (readLowContrastParams keeps high >= low * 2^(1/3))
+    bool autoGain = false;            // "autoGain"
+    LowContrastSetParams sets[kNumChannelSets];      // "<a|b>.<name>"
+};
+void readLowContrastParams (ParamValues, LowContrastParams&) noexcept;
+
+//==============================================================================
+// Bass Shaper ("bass.", Stereo only: slot = "bass.on")
+struct BassShaperParams
+{
+    float cutoffHz = 120.0f;          // "cutoff"         65..300 log
+    float balanceDb = 0.0f;           // "balance"        -12..+12 (level below the cutoff)
+    float punchDb = 0.0f;             // "punch"          -12..+12 (level of the low-end hits)
+    bool sustainOn = false;           // "sus.on"
+    float sustainThresholdDb = -18.0f;        // "sus.thr"    -40..0
+    float sustainAmountPercent = 50.0f;       // "sus.amount" 0..100
+    float sustainCharacterPercent = 100.0f;   // "sus.char"   0 = Dirty .. 100 = Clean
+    bool peakOn = false;              // "peak.on"
+    float peakThresholdDb = -6.0f;            // "peak.thr"   -30..0
+    float peakCharacterPercent = 100.0f;      // "peak.char"  0 = Dirty (clip) .. 100 = Clean (limit)
+    float peakMixPercent = 100.0f;            // "peak.mix"   0..100
+    bool autoGain = false;            // "autoGain"
+};
+void readBassShaperParams (ParamValues, BassShaperParams&) noexcept;
 
 } // namespace ps

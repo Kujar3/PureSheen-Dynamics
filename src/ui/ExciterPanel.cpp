@@ -135,13 +135,7 @@ struct ExciterPanel::Impl
 
     bool isSplit() const
     {
-        const auto modes = ps::supportedChannelModes (ps::ModuleType::Exciter);
-
-        if (modes.size() < 2)
-            return false;
-
-        const int index = juce::jlimit (0, (int) modes.size() - 1, juce::roundToInt (processor.getParameterValue ("exc.chMode")));
-        return modes[(size_t) index] == ps::ChannelMode::MidSide || modes[(size_t) index] == ps::ChannelMode::LeftRight;
+        return isDualChannelMode (currentChannelMode (processor, ps::ModuleType::Exciter));
     }
 
     int currentSet() const { return isSplit() ? owner.getChannelSet() : 0; }
@@ -192,6 +186,7 @@ struct ExciterPanel::Impl
         bandCard.setBadge (band + 1);
         bandCard.setColour (c);
         display.setAccentColour (c);
+        display.setChannelSet (set);
 
         shownBand = band;
         shownSet = set;
@@ -207,7 +202,7 @@ struct ExciterPanel::Impl
         auto sub = rangeText (band);
 
         if (isSplit())
-            sub = (set == 0 ? "Mid  " : "Side  ") + sub;
+            sub = channelSetName (currentChannelMode (processor, ps::ModuleType::Exciter), set) + "  " + sub;
 
         bandCard.setSubtitle (sub);
 
@@ -444,7 +439,7 @@ struct ExciterPanel::Impl
 
         const bool running = processor.isModuleInChain (ps::ModuleType::Exciter)
                              && processor.getParameterValue ("exc.on") >= 0.5f;
-        const auto* exciter = dynamic_cast<const ps::Exciter*> (&processor.getChain().getModule (ps::ModuleType::Exciter));
+        const auto* exciter = dynamic_cast<const ps::Exciter*> (&moduleForChannelSet (processor, ps::ModuleType::Exciter, currentSet()));
         const bool valid = running && exciter != nullptr && processor.getChain().getSampleRate() > 0.0;
         bool changed = valid != metersValid;
         metersValid = valid;

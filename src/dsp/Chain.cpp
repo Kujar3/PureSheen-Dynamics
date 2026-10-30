@@ -1,11 +1,20 @@
 #include "dsp/Chain.h"
 
 #include "core/Loudness.h"
+#include "dsp/BassShaper.h"
+#include "dsp/Definition.h"
+#include "dsp/DynamicEq.h"
 #include "dsp/Dynamics.h"
 #include "dsp/Equalizer.h"
 #include "dsp/Exciter.h"
 #include "dsp/Imager.h"
+#include "dsp/LowContrast.h"
+#include "dsp/MatchEq.h"
 #include "dsp/Maximizer.h"
+#include "dsp/Punch.h"
+#include "dsp/Smoother.h"
+#include "dsp/ToneBalance.h"
+#include "dsp/TransientSplit.h"
 
 #include <algorithm>
 #include <atomic>
@@ -37,7 +46,13 @@
 // - Channel solo (M/S, L/R modes): the other channel of the module's domain is muted (Mid solo = mono Mid on both
 //   speakers; Side solo = Side, -Side; Left solo = left speaker only). Applied at the slot output, so downstream
 //   modules process what is heard. Channel on/off and channel solo are ignored in Stereo mode.
-//   Transient/Sustain is treated as Stereo (phase 2).
+// - Transient/Sustain (phase 2): see Chain.h. The slot's dry line delays by L + M (splitter latency + module latency);
+//   the aligned dry transient Td is the splitter's T delayed by M, the aligned dry sustain is Sd = dry - Td, so every
+//   crossfade toward "dry" (power, channel power, mode change) reconstructs the aligned input exactly. The splitter
+//   runs while the slot processes, plays a channel solo, or publishes a selected-part tap, and resets when it starts. A mode
+//   change that changes the slot latency fades the slot output to 0 (20 ms, together with the module's own fade),
+//   switches while silent and fades back in (20 ms) while the module warms up for its new latency.
+//   The same dip gates global bypass and the delta sum: their alignment delays change at the switch too.
 // - Gain match measures the chain input before input gain, latency-aligned (it is the bypass signal), and the chain
 //   output after output gain / mono / swap, before bypass and the match gain itself (open loop: no feedback). Both
 //   measurements (and so the match gain) are frozen while a monitoring function is active (module solo, delta, channel
@@ -250,6 +265,7 @@ struct MonitorBox
     std::atomic<unsigned> seq { 0 };
     std::atomic<int> soloBand { -1 }, soloChannelSet { -1 }, auditionChannelSet { 0 };
     std::atomic<bool> auditionOn { false }, soloDetectionFilter { false };
+    std::atomic<bool> soloRegion { false }, learnRegion { false };
     std::atomic<float> auditionHz { 1000.0f }, auditionQ { 4.0f };
 
     void write (const ModuleMonitor& m) noexcept
@@ -262,6 +278,8 @@ struct MonitorBox
         auditionChannelSet.store (m.auditionChannelSet, std::memory_order_relaxed);
         auditionOn.store (m.auditionOn, std::memory_order_relaxed);
         soloDetectionFilter.store (m.soloDetectionFilter, std::memory_order_relaxed);
+        soloRegion.store (m.soloRegion, std::memory_order_relaxed);
+        learnRegion.store (m.learnRegion, std::memory_order_relaxed);
         auditionHz.store (m.auditionHz, std::memory_order_relaxed);
         auditionQ.store (m.auditionQ, std::memory_order_relaxed);
         seq.store (s + 2, std::memory_order_release);
@@ -280,6 +298,8 @@ struct MonitorBox
         t.auditionChannelSet = auditionChannelSet.load (std::memory_order_relaxed);
         t.auditionOn = auditionOn.load (std::memory_order_relaxed);
         t.soloDetectionFilter = soloDetectionFilter.load (std::memory_order_relaxed);
+        t.soloRegion = soloRegion.load (std::memory_order_relaxed);
+        t.learnRegion = learnRegion.load (std::memory_order_relaxed);
         t.auditionHz = auditionHz.load (std::memory_order_relaxed);
         t.auditionQ = auditionQ.load (std::memory_order_relaxed);
         std::atomic_thread_fence (std::memory_order_acquire);
@@ -431,6 +451,13 @@ struct Slot
 {
     StereoDelay dry, deltaLine;
     Ramp wet, channelOn[2], keep[2], deltaGain;
+    Ramp dip;                   // (phase 2) output gain of a latency-changing mode switch (1 = normal)
+    TransientSplitter split;    // (phase 2) T/S
+    StereoDelay partDry, padA, padB, padDeltaA, padDeltaB;
+    bool splitRunning = false;
+    int partLatency = 0;        // M: the latency both parts come out with (max of the two instances)
+    int latA = 0, latB = 0;
+    double tsMsT = 0.0, tsMsX = 0.0;
     bool processing = true;
     bool enabled = true;        // power on, not soloed out, no channel-mode change pending (this block)
     bool fresh = true;          // snap every ramp on the next block (prepare, reset, joined the chain)
@@ -446,12 +473,37 @@ struct Slot
     bool monitorActive = false; // band solo / audition / detector solo: the module's output is a monitor signal
     SlotLoudness loudness;
 };
+
+std::unique_ptr<Module> makeModule (ModuleType type)
+{
+    switch (type)
+    {
+        case ModuleType::Equalizer1:
+        case ModuleType::Equalizer2:  return std::make_unique<Equalizer> (type);
+        case ModuleType::Dynamics:    return std::make_unique<Dynamics>();
+        case ModuleType::Imager:      return std::make_unique<Imager>();
+        case ModuleType::Exciter:     return std::make_unique<Exciter>();
+        case ModuleType::Maximizer:   return std::make_unique<Maximizer>();
+        case ModuleType::DynamicEq:   return std::make_unique<DynamicEq>();
+        case ModuleType::MatchEq:     return std::make_unique<MatchEq>();
+        case ModuleType::ToneBalance: return std::make_unique<ToneBalance>();
+        case ModuleType::Definition:  return std::make_unique<Definition>();
+        case ModuleType::Smoother:    return std::make_unique<Smoother>();
+        case ModuleType::Punch:       return std::make_unique<Punch>();
+        case ModuleType::LowContrast: return std::make_unique<LowContrast>();
+        case ModuleType::BassShaper:  return std::make_unique<BassShaper>();
+        case ModuleType::Count:
+        default: break;
+    }
+    return nullptr;
+}
 } // namespace
 
 //==============================================================================
 struct Chain::Impl
 {
     std::unique_ptr<Module> modules[kNumModuleTypes];
+    std::unique_ptr<Module> twins[kNumModuleTypes];   // (phase 2) T/S sustain instances (null for types without T/S)
     Slot slots[kNumModuleTypes];
     MonitorBox monitorBoxes[kNumModuleTypes];
     OrderBox orderBox;
@@ -464,6 +516,7 @@ struct Chain::Impl
     std::atomic<bool> delta[kNumModuleTypes] {};
     std::atomic<int> channelSolo[kNumModuleTypes] {};
     std::atomic<int> tapModule { -1 };
+    std::atomic<int> tapPart { -1 };
     std::atomic<bool> resetIntegratedRequest { false };
     std::atomic<int> latency { 0 };
 
@@ -478,6 +531,8 @@ struct Chain::Impl
     DitherParams ditherParams;
 
     std::vector<float> raw[2], cur[2], dry[2], bus[2], tmp[2];
+    std::vector<float> tPart[2], sPart[2], tDry[2], sDry[2], dtT[2], dtS[2];   // (phase 2) T/S scratch
+    std::vector<float> modeDip;   // product of slot latency-switch fades for bypass and the delta sum
     StereoDelay bypassDelay;
     DcFilter dcFilter;
     Ramp inGain[2], outGain[2], mono, swap, bypass, deltaMix, dcAmount, classicAmount, modernAmount, soloClassicAmount;
@@ -496,15 +551,26 @@ struct Chain::Impl
 
     Impl()
     {
-        modules[(int) ModuleType::Equalizer1] = std::make_unique<Equalizer> (ModuleType::Equalizer1);
-        modules[(int) ModuleType::Equalizer2] = std::make_unique<Equalizer> (ModuleType::Equalizer2);
-        modules[(int) ModuleType::Dynamics] = std::make_unique<Dynamics>();
-        modules[(int) ModuleType::Imager] = std::make_unique<Imager>();
-        modules[(int) ModuleType::Exciter] = std::make_unique<Exciter>();
-        modules[(int) ModuleType::Maximizer] = std::make_unique<Maximizer>();
+        for (int t = 0; t < kNumModuleTypes; ++t)
+        {
+            modules[t] = makeModule ((ModuleType) t);
+            if (supportsTransientSustain ((ModuleType) t))
+            {
+                twins[t] = makeModule ((ModuleType) t);
+                twins[t]->setParamSet (1);
+            }
+        }
         for (auto& c : channelSolo)
             c.store (-1);
         orderBox.write (order);
+    }
+
+    void resetModule (int t) noexcept
+    {
+        modules[t]->reset();
+        if (twins[t] != nullptr)
+            twins[t]->reset();
+        slots[t].splitRunning = false;   // the splitter restarts (reset) the next time it runs
     }
 
     //==============================================================================
@@ -514,7 +580,7 @@ struct Chain::Impl
                          &classicAmount, &modernAmount, &soloClassicAmount })
             r->setLength (n);
         for (auto& s : slots)
-            for (auto* r : { &s.wet, &s.channelOn[0], &s.channelOn[1], &s.keep[0], &s.keep[1], &s.deltaGain })
+            for (auto* r : { &s.wet, &s.channelOn[0], &s.channelOn[1], &s.keep[0], &s.keep[1], &s.deltaGain, &s.dip })
                 r->setLength (n);
     }
 
@@ -527,6 +593,13 @@ struct Chain::Impl
         s.warmup = 0;
         s.msIn = s.msOut = 0.0;
         s.loudness.reset();
+        s.splitRunning = false;
+        s.partDry.clear();
+        s.padA.clear();
+        s.padB.clear();
+        s.padDeltaA.clear();
+        s.padDeltaB.clear();
+        s.tsMsT = s.tsMsX = 0.0;
     }
 
     void pullOrder() noexcept
@@ -545,11 +618,15 @@ struct Chain::Impl
         {
             if (nowIn[t] && ! audioInChain[t])
             {
-                modules[t]->reset();
+                resetModule (t);
                 clearSlot (slots[t]);
             }
             if (! nowIn[t])
+            {
                 ioMeters.moduleDifferenceDb[t].store (0.0f);
+                ioMeters.moduleTsActivity[t].store (0.0f);
+                ioMeters.moduleTsShareDb[t].store (-60.0f);
+            }
             audioInChain[t] = nowIn[t];
         }
 
@@ -581,7 +658,7 @@ struct Chain::Impl
             auto& s = slots[t];
             if (s.monitorSeq != monitorBoxes[t].seq.load (std::memory_order_acquire)
                 && monitorBoxes[t].read (s.monitor, s.monitorSeq))
-                modules[t]->setMonitor (s.monitor);
+                forwardMonitor (t);
         }
 
         for (int k = 0; k < audioCount; ++k)
@@ -598,16 +675,26 @@ struct Chain::Impl
             auto& s = slots[t];
             auto& m = *modules[t];
 
+            Module* twin = twins[t].get();
             if (values != nullptr)
             {
                 readSlotParams (values, (ModuleType) t, s.params);
+                if (twin == nullptr && s.params.channelMode == ChannelMode::TransientSustain)
+                    s.params.channelMode = ChannelMode::Stereo;   // (a test module without a twin)
                 m.setParams (values);
+                if (twin != nullptr && (s.params.channelMode == ChannelMode::TransientSustain
+                                        || s.activeMode == ChannelMode::TransientSustain))
+                    twin->setParams (values);
             }
 
-            const int lat = std::max (0, m.getLatencySamples());
-            totalLatency += lat;
-            s.latency = std::min (lat, s.dry.maxDelay());
-            alignedLatency += s.latency;
+            // Slot latency per mode: the module's, or in T/S the splitter's + the common latency of both parts.
+            s.latA = std::max (0, m.getLatencySamples());
+            s.latB = twin != nullptr ? std::max (0, twin->getLatencySamples()) : s.latA;
+            const int splitLatency = s.split.getLatencySamples();
+            auto slotLatency = [&s, splitLatency] (ChannelMode cm)
+            {
+                return cm == ChannelMode::TransientSustain ? splitLatency + std::max (s.latA, s.latB) : s.latA;
+            };
 
             if (t == soloType)
                 soloValid = true;
@@ -616,24 +703,58 @@ struct Chain::Impl
 
             // Channel-mode change: the module's buffered state belongs to the old domain. The slot fades to its
             // aligned dry signal in the old mode, stops, switches, reset()s the module and warms it up silently for
-            // its latency, then fades the module in again (the power-cycle path).
-            if (fresh || ! s.processing)
+            // its latency, then fades the module in again (the power-cycle path). A switch that changes the slot
+            // latency also dips the slot output to silence around the switch (the dry signal itself jumps).
+            const bool latencyChanges = slotLatency (s.activeMode) != slotLatency (s.params.channelMode);
+            const auto previousMode = s.activeMode;
+            if (fresh)
+            {
                 s.activeMode = s.params.channelMode;
+            }
+            else if (s.activeMode != s.params.channelMode)
+            {
+                if (latencyChanges)
+                    s.dip.setTarget (0.0f);
+                if (! s.processing && (! latencyChanges || s.dip.isAt (0.0f)))
+                {
+                    s.activeMode = s.params.channelMode;
+                    s.splitRunning = false;
+                    s.partDry.clear();
+                }
+            }
             const bool modePending = s.activeMode != s.params.channelMode;
+            if (s.activeMode != previousMode)
+                forwardMonitor (t);
+            if (! modePending)
+                s.dip.setTarget (1.0f);
+
+            const int lat = slotLatency (s.activeMode);
+            totalLatency += lat;
+            s.latency = std::min (lat, s.dry.maxDelay());
+            s.partLatency = std::max (0, s.latency - (s.activeMode == ChannelMode::TransientSustain ? splitLatency : s.latency));
+            alignedLatency += s.latency;
 
             const ChannelMode mode = s.activeMode;
-            const bool dual = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight;
-            const int chSolo = dual ? channelSolo[t].load (std::memory_order_relaxed) : -1;
+            const bool ts = mode == ChannelMode::TransientSustain;
+            const bool perSet = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight || ts;
+            const int chSolo = perSet ? channelSolo[t].load (std::memory_order_relaxed) : -1;
             s.enabled = s.params.power && (soloType < 0 || soloType == t) && ! modePending;
-            s.monitorActive = s.monitor.soloBand >= 0 || s.monitor.auditionOn || s.monitor.soloDetectionFilter;
+            s.monitorActive = s.monitor.soloBand >= 0 || s.monitor.auditionOn || s.monitor.soloDetectionFilter
+                              || s.monitor.soloRegion;
 
             monitoring = monitoring || s.deltaRequested || chSolo >= 0 || s.monitorActive;
 
             float onTarget[2], keepTarget[2];
             for (int c = 0; c < 2; ++c)
             {
-                onTarget[c] = (! dual || s.params.channelOn[c]) ? 1.0f : 0.0f;
+                onTarget[c] = (! perSet || s.params.channelOn[c]) ? 1.0f : 0.0f;
                 keepTarget[c] = (chSolo < 0 || chSolo == c) ? 1.0f : 0.0f;
+                // T/S: an EQ audition plays only the part whose instance auditions (the other part is muted)
+                if (ts && s.monitor.auditionOn && c != std::clamp (s.monitor.auditionChannelSet, 0, 1))
+                    keepTarget[c] = 0.0f;
+                if (ts && s.monitor.soloBand >= 0 && s.monitor.soloChannelSet >= 0
+                    && c != std::clamp (s.monitor.soloChannelSet, 0, 1))
+                    keepTarget[c] = 0.0f;
             }
             const float deltaTarget = s.deltaRequested ? 1.0f : 0.0f;
 
@@ -648,6 +769,7 @@ struct Chain::Impl
                     s.keep[c].snap (keepTarget[c]);
                 }
                 s.deltaGain.snap (deltaTarget);
+                s.dip.snap (1.0f);
                 s.fresh = false;
                 continue;
             }
@@ -676,7 +798,7 @@ struct Chain::Impl
 
             if (s.enabled && ! s.processing)
             {
-                m.reset();
+                resetModule (t);
                 s.processing = true;
                 s.warmup = lat;
                 s.wet.snap (0.0f);
@@ -745,6 +867,30 @@ struct Chain::Impl
         firstBlock = false;
     }
 
+    // The monitor of slot t to its module(s). Outside T/S the main instance owns both sets. T/S auditions and
+    // explicitly selected band solos go only to their part (the slot mutes the other part meanwhile).
+    void forwardMonitor (int t) noexcept
+    {
+        const auto& mon = slots[t].monitor;
+        if (twins[t] == nullptr || slots[t].activeMode != ChannelMode::TransientSustain)
+        {
+            modules[t]->setMonitor (mon);
+            return;
+        }
+        ModuleMonitor a = mon, b = mon;
+        const int set = std::clamp (mon.auditionChannelSet, 0, 1);
+        a.auditionOn = mon.auditionOn && set == 0;
+        b.auditionOn = mon.auditionOn && set == 1;
+        if (mon.soloChannelSet >= 0)
+        {
+            const int soloSet = std::clamp (mon.soloChannelSet, 0, 1);
+            if (soloSet != 0) a.soloBand = -1;
+            if (soloSet != 1) b.soloBand = -1;
+        }
+        modules[t]->setMonitor (a);
+        twins[t]->setMonitor (b);
+    }
+
     void finishBlockState() noexcept
     {
         for (int k = 0; k < audioCount; ++k)
@@ -784,23 +930,36 @@ struct Chain::Impl
         float* d[2] { dry[0].data(), dry[1].data() };
         float* dt[2] { tmp[0].data(), tmp[1].data() };
         const bool tapped = tapModule.load (std::memory_order_relaxed) == t;
+        const ChannelMode mode = s.activeMode;
+        const bool ts = mode == ChannelMode::TransientSustain && twins[t] != nullptr;
+        const int part = ts ? tapPart.load (std::memory_order_relaxed) : -1;
+        const bool tapPartOnly = tapped && (part == 0 || part == 1);
 
-        if (tapped)
+        if (tapped && ! tapPartOnly)
             modulePreFifo.push (x[0], x[1], n);
 
         s.dry.setDelay (s.latency);
         s.dry.process (x[0], x[1], d[0], d[1], n);
 
-        const ChannelMode mode = s.activeMode;
         const bool dual = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight;
         const bool ms = mode == ChannelMode::MidSide;
-        const bool keepActive = dual && (! s.keep[0].isAt (1.0f) || ! s.keep[1].isAt (1.0f));
+        const bool keepActive = (dual || ts) && (! s.keep[0].isAt (1.0f) || ! s.keep[1].isAt (1.0f));
         const bool needDomain = ms && (s.processing || keepActive);
         const bool handles = m.handlesDelta();
 
         // loudness of the module's own effect (L/R, aligned dry vs output), for classic gain match while soloed
         const bool measure = s.processing && s.params.power && s.wet.isAt (1.0f) && ! keepActive && ! s.monitorActive;
         const double eIn = measure ? s.loudness.weigh (0, d[0], d[1], n) : 0.0;
+
+        if (ts)
+        {
+            processTransientSustain (t, n, baseCtx, x, d, dt, keepActive, tapPartOnly ? part : -1);
+            finishSlot (t, n, x, dt, measure, eIn, tapped && ! tapPartOnly);
+            return;
+        }
+
+        ioMeters.moduleTsActivity[t].store (0.0f);
+        ioMeters.moduleTsShareDb[t].store (-60.0f);
 
         if (needDomain)
         {
@@ -863,22 +1022,7 @@ struct Chain::Impl
             std::fill (dt[1], dt[1] + n, 0.0f);
         }
 
-        // difference meter (module domain, before channel solo)
-        {
-            double eDry = 0.0, eOut = 0.0;
-            for (int c = 0; c < 2; ++c)
-                for (int i = 0; i < n; ++i)
-                {
-                    eDry += (double) d[c][i] * (double) d[c][i];
-                    eOut += (double) x[c][i] * (double) x[c][i];
-                }
-            const double a = 1.0 - std::exp (-(double) n / (0.3 * sampleRate));
-            s.msIn += a * (eDry / (2.0 * n) - s.msIn);
-            s.msOut += a * (eOut / (2.0 * n) - s.msOut);
-            const float diff = (s.msIn > 1.0e-14 && s.msOut > 1.0e-14) ? (float) (10.0 * std::log10 (s.msOut / s.msIn))
-                                                                       : 0.0f;
-            ioMeters.moduleDifferenceDb[t].store (diff);
-        }
+        differenceMeter (t, d, x, n);
 
         // channel solo (normal output and delta alike)
         if (keepActive)
@@ -900,6 +1044,47 @@ struct Chain::Impl
             decodeMs (dt[0], dt[1], n);
         }
 
+        finishSlot (t, n, x, dt, measure, eIn, tapped);
+    }
+
+    // difference meter (module domain, before channel solo)
+    void differenceMeter (int t, float* const* d, float* const* x, int n) noexcept
+    {
+        auto& s = slots[t];
+        double eDry = 0.0, eOut = 0.0;
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < n; ++i)
+            {
+                eDry += (double) d[c][i] * (double) d[c][i];
+                eOut += (double) x[c][i] * (double) x[c][i];
+            }
+        const double a = 1.0 - std::exp (-(double) n / (0.3 * sampleRate));
+        s.msIn += a * (eDry / (2.0 * n) - s.msIn);
+        s.msOut += a * (eOut / (2.0 * n) - s.msOut);
+        const float diff = (s.msIn > 1.0e-14 && s.msOut > 1.0e-14) ? (float) (10.0 * std::log10 (s.msOut / s.msIn))
+                                                                   : 0.0f;
+        ioMeters.moduleDifferenceDb[t].store (diff);
+    }
+
+    // The common end of a slot: latency-change dip, loudness, delta line / bus, post tap.
+    void finishSlot (int t, int n, float* const* x, float* const* dt, bool measure, double eIn, bool postTap) noexcept
+    {
+        auto& s = slots[t];
+
+        if (! s.dip.isAt (1.0f))
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                const float g = s.dip.next();
+                modeDip[(size_t) i] *= g;
+                for (int c = 0; c < 2; ++c)
+                {
+                    x[c][i] *= g;
+                    dt[c][i] *= g;
+                }
+            }
+        }
+
         if (measure)
             s.loudness.update (eIn, s.loudness.weigh (1, x[0], x[1], n), n, sampleRate);
 
@@ -918,8 +1103,217 @@ struct Chain::Impl
             }
         }
 
-        if (tapped)
+        if (postTap)
             modulePostFifo.push (x[0], x[1], n);
+    }
+
+    //==============================================================================
+    // Transient/Sustain slot body (see Chain.h). x: slot input in, slot output out; d: aligned dry (L + M); dt: the
+    // slot's delta out. tapPartIndex 0 / 1: push that part to the module taps (pre aligned, post processed).
+    void processTransientSustain (int t, int n, const ProcessContext& baseCtx, float* const* x, float* const* d,
+                                  float* const* dt, bool keepActive, int tapPartIndex) noexcept
+    {
+        auto& s = slots[t];
+        auto& a = *modules[t];
+        auto& b = *twins[t];
+        float* T[2] { tPart[0].data(), tPart[1].data() };
+        float* S[2] { sPart[0].data(), sPart[1].data() };
+        float* Td[2] { tDry[0].data(), tDry[1].data() };
+        float* Sd[2] { sDry[0].data(), sDry[1].data() };
+        float* dT[2] { dtT[0].data(), dtT[1].data() };
+        float* dS[2] { dtS[0].data(), dtS[1].data() };
+
+        if (! s.processing && ! keepActive && tapPartIndex < 0)
+        {
+            // bypassed: the aligned dry signal, exactly
+            for (int c = 0; c < 2; ++c)
+            {
+                std::memcpy (x[c], d[c], sizeof (float) * (size_t) n);
+                std::fill (dt[c], dt[c] + n, 0.0f);
+            }
+            s.splitRunning = false;
+            differenceMeter (t, d, x, n);
+            ioMeters.moduleTsShareDb[t].store (-60.0f);
+            return;
+        }
+
+        if (! s.splitRunning)
+        {
+            s.split.reset();
+            s.partDry.clear();
+            s.padA.clear();
+            s.padB.clear();
+            s.padDeltaA.clear();
+            s.padDeltaB.clear();
+            s.splitRunning = true;
+        }
+
+        s.split.setParams (s.params.tsSensitivity, s.params.tsLengthMs);
+        s.split.process (x, T, S, n);
+
+        // meters: mask activity, transient energy share
+        {
+            ioMeters.moduleTsActivity[t].storeMax (s.split.getMaskActivity());
+            const double c = 1.0 - std::exp (-(double) n / (0.3 * sampleRate));
+            s.tsMsT += c * (s.split.getLastTransientEnergy() / (2.0 * n) - s.tsMsT);
+            s.tsMsX += c * (s.split.getLastInputEnergy() / (2.0 * n) - s.tsMsX);
+            const double share = s.tsMsX > 1.0e-14 ? 10.0 * std::log10 (std::max (1.0e-6, s.tsMsT / s.tsMsX)) : -60.0;
+            ioMeters.moduleTsShareDb[t].store ((float) std::max (-60.0, share));
+        }
+
+        // aligned dry parts: Td = T delayed by M, Sd = dry - Td (so Td + Sd == dry exactly up to one rounding)
+        s.partDry.setDelay (s.partLatency);
+        s.partDry.process (T[0], T[1], Td[0], Td[1], n);
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < n; ++i)
+                Sd[c][i] = d[c][i] - Td[c][i];
+
+        if (tapPartIndex >= 0)
+        {
+            auto** pre = tapPartIndex == 0 ? Td : Sd;
+            modulePreFifo.push (pre[0], pre[1], n);
+        }
+
+        if (s.processing)
+        {
+            const bool handles = a.handlesDelta();
+            ProcessContext ctxA = baseCtx;
+            ctxA.channelMode = ChannelMode::Stereo;
+            ctxA.delta = s.deltaRequested;
+            ctxA.paramSet = 0;
+            ProcessContext ctxB = ctxA;
+            ctxB.paramSet = 1;
+            if (handles)
+            {
+                for (int c = 0; c < 2; ++c)
+                {
+                    std::fill (dT[c], dT[c] + n, 0.0f);
+                    std::fill (dS[c], dS[c] + n, 0.0f);
+                }
+                ctxA.deltaOut = dT;
+                ctxB.deltaOut = dS;
+            }
+
+            a.process (T, n, ctxA);
+            b.process (S, n, ctxB);
+
+            // pad both parts to the common latency M (normally both instances report the same latency)
+            const int padA = std::max (0, s.partLatency - s.latA), padB = std::max (0, s.partLatency - s.latB);
+            if (padA > 0)
+            {
+                s.padA.setDelay (padA);
+                s.padA.process (T[0], T[1], T[0], T[1], n);
+                if (handles)
+                {
+                    s.padDeltaA.setDelay (padA);
+                    s.padDeltaA.process (dT[0], dT[1], dT[0], dT[1], n);
+                }
+            }
+            if (padB > 0)
+            {
+                s.padB.setDelay (padB);
+                s.padB.process (S[0], S[1], S[0], S[1], n);
+                if (handles)
+                {
+                    s.padDeltaB.setDelay (padB);
+                    s.padDeltaB.process (dS[0], dS[1], dS[0], dS[1], n);
+                }
+            }
+
+            // channel power per part (a.on = Transient, b.on = Sustain)
+            float** parts[2] { T, S };
+            float** dryParts[2] { Td, Sd };
+            float** deltas[2] { dT, dS };
+            for (int k = 0; k < 2; ++k)
+            {
+                if (s.channelOn[k].isAt (1.0f))
+                    continue;
+                for (int i = 0; i < n; ++i)
+                {
+                    const float g = s.channelOn[k].next();
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        parts[k][c][i] = mixExact (dryParts[k][c][i], parts[k][c][i], g);
+                        if (handles)
+                            deltas[k][c][i] *= g;
+                    }
+                }
+            }
+
+            // power / module solo / mode-change crossfade, per part
+            if (! s.wet.isAt (1.0f))
+            {
+                for (int i = 0; i < n; ++i)
+                {
+                    const float w = s.wet.next();
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        T[c][i] = mixExact (Td[c][i], T[c][i], w);
+                        S[c][i] = mixExact (Sd[c][i], S[c][i], w);
+                        if (handles)
+                        {
+                            dT[c][i] *= w;
+                            dS[c][i] *= w;
+                        }
+                    }
+                }
+            }
+
+            if (! handles)
+                for (int c = 0; c < 2; ++c)
+                    for (int i = 0; i < n; ++i)
+                    {
+                        dT[c][i] = T[c][i] - Td[c][i];
+                        dS[c][i] = S[c][i] - Sd[c][i];
+                    }
+        }
+        else
+        {
+            // bypassed but a channel solo is fading / active: the dry parts
+            for (int c = 0; c < 2; ++c)
+            {
+                std::memcpy (T[c], Td[c], sizeof (float) * (size_t) n);
+                std::memcpy (S[c], Sd[c], sizeof (float) * (size_t) n);
+                std::fill (dT[c], dT[c] + n, 0.0f);
+                std::fill (dS[c], dS[c] + n, 0.0f);
+            }
+        }
+
+        if (tapPartIndex >= 0)
+        {
+            auto** post = tapPartIndex == 0 ? T : S;
+            modulePostFifo.push (post[0], post[1], n);
+        }
+
+        // the sum, the difference meter (before channel solo), then channel solo per part
+        for (int c = 0; c < 2; ++c)
+        {
+            if (! s.processing && ! keepActive)
+                std::memcpy (x[c], d[c], sizeof (float) * (size_t) n);
+            else
+                for (int i = 0; i < n; ++i)
+                    x[c][i] = T[c][i] + S[c][i];
+        }
+        differenceMeter (t, d, x, n);
+
+        if (keepActive)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                const float k0 = s.keep[0].next(), k1 = s.keep[1].next();
+                for (int c = 0; c < 2; ++c)
+                {
+                    x[c][i] = k0 * T[c][i] + k1 * S[c][i];
+                    dt[c][i] = k0 * dT[c][i] + k1 * dS[c][i];
+                }
+            }
+        }
+        else
+        {
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < n; ++i)
+                    dt[c][i] = dT[c][i] + dS[c][i];
+        }
     }
 
     void applyDcFilter (int n) noexcept
@@ -981,6 +1375,7 @@ struct Chain::Impl
         // 3. modules
         std::fill (bus[0].begin(), bus[0].begin() + n, 0.0f);
         std::fill (bus[1].begin(), bus[1].begin() + n, 0.0f);
+        std::fill (modeDip.begin(), modeDip.begin() + n, 1.0f);
         for (int k = 0; k < audioCount; ++k)
         {
             const int t = audioOrder[k];
@@ -995,7 +1390,7 @@ struct Chain::Impl
             {
                 const float mix = deltaMix.next();
                 for (int c = 0; c < 2; ++c)
-                    x[c][i] = mixExact (x[c][i], bus[c][i], mix);
+                    x[c][i] = mixExact (x[c][i], bus[c][i] * modeDip[(size_t) i], mix);
             }
         }
 
@@ -1060,7 +1455,7 @@ struct Chain::Impl
             for (int c = 0; c < 2; ++c)
             {
                 const float y = gp == 1.0f ? x[c][i] : x[c][i] * gp;
-                const float b = gb == 1.0f ? r[c][i] : r[c][i] * gb;
+                const float b = (gb == 1.0f ? r[c][i] : r[c][i] * gb) * modeDip[(size_t) i];
                 x[c][i] = mixExact (y, b, bp);
             }
         }
@@ -1095,9 +1490,10 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
     d.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
     d.maxBlock = std::max (1, maxBlockSize);
 
-    for (auto* set : { &d.raw, &d.cur, &d.dry, &d.bus, &d.tmp })
+    for (auto* set : { &d.raw, &d.cur, &d.dry, &d.bus, &d.tmp, &d.tPart, &d.sPart, &d.tDry, &d.sDry, &d.dtT, &d.dtS })
         for (auto& v : *set)
             v.assign ((size_t) d.maxBlock, 0.0f);
+    d.modeDip.assign ((size_t) d.maxBlock, 1.0f);
 
     const int slotCapacity = std::max (16384, (int) std::ceil (0.75 * d.sampleRate));
     const int deltaCapacity = std::max (32768, (int) std::ceil (1.3 * d.sampleRate));   // downstream latency
@@ -1106,12 +1502,21 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
         s.dry.prepare (slotCapacity);
         s.deltaLine.prepare (deltaCapacity);
         s.loudness.design (d.sampleRate);
+        s.split.prepare (d.sampleRate, d.maxBlock);
+        s.partDry.prepare (slotCapacity);
+        for (auto* pad : { &s.padA, &s.padB, &s.padDeltaA, &s.padDeltaB })
+            pad->prepare (8192);
     }
+    for (auto& m : d.ioMeters.moduleTsShareDb)
+        m.store (-60.0f);
     d.bypassDelay.prepare (std::max (65536, (int) std::ceil (2.0 * d.sampleRate)));
     d.dcFilter.design (d.sampleRate);
 
     for (auto& m : d.modules)
         m->prepare (d.sampleRate, d.maxBlock);
+    for (auto& m : d.twins)
+        if (m != nullptr)
+            m->prepare (d.sampleRate, d.maxBlock);
     d.dither.prepare (d.sampleRate, d.maxBlock);
 
     for (auto* f : { &d.inputFifo, &d.outputFifo, &d.modulePreFifo, &d.modulePostFifo })
@@ -1148,8 +1553,8 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
 void Chain::reset() noexcept
 {
     auto& d = *impl;
-    for (auto& m : d.modules)
-        m->reset();
+    for (int t = 0; t < kNumModuleTypes; ++t)
+        d.resetModule (t);
     for (auto& s : d.slots)
         d.clearSlot (s);
     d.bypassDelay.clear();
@@ -1217,6 +1622,8 @@ void Chain::setTapModule (int moduleTypeOrMinus1) noexcept
     impl->tapModule.store (moduleTypeOrMinus1 >= 0 && moduleTypeOrMinus1 < kNumModuleTypes ? moduleTypeOrMinus1 : -1);
 }
 
+void Chain::setTapPart (int part) noexcept { impl->tapPart.store (part == 0 || part == 1 ? part : -1); }
+
 void Chain::resetIntegratedLoudness() noexcept { impl->resetIntegratedRequest.store (true); }
 
 void Chain::process (float* const* channels, int numSamples, ParamValues values, const HostInfo& host) noexcept
@@ -1249,6 +1656,20 @@ Module& Chain::getModule (ModuleType t) noexcept
     return *impl->modules[i >= 0 && i < kNumModuleTypes ? i : 0];
 }
 
+Module& Chain::getModule (ModuleType t, int part) noexcept
+{
+    const int i = (int) t;
+    if (part == 1 && i >= 0 && i < kNumModuleTypes && impl->twins[i] != nullptr)
+        return *impl->twins[i];
+    return getModule (t);
+}
+
+bool Chain::hasTwin (ModuleType t) const noexcept
+{
+    const int i = (int) t;
+    return i >= 0 && i < kNumModuleTypes && impl->twins[i] != nullptr;
+}
+
 const IoMeters& Chain::getIoMeters() const noexcept { return impl->ioMeters; }
 IoMeters& Chain::getIoMeters() noexcept { return impl->ioMeters; }
 const DitherMeters& Chain::getDitherMeters() const noexcept { return impl->dither.getMeters(); }
@@ -1256,9 +1677,24 @@ void Chain::resetDitherPeakBits() noexcept { impl->dither.resetPeakBits(); }
 
 void Chain::setModule (ModuleType type, std::unique_ptr<Module> module)
 {
+    setModule (type, std::move (module), 0);
+}
+
+void Chain::setModule (ModuleType type, std::unique_ptr<Module> module, int part)
+{
     const int i = (int) type;
-    if (i >= 0 && i < kNumModuleTypes && module != nullptr)
-        impl->modules[i] = std::move (module);
+    if (i < 0 || i >= kNumModuleTypes || module == nullptr)
+        return;
+    if (part == 1)
+    {
+        if (supportsTransientSustain (type))
+        {
+            module->setParamSet (1);
+            impl->twins[i] = std::move (module);
+        }
+        return;
+    }
+    impl->modules[i] = std::move (module);
 }
 
 StereoSampleFifo& Chain::getInputFifo() noexcept { return impl->inputFifo; }

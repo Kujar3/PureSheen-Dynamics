@@ -141,10 +141,13 @@ struct MultibandDisplay::Impl
     void setSolo (int band)
     {
         auto m = processor.getMonitor (type);
+        const int part = band >= 0 && currentChannelMode (processor, type) == ps::ChannelMode::TransientSustain
+                             ? channelSet : -1;
 
-        if (m.soloBand != band)
+        if (m.soloBand != band || m.soloChannelSet != part)
         {
             m.soloBand = band;
+            m.soloChannelSet = part;
             processor.setMonitor (type, m);
         }
 
@@ -850,6 +853,7 @@ struct MultibandDisplay::Impl
     juce::RangedAudioParameter* xoverParams[ps::kMaxCrossovers] {};
 
     int selected = 0;
+    int channelSet = 0;
     bool showSpectrum = true;
     float minDb = -84.0f, maxDb = 0.0f;
 
@@ -879,6 +883,13 @@ MultibandDisplay::MultibandDisplay (PureSheenProcessor& p, EditorServices& s, ps
     setOpaque (false);
     impl->shownSolo = impl->getSolo();
     impl->shownBands = impl->numBands();
+}
+
+void MultibandDisplay::setChannelSet (int set)
+{
+    impl->channelSet = set == 1 ? 1 : 0;
+    if (impl->getSolo() >= 0)
+        impl->setSolo (impl->getSolo());
 }
 
 MultibandDisplay::~MultibandDisplay()

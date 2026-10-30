@@ -44,9 +44,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    for (const auto& s : ps::paramSpecs())
+    const auto& specs = ps::paramSpecs();
+    for (size_t index = 0; index < specs.size(); ++index)
     {
-        const juce::ParameterID pid { juce::String (s.id), 1 };
+        const auto& s = specs[index];
+        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix (append-only, so the index decides)
+        const juce::ParameterID pid { juce::String (s.id), index < (size_t) ps::kNumParams_0_1_1 ? 1 : 2 };
         const juce::String name (s.name);
 
         switch (s.kind)
@@ -91,7 +94,8 @@ bool validModule (int t) noexcept { return t >= 0 && t < ps::kNumModuleTypes; }
 
 bool isMultiband (ps::ModuleType t) noexcept
 {
-    return t == ps::ModuleType::Dynamics || t == ps::ModuleType::Imager || t == ps::ModuleType::Exciter;
+    return t == ps::ModuleType::Dynamics || t == ps::ModuleType::Imager || t == ps::ModuleType::Exciter
+           || t == ps::ModuleType::Punch;
 }
 
 juce::String slotName (int slot) { return juce::String::charToString ((juce::juce_wchar) ('A' + slot)); }
@@ -1308,3 +1312,10 @@ juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new PureSheenProcessor();
 }
+
+//==============================================================================
+// (phase 2) Match EQ reference from a file. STUB (contracts): replaced by plugin (Match EQ state + loader thread).
+bool PureSheenProcessor::startMatchReferenceFile (const juce::File&, int) { return false; }
+void PureSheenProcessor::cancelMatchReferenceFile() {}
+float PureSheenProcessor::getMatchReferenceFileProgress() const { return -1.0f; }
+juce::String PureSheenProcessor::getMatchReferenceFileError() const { return "Loading a reference file is not available yet"; }

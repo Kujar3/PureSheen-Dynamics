@@ -42,9 +42,14 @@ public:
     bool isDigital() const noexcept { return params.filterMode == ps::EqFilterMode::Digital; }
 
     ps::ChannelMode channelMode() const noexcept { return mode; }
-    bool isSplit() const noexcept { return mode == ps::ChannelMode::MidSide || mode == ps::ChannelMode::LeftRight; }
+    bool isSplit() const noexcept
+    {
+        return mode == ps::ChannelMode::MidSide || mode == ps::ChannelMode::LeftRight
+               || mode == ps::ChannelMode::TransientSustain;
+    }
     bool isLinked() const noexcept { return isSplit() && linked; }   // edits go to both channel sets
-    juce::String setName (int set) const;                            // "Mid" / "Side" / "Left" / "Right" / ""
+    juce::String setName (int set) const;                            // "Mid" / "Side" / "Left" / "Right" /
+                                                                     // "Transient" / "Sustain" / ""
 
     juce::String bandId (int set, int b, const char* name) const;    // "eq1.a.b3.freq"
     juce::String moduleId (const char* name) const;                  // "eq1.mode"

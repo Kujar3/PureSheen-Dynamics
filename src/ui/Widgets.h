@@ -285,4 +285,14 @@ std::unique_ptr<ModulePanel> createModulePanel (PureSheenProcessor&, EditorServi
 // Module accent colours (chain tiles, panel titles, curves).
 juce::Colour moduleColour (ps::ModuleType);
 
+// (phase 2) Channel modes in the UI. currentChannelMode reads "<prefix>.chMode" (and the Exciter's "exc.ts.on");
+// isDualChannelMode: the mode has two channel sets (M/S, L/R, T/S); channelSetName: "Mid" / "Side", "Left" / "Right",
+// "Transient" / "Sustain" ("" in Stereo); channelModeShortLabel: "Stereo", "M/S", "L/R", "T/S".
+ps::ChannelMode currentChannelMode (const PureSheenProcessor&, ps::ModuleType);
+bool isDualChannelMode (ps::ChannelMode) noexcept;
+juce::String channelSetName (ps::ChannelMode, int set);
+juce::String channelModeShortLabel (ps::ChannelMode);
+// The module instance whose meters belong to channel set `set` (the T/S twin for set 1 in Transient/Sustain).
+ps::Module& moduleForChannelSet (PureSheenProcessor&, ps::ModuleType, int set);
+
 } // namespace ps::ui

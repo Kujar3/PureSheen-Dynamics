@@ -2,9 +2,13 @@
 #include "core/Loudness.h"
 #include "core/TruePeak.h"
 #include "dsp/Maximizer.h"
+#include "dsp/TransientSplit.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/PluginState.h"
+#include "ui/ImagerPanel.h"
+#include "ui/ExciterPanel.h"
+#include "ui/MultibandDisplay.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -351,12 +355,13 @@ void testParameters()
     for (int i = 0; sameOrder && i < hostParams.size(); ++i)
     {
         auto* p = dynamic_cast<juce::RangedAudioParameter*> (hostParams[i]);
+        const int version = i < ps::kNumParams_0_1_1 ? 1 : 2;   // 0.1.1 table: 1, phase 2 appendix: 2
         sameOrder = p != nullptr && p->getParameterID() == juce::String (specs[(size_t) i].id)
-                    && p->getVersionHint() == 1 && p->getName (256) == juce::String (specs[(size_t) i].name);
+                    && p->getVersionHint() == version && p->getName (256) == juce::String (specs[(size_t) i].name);
         if (! sameOrder)
             first = specs[(size_t) i].id;
     }
-    check (sameOrder, str ("params: one host parameter per paramSpecs() entry, same order / id / name, version 1 (",
+    check (sameOrder, str ("params: one host parameter per paramSpecs() entry, same order / id / name, version 1 / 2 (",
                            specs.size(), ")"), first);
 
     bool defaults = true;
@@ -855,6 +860,215 @@ void testRealtime()
 }
 
 //==============================================================================
+// Phase 2: the new modules, the Transient/Sustain channel mode, realtime safety of both.
+std::vector<float> currentValues (const PureSheenProcessor& p);
+void setStateXml (PureSheenProcessor& p, const juce::String& xmlText);
+
+std::vector<ps::ModuleType> phase2Types()
+{
+    std::vector<ps::ModuleType> t;
+    for (int i = ps::kNumCoreModuleTypes; i < ps::kNumModuleTypes; ++i)
+        t.push_back ((ps::ModuleType) i);
+    return t;
+}
+
+Config channelModeConfig (ps::ModuleType type, ps::ChannelMode mode)
+{
+    Config c;
+    for (const auto& [id, v] : ps::channelModeParamValues (type, mode))
+        c.push_back ({ id, v });
+    return c;
+}
+
+// Non-default values for every parameter of a module (each one moved inside its range), plus a channel mode.
+Config busyConfig (ps::ModuleType type, int rotation)
+{
+    Config c;
+    const auto& specs = ps::paramSpecs();
+    const std::string prefix = ps::moduleInfo (type).idPrefix;
+    for (size_t i = 0; i < specs.size(); ++i)
+    {
+        const auto& sp = specs[i];
+        if (sp.module != (int) type || sp.id == prefix + ".on" || sp.id == prefix + ".chMode" || sp.id == prefix + ".ts.on")
+            continue;
+        const float u = (float) ((i * 7 + (size_t) rotation * 3) % 11) / 10.0f;   // 0 .. 1
+        c.push_back ({ sp.id, psplug::sanitiseValue ((int) i, sp.minValue + u * (sp.maxValue - sp.minValue)) });
+    }
+    const auto modes = ps::supportedChannelModes (type);
+    for (const auto& m : channelModeConfig (type, modes[(size_t) rotation % modes.size()]))
+        c.push_back (m);
+    return c;
+}
+
+void testPhase2()
+{
+    std::cout << "\n-- Phase 2 modules and the Transient/Sustain channel mode\n";
+
+    // every phase 2 module can be added, is neutral at its defaults, and survives busy settings allocation-free
+    {
+        Host h;
+        h.prepare();
+        for (auto t : phase2Types())
+            h.proc.addModule (t);
+        h.proc.flushPendingChanges (true);
+        const auto order = h.proc.getChainOrder();
+        check ((int) order.size() == (int) ps::kDefaultChain.size() + (int) phase2Types().size(),
+               str ("phase 2: all eight modules added to the default chain (", order.size(), " modules)"),
+               chainText (order));
+        check (order.back() == ps::ModuleType::Maximizer, "phase 2: added modules go before the Maximizer",
+               chainText (order));
+
+        const long long n = 48000;
+        const auto quiet = recordInput (n, noiseInput (0.03f, 21));
+        h.stream (8192, replay (quiet));
+        const auto out = h.stream (n, replay (quiet));
+        const int lat = h.proc.getCurrentLatencySamples();
+        const float d = nullDb (quiet, out, lat, 4096);
+        check (d < -120.0f, str ("[dsp] null: 14-module chain at defaults is transparent (latency ", lat, ")"),
+               str (d, " dBFS"));
+
+        const auto input = musicLikeInput (0.25f);
+        for (auto t : phase2Types())
+        {
+            std::vector<Config> configs;
+            for (int rot = 0; rot < 4; ++rot)
+                configs.push_back (busyConfig (t, rot));
+            configs.push_back ({ { std::string (ps::moduleInfo (t).idPrefix) + ".on", 0.0f } });
+            runGroup (h, str (ps::moduleInfo (t).name, ": every parameter moved, every channel mode"), configs, input);
+        }
+    }
+
+    // Transient/Sustain on every module that offers it: realtime safety at 44.1 and 96 kHz with T/S automation,
+    // channel power / solo, band solo, delta, mode switches and power cycling
+    for (double rate : { 44100.0, 96000.0 })
+    {
+        Host h (rate, 256);
+        h.prepare();
+        std::vector<ps::ModuleType> tsTypes;
+        for (int t = 0; t < ps::kNumModuleTypes; ++t)
+            if (ps::supportsTransientSustain ((ps::ModuleType) t))
+            {
+                tsTypes.push_back ((ps::ModuleType) t);
+                if (! h.proc.isModuleInChain ((ps::ModuleType) t))
+                    h.proc.addModule ((ps::ModuleType) t);
+            }
+        h.proc.flushPendingChanges (true);
+        const auto input = musicLikeInput (0.25f);
+
+        const auto before = psdev::getAllocationCounts();
+        bool finite = true;
+        int step = 0;
+        for (auto t : tsTypes)
+            for (const auto& [id, v] : channelModeConfig (t, ps::ChannelMode::TransientSustain))
+                h.set (id, v);
+        const auto out = h.stream ((long long) (rate * 2.0), input, { 256, 100, 1, 512 }, [&] (int block)
+        {
+            if (block % 4 != 0)
+                return;
+            const int k = step++;
+            const auto t = tsTypes[(size_t) k % tsTypes.size()];
+            const std::string p = ps::moduleInfo (t).idPrefix;
+            switch ((k / (int) tsTypes.size()) % 7)
+            {
+                case 0: h.set (p + ".ts.sens", (float) ((k * 37) % 101)); h.set (p + ".ts.len", 5.0f + (float) (k % 96)); break;
+                case 1: h.set (p + ".a.on", (float) (k % 2)); h.set (p + ".b.on", (float) ((k + 1) % 2)); break;
+                case 2: h.proc.setChannelSolo (t, k % 3 - 1); break;
+                case 3: { ps::ModuleMonitor m; m.soloBand = k % 3 - 1; m.auditionOn = k % 2 == 0; m.auditionChannelSet = k % 2;
+                          h.proc.setMonitor (t, m); break; }
+                case 4: h.proc.setDelta (t, k % 2 == 0); break;
+                case 5:
+                {
+                    const auto modes = ps::supportedChannelModes (t);
+                    for (const auto& [id, v] : channelModeConfig (t, modes[(size_t) k % modes.size()]))
+                        h.set (id, v);
+                    break;
+                }
+                default: h.set (p + ".on", (float) (k % 2)); break;
+            }
+        });
+        finite = allFinite (out);
+        for (auto t : tsTypes)
+        {
+            h.proc.setChannelSolo (t, -1);
+            h.proc.setDelta (t, false);
+            h.proc.setMonitor (t, {});
+        }
+        const auto after = psdev::getAllocationCounts();
+        check (after.allocations == before.allocations && after.frees == before.frees,
+               str ("realtime: T/S on ", tsTypes.size(), " modules at ", rate, " Hz (", step, " edits) allocation free"),
+               str (after.allocations - before.allocations, " allocations"));
+        check (finite, str ("realtime: T/S output finite at ", rate, " Hz"));
+    }
+
+    // T/S of EQ 1 alone: transparent at neutral settings, and the latency reported to the host follows the switch
+    {
+        Host h;
+        h.prepare();
+        h.proc.setChainOrder ({ ps::ModuleType::Equalizer1 });
+        h.set ("eq1.chMode", 3.0f);
+        const long long n = 48000;
+        const auto quiet = recordInput (n, noiseInput (0.1f, 31));
+        h.stream (4096, replay (quiet));
+        h.proc.flushPendingChanges (true);
+        const auto out = h.stream (n, replay (quiet));
+        const int lat = h.proc.getCurrentLatencySamples();
+        check (lat == ps::TransientSplitter::latencyFor (kRate), str ("T/S: EQ 1 alone reports the splitter latency (", lat, ")"));
+        check (h.proc.getLatencySamples() == lat, "T/S: the host latency follows the switch into T/S",
+               str (h.proc.getLatencySamples()));
+        const float d = nullDb (quiet, out, lat, 4096);
+        check (d < -120.0f, "[dsp] null: EQ 1 in Transient/Sustain at neutral settings", str (d, " dBFS"));
+        h.set ("eq1.chMode", 0.0f);
+        h.stream (8192, replay (quiet));
+        h.proc.flushPendingChanges (true);
+        check (h.proc.getCurrentLatencySamples() == 0 && h.proc.getLatencySamples() == 0,
+               "T/S: back to Stereo, latency 0 again");
+    }
+
+    // A 0.1.x state (six module types, only the 479 parameters of 0.1.1) loads unchanged: listed values applied, every
+    // phase 2 parameter at its default, the chain as stored.
+    {
+        juce::String params;
+        const auto& specs = ps::paramSpecs();
+        for (int i = 0; i < ps::kNumParams_0_1_1; ++i)
+        {
+            const auto& sp = specs[(size_t) i];
+            float v = sp.defaultValue;
+            if (sp.id == "eq1.a.b2.gain") v = -4.5f;
+            if (sp.id == "exc.chMode") v = 1.0f;
+            if (sp.id == "img.b2.width") v = 35.0f;
+            if (sp.id == "max.gain") v = 3.0f;
+            params << "<PARAM id=\"" << sp.id << "\" value=\"" << juce::String (v) << "\"/>";
+        }
+        Host c;
+        setStateXml (c.proc, "<PureSheen version=\"1\"><PARAMS>" + params + "</PARAMS><Chain><Module type=\"eq1\"/>"
+                             "<Module type=\"dyn\"/><Module type=\"img\"/><Module type=\"exc\"/><Module type=\"eq2\"/>"
+                             "<Module type=\"max\"/></Chain><Options/><Snapshots activeSnapshot=\"-1\"/></PureSheen>");
+        bool phase2Default = true;
+        std::string firstOff;
+        for (size_t i = (size_t) ps::kNumParams_0_1_1; i < specs.size(); ++i)
+            if (! psplug::sameValue ((int) i, c.get (specs[i].id), specs[i].defaultValue))
+            {
+                phase2Default = false;
+                if (firstOff.empty())
+                    firstOff = specs[i].id;
+            }
+        const std::vector<ps::ModuleType> order { ps::ModuleType::Equalizer1, ps::ModuleType::Dynamics, ps::ModuleType::Imager,
+                                                  ps::ModuleType::Exciter, ps::ModuleType::Equalizer2, ps::ModuleType::Maximizer };
+        check (approx (c, "eq1.a.b2.gain", -4.5f) && approx (c, "exc.chMode", 1.0f) && approx (c, "img.b2.width", 35.0f)
+                   && approx (c, "max.gain", 3.0f) && c.proc.getChainOrder() == order,
+               "state: a 0.1.x state (6 modules, 479 parameters) loads its values and chain unchanged",
+               chainText (c.proc.getChainOrder()));
+        check (phase2Default, "state: a 0.1.x state leaves every phase 2 parameter at its default", firstOff);
+        ps::SlotParams slot;
+        const auto v = currentValues (c.proc);
+        ps::readSlotParams (v.data(), ps::ModuleType::Exciter, slot);
+        check (slot.channelMode == ps::ChannelMode::MidSide, "state: 0.1.x Exciter Mid/Side stays Mid/Side");
+        ps::readSlotParams (v.data(), ps::ModuleType::Imager, slot);
+        check (slot.channelMode == ps::ChannelMode::Stereo, "state: 0.1.x Imager stays Stereo");
+    }
+}
+
+//==============================================================================
 std::vector<float> currentValues (const PureSheenProcessor& p)
 {
     std::vector<float> v;
@@ -909,7 +1123,8 @@ void testState()
         a.set (s.id, psplug::sanitiseValue ((int) i, s.minValue + u * (s.maxValue - s.minValue)));
     }
     const std::vector<ps::ModuleType> order { ps::ModuleType::Maximizer, ps::ModuleType::Equalizer2,
-                                              ps::ModuleType::Imager, ps::ModuleType::Dynamics };
+                                              ps::ModuleType::Imager, ps::ModuleType::DynamicEq, ps::ModuleType::Dynamics,
+                                              ps::ModuleType::BassShaper, ps::ModuleType::Smoother };
     a.proc.setChainOrder (order);
     a.proc.storeSnapshot (0);
     const auto snapA = currentValues (a.proc);
@@ -1413,9 +1628,10 @@ void testPresets()
         {
             const auto n = p.getPresets (t).size();
             counts += str (ps::moduleInfo ((ps::ModuleType) t).idPrefix, "=", n, " ");
-            perModule = perModule && n >= 2 && n <= 6;
+            // (phase 2 modules get their factory presets with their dedicated panels)
+            perModule = perModule && (t >= ps::kNumCoreModuleTypes || (n >= 2 && n <= 6));
         }
-        check (perModule, "presets: 2-4 factory presets per module (EQ 1 / EQ 2 share theirs)", counts);
+        check (perModule, "presets: 2-4 factory presets per Core module (EQ 1 / EQ 2 share theirs)", counts);
 
         // Every factory preset loads and produces finite audio.
         bool allLoad = true, finite = true;
@@ -1633,6 +1849,87 @@ void testMonitoring()
 
 //==============================================================================
 // Message-thread work (chain edits, presets, undo, state loads) racing the audio thread.
+void testTsPanelBindings()
+{
+    struct Services final : ps::ui::EditorServices
+    {
+        ps::ui::UiOptions options;
+        ps::ui::SpectrumAnalyser spectrum;
+        const ps::ui::UiOptions& getOptions() const override { return options; }
+        ps::ui::SpectrumAnalyser& getModulePreSpectrum() override { return spectrum; }
+        ps::ui::SpectrumAnalyser& getModulePostSpectrum() override { return spectrum; }
+        ps::ui::SpectrumAnalyser& getOutputSpectrum() override { return spectrum; }
+        void showHint (const juce::String&) override {}
+    } services;
+    PureSheenProcessor p;
+    p.setParameterValue ("img.chMode", 1.0f);
+    p.setParameterValue ("img.link", 0.0f);
+    ps::ui::ImagerPanel panel (p, services);
+    panel.setSize (1000, 500);
+    panel.setChannelSet (1);
+    auto& display = panel.getBandDisplay();
+    const auto eventAt = [] (juce::Component& c, juce::Point<float> pos)
+    {
+        return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), pos,
+                                juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, juce::Time(), pos, juce::Time(), 1, false);
+    };
+    const auto bandEvent = eventAt (display, display.getBandArea (0).getCentre());
+    p.setParameterValue ("img.b1.width", 45.0f);
+    p.setParameterValue ("img.b.b1.width", -55.0f);
+    display.onBandDoubleClick (0, bandEvent);
+    check (p.getParameterValue ("img.b1.width") == 45.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
+           "UI: Imager Sustain width edit affects only set B when unlinked");
+
+    p.setParameterValue ("img.link", 1.0f);
+    panel.refresh();
+    p.setParameterValue ("img.b.b1.width", -55.0f);
+    display.onBandDoubleClick (0, bandEvent);
+    check (p.getParameterValue ("img.b1.width") == 0.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
+           "UI: Imager linked width edit updates both T/S sets");
+
+    p.setParameterValue ("img.link", 0.0f);
+    panel.refresh();
+    p.setParameterValue ("img.stz.amount", 33.0f);
+    p.setParameterValue ("img.b.stz.amount", 66.0f);
+    std::function<ps::ui::ParamKnob* (juce::Component&)> findKnob = [&] (juce::Component& c) -> ps::ui::ParamKnob*
+    {
+        if (auto* knob = dynamic_cast<ps::ui::ParamKnob*> (&c); knob != nullptr && knob->getParamId() == "img.b.stz.amount")
+            return knob;
+        for (auto* child : c.getChildren())
+            if (auto* knob = findKnob (*child))
+                return knob;
+        return nullptr;
+    };
+    auto* knob = findKnob (panel);
+    if (knob != nullptr)
+        knob->mouseDoubleClick (eventAt (*knob, knob->getLocalBounds().toFloat().getCentre()));
+    check (knob != nullptr && p.getParameterValue ("img.stz.amount") == 33.0f
+           && p.getParameterValue ("img.b.stz.amount") == 0.0f,
+           "UI: Imager Sustain Stereoize control binds to set B");
+
+    const auto clickSolo = [&] (ps::ui::MultibandDisplay& d)
+    {
+        const auto header = d.getBandHeaderArea (0);
+        const auto e = eventAt (d, { header.getRight() - 13.0f, header.getCentreY() });
+        d.mouseDown (e);
+        d.mouseUp (e);
+    };
+    clickSolo (display);
+    const auto imagerMonitor = p.getMonitor (ps::ModuleType::Imager);
+    check (imagerMonitor.soloBand == 0 && imagerMonitor.soloChannelSet == 1,
+           "UI: Imager band solo targets the selected Sustain part");
+
+    p.setParameterValue ("exc.ts.on", 1.0f);
+    ps::ui::ExciterPanel exciter (p, services);
+    exciter.setSize (1000, 500);
+    exciter.setChannelSet (1);
+    clickSolo (exciter.getBandDisplay());
+    const auto exciterMonitor = p.getMonitor (ps::ModuleType::Exciter);
+    check (exciterMonitor.soloBand == 0 && exciterMonitor.soloChannelSet == 1,
+           "UI: Exciter band solo targets the selected Sustain part");
+}
+
 void testThreads()
 {
     std::cout << "\n-- Threads\n";
@@ -1708,12 +2005,14 @@ int runSelfTest()
     testNullAndBypass();
     testLatency();
     testRealtime();
+    testPhase2();
     testState();
     testUndo();
     testMaximizerLearn();
     testMaximizerCeiling();
     testPresets();
     testMonitoring();
+    testTsPanelBindings();
     testThreads();
 
     std::cout << "\n-- Summary checks\n";

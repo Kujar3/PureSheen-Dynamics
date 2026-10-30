@@ -1225,11 +1225,70 @@ juce::Colour moduleColour (ps::ModuleType type)
         case ps::ModuleType::Imager:     return juce::Colour (0xffaa8cf2);   // lavender
         case ps::ModuleType::Exciter:    return juce::Colour (0xfff08a6f);   // coral
         case ps::ModuleType::Maximizer:  return juce::Colour (0xff7ad3b8);   // brand mint
+        case ps::ModuleType::DynamicEq:   return juce::Colour (0xff7f9cf5);   // periwinkle
+        case ps::ModuleType::MatchEq:     return juce::Colour (0xffe8c46a);   // gold
+        case ps::ModuleType::ToneBalance: return juce::Colour (0xff6fcf97);   // leaf
+        case ps::ModuleType::Definition:  return juce::Colour (0xff58d6d0);   // aqua
+        case ps::ModuleType::Smoother:    return juce::Colour (0xffd59cf0);   // orchid
+        case ps::ModuleType::Punch:       return juce::Colour (0xfff07a9a);   // rose
+        case ps::ModuleType::LowContrast: return juce::Colour (0xffc9a27e);   // tan
+        case ps::ModuleType::BassShaper:  return juce::Colour (0xffe39a52);   // copper
         case ps::ModuleType::Count:
         default: break;
     }
 
     return Colours::accent;
+}
+
+//==============================================================================
+ps::ChannelMode currentChannelMode (const PureSheenProcessor& p, ps::ModuleType type)
+{
+    const auto choices = ps::channelModeChoices (type);
+    if (choices.empty())
+        return ps::ChannelMode::Stereo;
+
+    const juce::String prefix (ps::moduleInfo (type).idPrefix);
+    if (type == ps::ModuleType::Exciter && p.getParameterValue ("exc.ts.on") >= 0.5f)
+        return ps::ChannelMode::TransientSustain;
+
+    const int index = juce::jlimit (0, (int) choices.size() - 1, juce::roundToInt (p.getParameterValue (prefix + ".chMode")));
+    return choices[(size_t) index];
+}
+
+bool isDualChannelMode (ps::ChannelMode m) noexcept
+{
+    return m == ps::ChannelMode::MidSide || m == ps::ChannelMode::LeftRight || m == ps::ChannelMode::TransientSustain;
+}
+
+juce::String channelSetName (ps::ChannelMode m, int set)
+{
+    switch (m)
+    {
+        case ps::ChannelMode::MidSide:          return set == 0 ? "Mid" : "Side";
+        case ps::ChannelMode::LeftRight:        return set == 0 ? "Left" : "Right";
+        case ps::ChannelMode::TransientSustain: return set == 0 ? "Transient" : "Sustain";
+        case ps::ChannelMode::Stereo:
+        default: break;
+    }
+    return {};
+}
+
+juce::String channelModeShortLabel (ps::ChannelMode m)
+{
+    switch (m)
+    {
+        case ps::ChannelMode::Stereo:           return "Stereo";
+        case ps::ChannelMode::MidSide:          return "M/S";
+        case ps::ChannelMode::LeftRight:        return "L/R";
+        case ps::ChannelMode::TransientSustain: return "T/S";
+    }
+    return {};
+}
+
+ps::Module& moduleForChannelSet (PureSheenProcessor& p, ps::ModuleType type, int set)
+{
+    const bool twin = set == 1 && currentChannelMode (p, type) == ps::ChannelMode::TransientSustain;
+    return p.getChain().getModule (type, twin ? 1 : 0);
 }
 
 } // namespace ps::ui

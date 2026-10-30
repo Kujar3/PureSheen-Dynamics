@@ -2,6 +2,7 @@
 
 #include "dsp/Params.h"
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <string>
@@ -51,11 +52,46 @@ std::vector<std::string> documentedIds()
 
     for (int m = 0; m < kNumModuleTypes; ++m)
     {
+        const std::string p = moduleInfo ((ModuleType) m).idPrefix;
         if (supportedChannelModes ((ModuleType) m).size() > 1)
-            add (moduleInfo ((ModuleType) m).idPrefix, { "on", "chMode", "a.on", "b.on", "link" });
+            add (p, { "on", "chMode", "a.on", "b.on", "link" });
         else
-            add (moduleInfo ((ModuleType) m).idPrefix, { "on" });   // Stereo-only modules
+            add (p, { "on" });   // single-mode modules
+        if (supportsTransientSustain ((ModuleType) m))
+            add (p, { "ts.sens", "ts.len" });
     }
+    add ("exc", { "ts.on" });
+
+    // phase 2
+    add ("img", { "b.stz.on", "b.stz.mode", "b.stz.amount", "b.rec.on", "b.rec.gain" });
+    for (int b = 1; b <= kMaxBands; ++b)
+        ids.push_back ("img.b.b" + std::to_string (b) + ".width");
+
+    add ("deq", { "mode", "firSize", "lookahead" });
+    addBands ("deq", kDynEqBands, true, { "on", "shape", "freq", "gain", "q", "dir", "thr", "ratio", "knee", "att", "rel",
+                                          "auto", "offset", "dyn", "sc" });
+    add ("meq", { "phase", "firSize" });
+    for (const char* set : { "a.", "b." })
+    {
+        const std::string sp = set;
+        add ("meq", { (sp + "amount").c_str(), (sp + "smooth").c_str(), (sp + "lo").c_str(), (sp + "hi").c_str(),
+                      (sp + "boost").c_str(), (sp + "cut").c_str() });
+        add ("tbal", { (sp + "amount").c_str(), (sp + "speed").c_str(), (sp + "smooth").c_str(), (sp + "cutSpeed").c_str(),
+                       (sp + "sens").c_str(), (sp + "tame").c_str(), (sp + "low").c_str(), (sp + "mid").c_str(),
+                       (sp + "high").c_str() });
+        add ("defn", { (sp + "amount").c_str(), (sp + "tilt").c_str(), (sp + "att").c_str(), (sp + "rel").c_str(),
+                       (sp + "low").c_str(), (sp + "high").c_str() });
+        add ("smth", { (sp + "amount").c_str(), (sp + "mode").c_str(), (sp + "att").c_str(), (sp + "rel").c_str(),
+                       (sp + "tone").c_str(), (sp + "low").c_str(), (sp + "high").c_str() });
+        add ("lowc", { (sp + "mode").c_str(), (sp + "contrast").c_str(), (sp + "gain").c_str() });
+    }
+    add ("tbal", { "target", "mode" });
+    add ("pnch", { "bands", "xover1", "xover2", "xover3", "xoverType", "amount", "env", "sync", "syncNote", "stLink",
+                   "autoGain", "bandLink" });
+    addBands ("pnch", kMaxBands, true, { "on", "amount" });
+    add ("lowc", { "low", "high", "autoGain" });
+    add ("bass", { "cutoff", "balance", "punch", "sus.on", "sus.thr", "sus.amount", "sus.char", "peak.on", "peak.thr",
+                   "peak.char", "peak.mix", "autoGain" });
 
     for (const char* eq : { "eq1", "eq2" })
     {
@@ -150,17 +186,20 @@ TEST_CASE ("params. every id documented in Params.h exists")
     CHECK_EQ (ids.size(), paramSpecs().size());
 }
 
-TEST_CASE ("params. order: global io first, modules in ModuleType order, dither last")
+TEST_CASE ("params. order: global io first, Core modules in ModuleType order, dither, then the phase 2 appendix")
 {
     const auto& specs = paramSpecs();
     REQUIRE (specs.size() > 20);
     CHECK_EQ (specs.front().id, std::string ("io.bypass"));
-    CHECK_EQ (specs.back().id.rfind ("dith.", 0), (size_t) 0);
+    const int ditherEnd = paramIndex ("dith.dc");
+    REQUIRE (ditherEnd > 0);
 
+    // 1. the 0.1.1 part: globals, the six Core modules in ModuleType order, Dither last
     int lastModule = -1;
     bool seenDither = false;
-    for (const auto& s : specs)
+    for (int i = 0; i <= ditherEnd; ++i)
     {
+        const auto& s = specs[(size_t) i];
         if (s.id.rfind ("dith.", 0) == 0)
         {
             seenDither = true;
@@ -173,16 +212,42 @@ TEST_CASE ("params. order: global io first, modules in ModuleType order, dither 
             CHECK_EQ (lastModule, -1);   // globals only before the first module
             continue;
         }
+        CHECK (s.module < kNumCoreModuleTypes);
         CHECK (s.module >= lastModule);
         if (s.module != lastModule)
-        {
-            // each module block starts with its slot parameters
-            const std::string prefix = moduleInfo ((ModuleType) s.module).idPrefix;
-            CHECK_EQ (s.id, prefix + ".on");
-        }
+            CHECK_EQ (s.id, std::string (moduleInfo ((ModuleType) s.module).idPrefix) + ".on");
         lastModule = s.module;
     }
 
+    // 2. the appendix: Core T/S additions (eq1, eq2, exc, img), then each phase 2 module, every block starting with
+    // its ".on" and in ModuleType order. Nothing global after dither.
+    const int appendixStart = ditherEnd + 1;
+    CHECK_EQ (specs[(size_t) appendixStart].id, std::string ("eq1.ts.sens"));
+    const int firstPhase2 = paramIndex ("deq.on");
+    REQUIRE (firstPhase2 > appendixStart);
+    lastModule = -1;
+    for (int i = appendixStart; i < (int) specs.size(); ++i)
+    {
+        const auto& s = specs[(size_t) i];
+        CHECK (s.module >= 0);
+        if (i < firstPhase2)
+        {
+            CHECK (s.module < kNumCoreModuleTypes);
+            CHECK (s.module >= lastModule);
+            lastModule = s.module;
+            continue;
+        }
+        if (i == firstPhase2)
+            lastModule = -1;
+        CHECK (s.module >= kNumCoreModuleTypes);
+        CHECK (s.module >= lastModule);
+        if (s.module != lastModule)
+            CHECK_EQ (s.id, std::string (moduleInfo ((ModuleType) s.module).idPrefix) + ".on");
+        lastModule = s.module;
+    }
+
+    // slot blocks: chMode / a.on / b.on / link follow each other (right after ".on" except for the Imager, whose
+    // channel slot is appended), then the T/S split controls
     for (int m = 0; m < kNumModuleTypes; ++m)
     {
         const std::string p = moduleInfo ((ModuleType) m).idPrefix;
@@ -193,10 +258,25 @@ TEST_CASE ("params. order: global io first, modules in ModuleType order, dither 
             CHECK_EQ (paramIndex (p + ".chMode"), -1);
             continue;
         }
-        CHECK_EQ (paramIndex (p + ".chMode"), on + 1);
-        CHECK_EQ (paramIndex (p + ".a.on"), on + 2);
-        CHECK_EQ (paramIndex (p + ".b.on"), on + 3);
-        CHECK_EQ (paramIndex (p + ".link"), on + 4);
+        const int ch = paramIndex (p + ".chMode");
+        if ((ModuleType) m != ModuleType::Imager)
+            CHECK_EQ (ch, on + 1);
+        else
+            CHECK (ch > ditherEnd);
+        CHECK_EQ (paramIndex (p + ".a.on"), ch + 1);
+        CHECK_EQ (paramIndex (p + ".b.on"), ch + 2);
+        CHECK_EQ (paramIndex (p + ".link"), ch + 3);
+        if (supportsTransientSustain ((ModuleType) m))
+        {
+            CHECK (paramIndex (p + ".ts.sens") > ditherEnd);
+            CHECK_EQ (paramIndex (p + ".ts.len"), paramIndex (p + ".ts.sens") + 1);
+            if (m >= kNumCoreModuleTypes)
+                CHECK_EQ (paramIndex (p + ".ts.sens"), ch + 4);
+        }
+        else
+        {
+            CHECK_EQ (paramIndex (p + ".ts.sens"), -1);
+        }
     }
 }
 
@@ -463,7 +543,7 @@ TEST_CASE ("params. read maps values to the right struct fields")
     readSlotParams (v.data(), ModuleType::Equalizer1, slot);
     CHECK_EQ (slot.channelMode, ChannelMode::LeftRight);
     readSlotParams (v.data(), ModuleType::Imager, slot);
-    CHECK_EQ (slot.channelMode, ChannelMode::Stereo);
+    CHECK_EQ (slot.channelMode, ChannelMode::Stereo);   // (img.chMode at its default)
 }
 
 TEST_CASE ("params. crossovers are read ascending and clamped")
@@ -491,16 +571,53 @@ TEST_CASE ("params. crossovers are read ascending and clamped")
 TEST_CASE ("params. supported channel modes match the chMode choices")
 {
     const auto& specs = paramSpecs();
-    CHECK_EQ (supportedChannelModes (ModuleType::Equalizer1).size(), (size_t) 4);
-    CHECK_EQ (supportedChannelModes (ModuleType::Dynamics).size(), (size_t) 2);
-    CHECK_EQ (supportedChannelModes (ModuleType::Exciter).size(), (size_t) 2);
-    CHECK_EQ (supportedChannelModes (ModuleType::Imager).size(), (size_t) 1);
-    CHECK_EQ (supportedChannelModes (ModuleType::Maximizer).size(), (size_t) 1);
+    using CM = ChannelMode;
+    const std::vector<CM> all { CM::Stereo, CM::MidSide, CM::LeftRight, CM::TransientSustain };
+    const std::vector<CM> msTs { CM::Stereo, CM::MidSide, CM::TransientSustain };
+    const std::vector<CM> ms { CM::Stereo, CM::MidSide };
+    const std::vector<CM> st { CM::Stereo };
+    const std::vector<CM> stTs { CM::Stereo, CM::TransientSustain };
+    CHECK (supportedChannelModes (ModuleType::Equalizer1) == all);
+    CHECK (supportedChannelModes (ModuleType::Equalizer2) == all);
+    CHECK (supportedChannelModes (ModuleType::Dynamics) == ms);
+    CHECK (supportedChannelModes (ModuleType::Exciter) == msTs);
+    CHECK (supportedChannelModes (ModuleType::Imager) == stTs);
+    CHECK (supportedChannelModes (ModuleType::Maximizer) == st);
+    CHECK (supportedChannelModes (ModuleType::DynamicEq) == all);
+    CHECK (supportedChannelModes (ModuleType::MatchEq) == all);
+    CHECK (supportedChannelModes (ModuleType::ToneBalance) == msTs);
+    CHECK (supportedChannelModes (ModuleType::Definition) == msTs);
+    CHECK (supportedChannelModes (ModuleType::Smoother) == msTs);
+    CHECK (supportedChannelModes (ModuleType::Punch) == ms);
+    CHECK (supportedChannelModes (ModuleType::LowContrast) == msTs);
+    CHECK (supportedChannelModes (ModuleType::BassShaper) == st);
+
+    // the Exciter keeps its released two-entry choice list; T/S is the appended exc.ts.on switch
+    CHECK (channelModeChoices (ModuleType::Exciter) == ms);
+    CHECK_EQ (specs[(size_t) paramIndex ("exc.chMode")].choices.size(), (size_t) 2);
 
     for (int m = 0; m < kNumModuleTypes; ++m)
     {
-        const auto modes = supportedChannelModes ((ModuleType) m);
+        const auto type = (ModuleType) m;
+        const auto modes = supportedChannelModes (type);
         CHECK_EQ (modes.front(), ChannelMode::Stereo);
+        CHECK_EQ (supportsTransientSustain (type),
+                  std::find (modes.begin(), modes.end(), ChannelMode::TransientSustain) != modes.end());
+
+        // every offered mode can be selected through channelModeParamValues and reads back through readSlotParams
+        for (auto mode : modes)
+        {
+            auto v = defaultValues();
+            for (const auto& [id, value] : channelModeParamValues (type, mode))
+                setValue (v, id, value);
+            SlotParams slot;
+            readSlotParams (v.data(), type, slot);
+            CHECK_EQ (slot.channelMode, mode);
+        }
+        if (modes.size() < 4)
+            CHECK (channelModeParamValues (type, ChannelMode::LeftRight).empty()
+                   || std::find (modes.begin(), modes.end(), ChannelMode::LeftRight) != modes.end());
+
         if (modes.size() < 2)
         {
             // Stereo-only: no channel parameters, the slot always reads Stereo with both channels on
@@ -516,15 +633,278 @@ TEST_CASE ("params. supported channel modes match the chMode choices")
             continue;
         }
         const auto& s = specs[(size_t) paramIndex (std::string (moduleInfo ((ModuleType) m).idPrefix) + ".chMode")];
-        CHECK_EQ (s.choices.size(), modes.size());
+        const auto choices = channelModeChoices (type);
+        CHECK_EQ (s.choices.size(), choices.size());
 
         auto v = defaultValues();
-        for (size_t i = 0; i < modes.size(); ++i)
+        for (size_t i = 0; i < choices.size(); ++i)
         {
             v[(size_t) paramIndex (s.id)] = (float) i;
             SlotParams slot;
             readSlotParams (v.data(), (ModuleType) m, slot);
-            CHECK_EQ (slot.channelMode, modes[i]);
+            CHECK_EQ (slot.channelMode, choices[i]);
         }
     }
+
+    // exc.ts.on overrides exc.chMode
+    auto v = defaultValues();
+    setValue (v, "exc.chMode", 1.0f);
+    setValue (v, "exc.ts.on", 1.0f);
+    SlotParams slot;
+    readSlotParams (v.data(), ModuleType::Exciter, slot);
+    CHECK_EQ (slot.channelMode, ChannelMode::TransientSustain);
+    setValue (v, "exc.ts.sens", 80.0f);
+    setValue (v, "exc.ts.len", 40.0f);
+    readSlotParams (v.data(), ModuleType::Exciter, slot);
+    CHECK_EQ (slot.tsSensitivity, 80.0f);
+    CHECK_EQ (slot.tsLengthMs, 40.0f);
+    readSlotParams (v.data(), ModuleType::Maximizer, slot);   // no T/S: defaults
+    CHECK_EQ (slot.tsSensitivity, 50.0f);
+    CHECK_EQ (slot.tsLengthMs, 20.0f);
+}
+
+TEST_CASE ("params. phase 2 defaults reproduce the struct defaults and are neutral")
+{
+    const auto v = defaultValues();
+    const ParamValues pv = v.data();
+
+    {
+        DynamicEqParams r, d;
+        r.filterMode = EqFilterMode::Digital; r.bands[1][5].on = true; r.bands[0][0].ratio = 9.0f;
+        readDynamicEqParams (pv, r);
+        CHECK_EQ (r.filterMode, d.filterMode);
+        CHECK_EQ (r.firSizeIndex, d.firSizeIndex);
+        CHECK_EQ (r.lookaheadMs, d.lookaheadMs);
+        const float freqs[kDynEqBands] { 60.0f, 200.0f, 500.0f, 1500.0f, 4000.0f, 10000.0f };
+        for (int s = 0; s < kNumChannelSets; ++s)
+            for (int b = 0; b < kDynEqBands; ++b)
+            {
+                const auto& x = r.bands[s][b];
+                const auto& y = d.bands[s][b];
+                CHECK (! x.on);
+                CHECK_EQ (x.shape, y.shape);
+                CHECK_EQ (x.freqHz, freqs[b]);
+                CHECK_EQ (x.gainDb, 0.0f);
+                CHECK_EQ (x.q, y.q);
+                CHECK_EQ (x.direction, y.direction);
+                CHECK_EQ (x.thresholdDb, y.thresholdDb);
+                CHECK_EQ (x.ratio, y.ratio);
+                CHECK_EQ (x.kneeDb, y.kneeDb);
+                CHECK_EQ (x.attackMs, y.attackMs);
+                CHECK_EQ (x.releaseMs, y.releaseMs);
+                CHECK_EQ (x.autoScale, y.autoScale);
+                CHECK_EQ (x.offsetDb, y.offsetDb);
+                CHECK_EQ (x.dynamic, y.dynamic);
+                CHECK_EQ (x.sidechain, y.sidechain);
+            }
+    }
+    {
+        MatchEqParams r, d;
+        r.sets[1].amountPercent = 3.0f;
+        readMatchEqParams (pv, r);
+        CHECK_EQ (r.phase, d.phase);
+        CHECK_EQ (r.firSizeIndex, d.firSizeIndex);
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            CHECK_EQ (r.sets[s].amountPercent, d.sets[s].amountPercent);
+            CHECK_EQ (r.sets[s].smoothPercent, d.sets[s].smoothPercent);
+            CHECK_EQ (r.sets[s].lowHz, d.sets[s].lowHz);
+            CHECK_EQ (r.sets[s].highHz, d.sets[s].highHz);
+            CHECK_EQ (r.sets[s].maxBoostDb, d.sets[s].maxBoostDb);
+            CHECK_EQ (r.sets[s].maxCutDb, d.sets[s].maxCutDb);
+        }
+    }
+    {
+        ToneBalanceParams r, d;
+        r.target = ToneTarget::Trap; r.sets[0].amountPercent = 40.0f;
+        readToneBalanceParams (pv, r);
+        CHECK_EQ (r.target, d.target);
+        CHECK_EQ (r.mode, d.mode);
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            CHECK_EQ (r.sets[s].amountPercent, 0.0f);   // neutral
+            CHECK_EQ (r.sets[s].speed, d.sets[s].speed);
+            CHECK_EQ (r.sets[s].smoothing, d.sets[s].smoothing);
+            CHECK_EQ (r.sets[s].cutSpeed, d.sets[s].cutSpeed);
+            CHECK_EQ (r.sets[s].sensitivity, d.sets[s].sensitivity);
+            CHECK_EQ (r.sets[s].tameTransients, d.sets[s].tameTransients);
+            CHECK_EQ (r.sets[s].lowPercent, d.sets[s].lowPercent);
+            CHECK_EQ (r.sets[s].midPercent, d.sets[s].midPercent);
+            CHECK_EQ (r.sets[s].highPercent, d.sets[s].highPercent);
+        }
+        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("tbal.target")].choices.size(), (size_t) ToneTarget::Count);
+    }
+    {
+        DefinitionParams r, d;
+        r.sets[1].tiltDbPerOct = 2.0f;
+        readDefinitionParams (pv, r);
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            CHECK_EQ (r.sets[s].amountPercent, 0.0f);
+            CHECK_EQ (r.sets[s].tiltDbPerOct, d.sets[s].tiltDbPerOct);
+            CHECK_EQ (r.sets[s].attackMs, d.sets[s].attackMs);
+            CHECK_EQ (r.sets[s].releaseMs, d.sets[s].releaseMs);
+            CHECK_EQ (r.sets[s].lowHz, d.sets[s].lowHz);
+            CHECK_EQ (r.sets[s].highHz, d.sets[s].highHz);
+        }
+    }
+    {
+        SmootherParams r, d;
+        r.sets[0].mode = SmootherMode::Strong;
+        readSmootherParams (pv, r);
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            CHECK_EQ (r.sets[s].amountPercent, 0.0f);
+            CHECK_EQ (r.sets[s].mode, d.sets[s].mode);
+            CHECK_EQ (r.sets[s].attackMs, d.sets[s].attackMs);
+            CHECK_EQ (r.sets[s].releaseMs, d.sets[s].releaseMs);
+            CHECK_EQ (r.sets[s].tonePercent, d.sets[s].tonePercent);
+            CHECK_EQ (r.sets[s].lowHz, d.sets[s].lowHz);
+            CHECK_EQ (r.sets[s].highHz, d.sets[s].highHz);
+        }
+    }
+    {
+        PunchParams r, d;
+        r.numBands = 4; r.bands[1][3].amountPercent = 10.0f;
+        readPunchParams (pv, r);
+        CHECK_EQ (r.numBands, 1);   // neutral: no split
+        for (int i = 0; i < kMaxCrossovers; ++i)
+            CHECK_EQ (r.crossoverHz[i], d.crossoverHz[i]);
+        CHECK_EQ (r.crossoverType, d.crossoverType);
+        CHECK_EQ (r.amountPercent, d.amountPercent);
+        CHECK_EQ (r.envelopeMs, d.envelopeMs);
+        CHECK_EQ (r.sync, d.sync);
+        CHECK_EQ (r.syncNote, d.syncNote);
+        CHECK_EQ (r.stereoLink, d.stereoLink);
+        CHECK_EQ (r.autoGain, d.autoGain);
+        CHECK_EQ (r.linkBands, d.linkBands);
+        for (int s = 0; s < kNumChannelSets; ++s)
+            for (int b = 0; b < kMaxBands; ++b)
+            {
+                CHECK_EQ (r.bands[s][b].on, d.bands[s][b].on);
+                CHECK_EQ (r.bands[s][b].amountPercent, 0.0f);
+            }
+        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("pnch.syncNote")].choices.size(), (size_t) kPunchSyncNotes);
+        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("pnch.syncNote")].choices[(size_t) d.syncNote], std::string ("1/16"));
+    }
+    {
+        LowContrastParams r, d;
+        r.autoGain = true; r.sets[1].contrastPercent = 50.0f;
+        readLowContrastParams (pv, r);
+        CHECK_EQ (r.lowHz, d.lowHz);
+        CHECK_EQ (r.highHz, d.highHz);
+        CHECK_EQ (r.autoGain, d.autoGain);
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            CHECK_EQ (r.sets[s].mode, d.sets[s].mode);
+            CHECK_EQ (r.sets[s].contrastPercent, 0.0f);
+            CHECK_EQ (r.sets[s].gainDb, 0.0f);
+        }
+    }
+    {
+        BassShaperParams r, d;
+        r.peakOn = true; r.balanceDb = 3.0f;
+        readBassShaperParams (pv, r);
+        CHECK_EQ (r.cutoffHz, d.cutoffHz);
+        CHECK_EQ (r.balanceDb, 0.0f);
+        CHECK_EQ (r.punchDb, 0.0f);
+        CHECK (! r.sustainOn && ! r.peakOn && ! r.autoGain);
+        CHECK_EQ (r.sustainThresholdDb, d.sustainThresholdDb);
+        CHECK_EQ (r.sustainAmountPercent, d.sustainAmountPercent);
+        CHECK_EQ (r.sustainCharacterPercent, d.sustainCharacterPercent);
+        CHECK_EQ (r.peakThresholdDb, d.peakThresholdDb);
+        CHECK_EQ (r.peakCharacterPercent, d.peakCharacterPercent);
+        CHECK_EQ (r.peakMixPercent, d.peakMixPercent);
+    }
+    {
+        ImagerParams r;
+        r.setB.widthPercent[3] = 40.0f; r.setB.stereoizeOn = true;
+        readImagerParams (pv, r);
+        const ImagerSetParams d;
+        for (int b = 0; b < kMaxBands; ++b)
+            CHECK_EQ (r.setB.widthPercent[b], d.widthPercent[b]);
+        CHECK_EQ (r.setB.stereoizeOn, d.stereoizeOn);
+        CHECK_EQ (r.setB.stereoizeMode, d.stereoizeMode);
+        CHECK_EQ (r.setB.stereoizeAmount, d.stereoizeAmount);
+        CHECK_EQ (r.setB.recoverSidesOn, d.recoverSidesOn);
+        CHECK_EQ (r.setB.recoverSidesGainDb, d.recoverSidesGainDb);
+    }
+}
+
+TEST_CASE ("params. phase 2 reads map to the right fields and keep regions ordered")
+{
+    auto v = defaultValues();
+    setValue (v, "deq.b.b6.thr", -77.0f);
+    setValue (v, "deq.b.b6.sc", (float) DynEqSidechain::OtherChannel);
+    setValue (v, "deq.a.b2.shape", (float) DynEqShape::HighShelfAnalog);
+    setValue (v, "meq.b.amount", 12.5f);
+    setValue (v, "meq.a.lo", 5000.0f);
+    setValue (v, "meq.a.hi", 1000.0f);        // below lo: raised to lo * 2^(1/6)
+    setValue (v, "tbal.b.high", 33.0f);
+    setValue (v, "tbal.target", (float) ToneTarget::Flat);
+    setValue (v, "defn.a.low", 20000.0f);     // at the top: low lowered
+    setValue (v, "smth.b.tone", -40.0f);
+    setValue (v, "pnch.b.b3.amount", -55.0f);
+    setValue (v, "pnch.syncNote", 99.0f);     // clamped
+    setValue (v, "lowc.b.gain", 4.0f);
+    setValue (v, "lowc.low", 200.0f);
+    setValue (v, "lowc.high", 100.0f);
+    setValue (v, "bass.peak.mix", 25.0f);
+    setValue (v, "img.b.b2.width", 70.0f);
+    setValue (v, "img.chMode", 1.0f);
+
+    DynamicEqParams deq;
+    readDynamicEqParams (v.data(), deq);
+    CHECK_EQ (deq.bands[1][5].thresholdDb, -77.0f);
+    CHECK_EQ (deq.bands[1][5].sidechain, DynEqSidechain::OtherChannel);
+    CHECK_EQ (deq.bands[0][1].shape, DynEqShape::HighShelfAnalog);
+    CHECK_EQ (deq.bands[0][5].thresholdDb, -30.0f);
+    CHECK_EQ (dynEqToEqShape (deq.bands[0][1].shape), EqShape::HighShelfAnalog);
+
+    MatchEqParams meq;
+    readMatchEqParams (v.data(), meq);
+    CHECK_EQ (meq.sets[1].amountPercent, 12.5f);
+    CHECK_EQ (meq.sets[0].lowHz, 5000.0f);
+    CHECK (std::abs (meq.sets[0].highHz - 5000.0f * std::pow (2.0f, 1.0f / 6.0f)) < 0.5f);
+
+    ToneBalanceParams tb;
+    readToneBalanceParams (v.data(), tb);
+    CHECK_EQ (tb.sets[1].highPercent, 33.0f);
+    CHECK_EQ (tb.target, ToneTarget::Flat);
+
+    DefinitionParams de;
+    readDefinitionParams (v.data(), de);
+    CHECK_EQ (de.sets[0].highHz, 20000.0f);
+    CHECK (std::abs (de.sets[0].lowHz - 20000.0f / std::pow (2.0f, 1.0f / 3.0f)) < 1.0f);
+
+    SmootherParams sm;
+    readSmootherParams (v.data(), sm);
+    CHECK_EQ (sm.sets[1].tonePercent, -40.0f);
+    CHECK_EQ (sm.sets[0].tonePercent, 0.0f);
+
+    PunchParams pu;
+    readPunchParams (v.data(), pu);
+    CHECK_EQ (pu.bands[1][2].amountPercent, -55.0f);
+    CHECK_EQ (pu.syncNote, kPunchSyncNotes - 1);
+
+    LowContrastParams lc;
+    readLowContrastParams (v.data(), lc);
+    CHECK_EQ (lc.sets[1].gainDb, 4.0f);
+    CHECK_EQ (lc.lowHz, 200.0f);
+    CHECK (lc.highHz >= 200.0f * std::pow (2.0f, 1.0f / 3.0f) - 0.01f);
+
+    BassShaperParams bs;
+    readBassShaperParams (v.data(), bs);
+    CHECK_EQ (bs.peakMixPercent, 25.0f);
+
+    ImagerParams img;
+    readImagerParams (v.data(), img);
+    CHECK_EQ (img.setB.widthPercent[1], 70.0f);
+    CHECK_EQ (img.widthPercent[1], 0.0f);
+    useImagerSet (img, img.setB);
+    CHECK_EQ (img.widthPercent[1], 70.0f);
+
+    SlotParams slot;
+    readSlotParams (v.data(), ModuleType::Imager, slot);
+    CHECK_EQ (slot.channelMode, ChannelMode::TransientSustain);
 }

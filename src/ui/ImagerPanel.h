@@ -15,7 +15,8 @@
 //                  is wider than 0), Recover Sides (On, Gain; dimmed while no band is narrowed), Crossover (type)
 //   right        : Vectorscope of the final output (Polar Sample / Polar Level / Lissajous), correlation history,
 //                  correlation and balance meters
-// The Imager is Stereo only: there are no A/B channel sets. Never takes keyboard focus; left-click-only edits.
+// T/S binds Width, Stereoize and Recover Sides to the selected part; Link edits both sets. Shared crossover,
+// Amount and antiphase settings keep their released ids. Never takes keyboard focus; left-click-only edits.
 namespace ps::ui
 {
 class MultibandDisplay;
@@ -30,6 +31,7 @@ public:
     void tick() override;
     void frameTick() override;
     void refresh() override;
+    void channelSetChanged() override;
     bool hasLearn() const override { return true; }
 
     // Test / tooling access.

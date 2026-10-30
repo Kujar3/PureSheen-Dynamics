@@ -8,7 +8,9 @@
 namespace ps
 {
 //==============================================================================
-// Chain modules. One instance per type in a chain (Equalizer 1 and 2 are two types). Phase-2/3 modules get appended.
+// Chain modules. One instance per type in a chain (Equalizer 1 and 2 are two types). Phase-3 modules get appended.
+// States, presets and the chain order store moduleInfo().idPrefix, never this value; the parameter table records it
+// in ParamSpec::module, so the order is fixed once released.
 enum class ModuleType : int
 {
     Equalizer1 = 0,
@@ -17,9 +19,20 @@ enum class ModuleType : int
     Imager,
     Exciter,
     Maximizer,
-    // ---- phase 2+ (append here) ----
+    // ---- phase 2 ----
+    DynamicEq,      // "deq"  Dynamic EQ: 6 dynamic bands per channel set
+    MatchEq,        // "meq"  Match EQ: linear / minimum phase FIR that matches a reference spectrum
+    ToneBalance,    // "tbal" Tone Balance: adaptive EQ toward a tonal-balance target (Shape / Cut / Boost)
+    Definition,     // "defn" Definition: adaptive spectral contour toward pink + tilt (above 300 Hz)
+    Smoother,       // "smth" Smoother: 32-band adaptive reduction of harsh peaks inside a region
+    Punch,          // "pnch" Punch: multiband micro-dynamics (short / long envelope ratio)
+    LowContrast,    // "lowc" Low Contrast: time-frequency contrast of the low end (20..300 Hz)
+    BassShaper,     // "bass" Bass Shaper: balance, punch, sustain power and peak control below a cutoff
+    // ---- phase 3+ (append here) ----
     Count
 };
+
+inline constexpr int kNumCoreModuleTypes = (int) ModuleType::DynamicEq;   // the six types released in 0.1.x
 
 inline constexpr int kNumModuleTypes = (int) ModuleType::Count;
 
@@ -44,7 +57,11 @@ inline constexpr std::array<ModuleType, 5> kDefaultChain {
 //   Stereo     : both channels use set A, detectors / gain stages stereo-linked
 //   MidSide    : the host M/S-encodes (M = (L+R)/2, S = (L-R)/2), ch0 = Mid with set A, ch1 = Side with set B, decodes
 //   LeftRight  : ch0 = Left with set A, ch1 = Right with set B, unlinked
-//   TransientSustain : reserved for phase 2 (shared transient splitter); treated as Stereo until implemented
+//   TransientSustain : the host splits the input into a transient and a sustain part (ps::TransientSplitter; both
+//                      stereo, T + S == input delayed by the splitter latency). Instance A of the module processes T
+//                      as Stereo with set A, a second instance (the chain's "twin") processes S as Stereo with set B
+//                      (Module::getParamSet() == 1, also passed as ProcessContext::paramSet). The parts are summed at
+//                      the slot output. Set A = Transient, set B = Sustain.
 enum class ChannelMode : int { Stereo = 0, MidSide, LeftRight, TransientSustain };
 
 inline constexpr int kNumChannelSets = 2;   // A, B
@@ -120,5 +137,78 @@ enum class SoftClipMode : int { Light = 0, Moderate, Heavy };   // onset -3 / -9
 enum class DitherBits : int { Bits24 = 0, Bits20, Bits16, Bits12, Bits8 };
 inline constexpr std::array<int, 5> kDitherBitDepth { 24, 20, 16, 12, 8 };
 enum class DitherAmount : int { Strong = 0, Medium, Low, Off };
+
+//==============================================================================
+// Phase 2 module enums (choice indices of their parameters; append-only like everything here).
+
+// Dynamic EQ band shapes. Every shape maps onto the Equalizer shape of the same name (dynEqToEqShape), so a static
+// Dynamic EQ band measures exactly like the Equalizer band.
+enum class DynEqShape : int
+{
+    Bell = 0,
+    ProportionalQ,
+    BandShelf,
+    LowShelfBaxandall,
+    HighShelfBaxandall,
+    LowShelfAnalog,
+    HighShelfAnalog,
+    Count
+};
+
+constexpr EqShape dynEqToEqShape (DynEqShape s) noexcept
+{
+    switch (s)
+    {
+        case DynEqShape::Bell:               return EqShape::Bell;
+        case DynEqShape::ProportionalQ:      return EqShape::ProportionalQ;
+        case DynEqShape::BandShelf:          return EqShape::BandShelf;
+        case DynEqShape::LowShelfBaxandall:  return EqShape::LowShelfBaxandall;
+        case DynEqShape::HighShelfBaxandall: return EqShape::HighShelfBaxandall;
+        case DynEqShape::LowShelfAnalog:     return EqShape::LowShelfAnalog;
+        case DynEqShape::HighShelfAnalog:    return EqShape::HighShelfAnalog;
+        case DynEqShape::Count:              break;
+    }
+    return EqShape::Bell;
+}
+
+// Down: the band moves toward its gain when the level rises above the threshold (a cut = de-esser; a boost backs off
+// when loud). Up: the opposite direction (a boost that grows when loud; a cut that opens when loud).
+enum class DynEqDirection : int { Down = 0, Up };
+
+// Whose level a Dynamic EQ band listens to: its own band, the detector of band n of the same channel set, or this
+// band's detector filter on the other channel of the module's domain (M/S, L/R; = Own in Stereo / T/S).
+enum class DynEqSidechain : int { Own = 0, Band1, Band2, Band3, Band4, Band5, Band6, OtherChannel, Count };
+
+inline constexpr int kDynEqBands = 6;   // per channel set
+
+enum class MatchPhase : int { Linear = 0, Minimum };
+
+enum class ToneBalanceMode : int { Shape = 0, Cut, Boost };
+
+// Tone Balance targets (our own curves relative to pink noise, see ToneBalance.h toneTargetDb). Index = choice value.
+enum class ToneTarget : int
+{
+    Balanced = 0, Cinematic, Country, Edm, Folk, HipHop, Jazz, Pop, Reggae, RnbSoul, Rock,
+    AltRock, Ambient, ClassicHipHop, ClassicRock, DancePop, DrumAndBass, Dubstep, Electropop, FutureBass, House,
+    Hyperpop, IndiePop, IndieRock, KpopJpop, LatinPop, LoFi, Metal, PopCountry, PostRock, PunkRock, Reggaeton, Techno,
+    Trap, VocalJazz, Flat,
+    Count
+};
+
+enum class SmootherMode : int { Gentle = 0, Medium, Strong };
+
+enum class LowContrastMode : int { Punchy = 0, Smooth };
+
+// Punch envelope sync: note values (index = "pnch.syncNote" choice) as fractions of a whole note.
+// envelope ms = fraction * 4 * 60000 / bpm, clamped to 10..1000 ms (bpm <= 0 or not finite -> 120).
+inline constexpr int kPunchSyncNotes = 18;
+inline constexpr std::array<double, kPunchSyncNotes> kPunchSyncFractions {
+    1.0 / 96.0, 1.0 / 64.0, 3.0 / 128.0,     // 1/64T 1/64 1/64D
+    1.0 / 48.0, 1.0 / 32.0, 3.0 / 64.0,      // 1/32T 1/32 1/32D
+    1.0 / 24.0, 1.0 / 16.0, 3.0 / 32.0,      // 1/16T 1/16 1/16D
+    1.0 / 12.0, 1.0 / 8.0, 3.0 / 16.0,       // 1/8T  1/8  1/8D
+    1.0 / 6.0, 1.0 / 4.0, 3.0 / 8.0,         // 1/4T  1/4  1/4D
+    1.0 / 3.0, 1.0 / 2.0, 3.0 / 4.0          // 1/2T  1/2  1/2D
+};
 
 } // namespace ps

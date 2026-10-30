@@ -39,7 +39,7 @@ The **?** button in the top-right corner explains every part inside the plugin. 
    - *Streaming Ready* aims at about -14 LUFS and -1 dBTP.
    - *Loud and Clear* aims at about -9 LUFS, *Club Loud* at about -8 LUFS.
    - Other presets: *Soft Sheen*, *Wide Supersaw Master*, *Deep Bass Anchor*, *Acoustic Air*, *Warm Glue*,
-     *Limit Only*, *Radio Pop*, *Rock Drive*, *Hip-Hop Knock*, *Mid-Side Clarity*.
+     *Limit Only*, *Radio Pop*, *Rock Drive*, *Hip-Hop Knock*, *Mid-Side Detail*.
    - Every module also has its own presets.
 2. **Set the loudness.** Play the loudest part of the song and click **Learn** on the Maximizer. It sets the input gain
    so the song lands on the target next to the button.

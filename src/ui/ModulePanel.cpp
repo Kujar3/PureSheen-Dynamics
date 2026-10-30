@@ -2,6 +2,8 @@
 
 #include "ui/Controls.h"
 
+#include <array>
+#include <functional>
 #include <map>
 
 // ModulePanel base (header row) and GenericModulePanel. Owner: ui-shell.
@@ -16,40 +18,204 @@ juce::String prefixOf (ps::ModuleType t) { return ps::moduleInfo (t).idPrefix; }
 
 bool hasChannelModes (ps::ModuleType t) { return ps::supportedChannelModes (t).size() > 1; }
 
-ps::ChannelMode currentMode (const PureSheenProcessor& p, ps::ModuleType t)
+ps::ChannelMode currentMode (const PureSheenProcessor& p, ps::ModuleType t) { return currentChannelMode (p, t); }
+
+// The two channel sets are shown separately in M/S, L/R and T/S.
+bool isSplitMode (ps::ChannelMode m) { return isDualChannelMode (m); }
+
+//==============================================================================
+// "Stereo | M/S | L/R | T/S": every mode the module offers. A click selects a mode in one undo step through
+// ps::channelModeParamValues (the Exciter's T/S is its own switch, "exc.ts.on").
+class ChannelModeSegments final : public juce::Component, public juce::SettableTooltipClient
 {
-    const auto modes = ps::supportedChannelModes (t);
-
-    if (modes.size() < 2)
-        return ps::ChannelMode::Stereo;
-
-    const int index = juce::jlimit (0, (int) modes.size() - 1, juce::roundToInt (p.getParameterValue (prefixOf (t) + ".chMode")));
-    return modes[(size_t) index];
-}
-
-// The two channel sets are shown separately only in M/S and L/R (Transient/Sustain is reserved, treated as Stereo).
-bool isSplitMode (ps::ChannelMode m) { return m == ps::ChannelMode::MidSide || m == ps::ChannelMode::LeftRight; }
-
-juce::String channelSetName (ps::ChannelMode m, int set)
-{
-    if (m == ps::ChannelMode::MidSide)
-        return set == 0 ? "Mid" : "Side";
-
-    return set == 0 ? "Left" : "Right";
-}
-
-juce::String modeShortLabel (ps::ChannelMode m)
-{
-    switch (m)
+public:
+    ChannelModeSegments (PureSheenProcessor& p, ps::ModuleType t)
+        : processor (p), type (t), modes (ps::supportedChannelModes (t))
     {
-        case ps::ChannelMode::Stereo:           return "Stereo";
-        case ps::ChannelMode::MidSide:          return "M/S";
-        case ps::ChannelMode::LeftRight:        return "L/R";
-        case ps::ChannelMode::TransientSustain: return "T/S";
+        setWantsKeyboardFocus (false);
+        setMouseClickGrabsKeyboardFocus (false);
+        setRepaintsOnMouseActivity (true);
+        setTitle (juce::String (ps::moduleInfo (t).shortName) + " Channel Mode");
     }
 
-    return {};
-}
+    int numModes() const noexcept { return (int) modes.size(); }
+    void setOnColour (juce::Colour c) { onColour = c; repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const float radius = juce::jmin (7.0f, b.getHeight() * 0.5f);
+        g.setColour (juce::Colours::black.withAlpha (0.22f));
+        g.fillRoundedRectangle (b, radius);
+        g.setColour (Colours::outline.withAlpha (0.9f));
+        g.drawRoundedRectangle (b.reduced (0.5f), radius, 1.0f);
+
+        if (modes.empty())
+            return;
+
+        const auto inner = b.reduced (2.0f);
+        const float segW = inner.getWidth() / (float) modes.size();
+        const auto current = currentMode (processor, type);
+        const auto mouse = getMouseXYRelative().toFloat();
+        const int hover = isMouseOver() ? juce::jlimit (0, (int) modes.size() - 1, (int) ((mouse.x - inner.getX()) / segW)) : -1;
+        const float fontH = juce::jmin (12.0f, inner.getHeight() * 0.55f);
+
+        for (int i = 0; i < (int) modes.size(); ++i)
+        {
+            const auto seg = juce::Rectangle<float> (inner.getX() + segW * (float) i, inner.getY(), segW, inner.getHeight());
+            const bool selected = modes[(size_t) i] == current;
+
+            if (selected)
+            {
+                g.setGradientFill (juce::ColourGradient::vertical (blend (Colours::panelHover, onColour, 0.30f), seg.getY(),
+                                                                   blend (Colours::panelRaised, onColour, 0.18f), seg.getBottom()));
+                g.fillRoundedRectangle (seg.reduced (0.5f), radius - 2.0f);
+                g.setColour (onColour.withAlpha (0.7f));
+                g.drawRoundedRectangle (seg.reduced (1.0f), radius - 2.0f, 1.0f);
+            }
+            else if (i == hover)
+            {
+                g.setColour (Colours::panelHover.withAlpha (0.7f));
+                g.fillRoundedRectangle (seg.reduced (0.5f), radius - 2.0f);
+            }
+
+            g.setFont (font (fontH, selected ? 700 : 600));
+            g.setColour (selected ? Colours::text : Colours::textDim);
+            g.drawFittedText (channelModeShortLabel (modes[(size_t) i]), seg.toNearestInt(), juce::Justification::centred, 1, 0.8f);
+        }
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! isLeftClick (e) || modes.empty() || ! getLocalBounds().contains (e.getPosition()))
+            return;
+
+        const float segW = ((float) getWidth() - 4.0f) / (float) modes.size();
+        const int index = juce::jlimit (0, (int) modes.size() - 1, (int) ((e.position.x - 2.0f) / segW));
+        const auto mode = modes[(size_t) index];
+
+        if (mode == currentMode (processor, type))
+            return;
+
+        std::vector<std::pair<juce::String, float>> changes;
+        for (const auto& [id, value] : ps::channelModeParamValues (type, mode))
+            changes.emplace_back (juce::String (id), value);
+        processor.setParameterValues (changes, juce::String (ps::moduleInfo (type).shortName) + " Channel Mode: "
+                                                   + channelModeShortLabel (mode));
+        repaint();
+    }
+
+private:
+    PureSheenProcessor& processor;
+    ps::ModuleType type;
+    std::vector<ps::ChannelMode> modes;
+    juce::Colour onColour = Colours::accent;
+};
+
+//==============================================================================
+// The Transient / Sustain options (the gear in the T/S tabs): split sensitivity and length, the transient share and
+// a short trace of the splitter's activity, and "show the selected part in the spectrum".
+class TsPopover final : public juce::Component, private juce::Timer
+{
+public:
+    TsPopover (PureSheenProcessor& p, ps::ModuleType t, std::function<float()> activityFn, bool showPartOn,
+               std::function<void (bool)> onShowPart)
+        : processor (p), type (t), activity (std::move (activityFn)), showPartChanged (std::move (onShowPart)),
+          sens (p, prefixOf (t) + ".ts.sens", "Sensitivity"), len (p, prefixOf (t) + ".ts.len", "Length")
+    {
+        const auto colour = moduleColour (t);
+        sens.setColour (colour);
+        len.setColour (colour);
+        sens.setTooltip ("How small a jump in level still counts as a hit. Higher = more of the sound goes to Transient.");
+        len.setTooltip ("How long each hit stays in the Transient part.");
+        showPart.setText ("Show the selected part in the spectrum");
+        showPart.setOn (showPartOn);
+        showPart.setTooltip ("On: the spectrum of this panel shows only the Transient or Sustain part (the selected tab).");
+        showPart.onClick = [this]
+        {
+            showPart.setOn (! showPart.isOn());
+            if (showPartChanged != nullptr)
+                showPartChanged (showPart.isOn());
+        };
+        addAndMakeVisible (sens);
+        addAndMakeVisible (len);
+        addAndMakeVisible (showPart);
+        setSize (300, 214);
+        trace.fill (0.0f);
+        startTimerHz (30);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12, 10);
+        r.removeFromTop (20);
+        auto knobs = r.removeFromTop (78);
+        sens.setBounds (knobs.removeFromLeft (knobs.getWidth() / 2).reduced (6, 0));
+        len.setBounds (knobs.reduced (6, 0));
+        r.removeFromTop (6);
+        traceArea = r.removeFromTop (44);
+        r.removeFromTop (4);
+        shareArea = r.removeFromTop (18);
+        r.removeFromTop (4);
+        showPart.setBounds (r.removeFromTop (24));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setFont (font (12.5f, 700));
+        g.setColour (Colours::text);
+        g.drawText ("Transient / Sustain split", getLocalBounds().reduced (12, 8).removeFromTop (18),
+                    juce::Justification::centredLeft, false);
+
+        const auto area = traceArea.toFloat();
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (area, 5.0f);
+        juce::Path line, fill;
+        const int n = (int) trace.size();
+        for (int i = 0; i < n; ++i)
+        {
+            const float v = trace[(size_t) ((head + i) % n)];
+            const float x = area.getX() + area.getWidth() * (float) i / (float) (n - 1);
+            const float y = area.getBottom() - 3.0f - (area.getHeight() - 6.0f) * juce::jlimit (0.0f, 1.0f, v);
+            if (i == 0) { line.startNewSubPath (x, y); fill.startNewSubPath (x, area.getBottom()); }
+            else line.lineTo (x, y);
+            fill.lineTo (x, y);
+        }
+        fill.lineTo (area.getRight(), area.getBottom());
+        fill.closeSubPath();
+        const auto colour = moduleColour (type);
+        g.setColour (colour.withAlpha (0.18f));
+        g.fillPath (fill);
+        g.setColour (colour);
+        g.strokePath (line, juce::PathStrokeType (1.4f));
+
+        const float share = processor.getChain().getIoMeters().moduleTsShareDb[(size_t) type].load();
+        g.setFont (font (11.5f, 600));
+        g.setColour (Colours::textDim);
+        g.drawText ("Transient share", shareArea, juce::Justification::centredLeft, false);
+        g.setColour (Colours::text);
+        g.drawText (share <= -59.9f ? juce::String ("-") : juce::String (share, 1) + " dB", shareArea,
+                    juce::Justification::centredRight, false);
+    }
+
+private:
+    void timerCallback() override
+    {
+        trace[(size_t) head] = activity != nullptr ? activity() : 0.0f;
+        head = (head + 1) % (int) trace.size();
+        repaint();
+    }
+
+    PureSheenProcessor& processor;
+    ps::ModuleType type;
+    std::function<float()> activity;
+    std::function<void (bool)> showPartChanged;
+    ParamKnob sens, len;
+    PillButton showPart;
+    std::array<float, 60> trace {};
+    int head = 0;
+    juce::Rectangle<int> traceArea, shareArea;
+};
 
 //==============================================================================
 // "Mid | Side" tabs: a click on the name selects the channel set, the LED switches the channel on / off, "S" solos it.
@@ -61,7 +227,8 @@ public:
         setWantsKeyboardFocus (false);
         setMouseClickGrabsKeyboardFocus (false);
         setRepaintsOnMouseActivity (true);
-        setTooltip ("Channel sets. Click a name to edit that channel, the light switches it on or off, S plays it alone.");
+        setTooltip ("Channel sets. Click a name to edit that channel, the light switches it on or off, S plays it alone. "
+                    "T/S: the gear sets how the sound is split into hits (Transient) and what rings on (Sustain).");
     }
 
     void setMode (ps::ChannelMode m)
@@ -75,9 +242,22 @@ public:
 
     juce::Rectangle<float> tabArea (int i) const
     {
-        const auto b = getLocalBounds().toFloat().reduced (0.5f);
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        if (hasGear())
+            b.removeFromRight (kGearW);
         return b.withWidth (b.getWidth() * 0.5f).translated (b.getWidth() * 0.5f * (float) i, 0.0f);
     }
+
+    static constexpr float kGearW = 22.0f;
+    bool hasGear() const noexcept { return mode == ps::ChannelMode::TransientSustain; }
+    juce::Rectangle<float> gearArea() const
+    {
+        const auto b = getLocalBounds().toFloat().reduced (0.5f);
+        return b.withLeft (b.getRight() - kGearW).reduced (2.0f);
+    }
+
+    std::function<void()> onGear;   // T/S options
+    float tsActivity = 0.0f;        // 0..1 (decaying, set by the panel at 30 Hz)
 
     juce::Rectangle<float> ledArea (int i) const   { return tabArea (i).removeFromLeft (20.0f).withSizeKeepingCentre (8.0f, 8.0f).translated (2.0f, 0.0f); }
     juce::Rectangle<float> soloArea (int i) const  { return tabArea (i).removeFromRight (22.0f).withSizeKeepingCentre (16.0f, 16.0f).translated (-2.0f, 0.0f); }
@@ -111,6 +291,11 @@ public:
                 g.drawRoundedRectangle (tab.reduced (0.5f), 5.0f, 1.0f);
             }
 
+            if (i == 0 && hasGear() && tsActivity > 0.01f)
+            {
+                g.setColour (setColour.withAlpha (0.25f + 0.75f * juce::jlimit (0.0f, 1.0f, tsActivity)));
+                g.fillEllipse (ledArea (i).expanded (3.5f));
+            }
             drawLed (g, ledArea (i), on, setColour);
 
             auto text = tab.withTrimmedLeft (18.0f).withTrimmedRight (20.0f);
@@ -128,6 +313,16 @@ public:
             g.setColour (soloOn ? Colours::background : Colours::textDim);
             g.drawText ("S", s, juce::Justification::centred, false);
         }
+
+        if (hasGear())
+        {
+            const auto gear = gearArea();
+            const bool over = isMouseOver() && gear.contains (getMouseXYRelative().toFloat());
+            g.setColour (over ? Colours::panelHover : Colours::panelRaised.withAlpha (0.6f));
+            g.fillRoundedRectangle (gear, 4.0f);
+            g.setColour (over ? Colours::text : Colours::textDim);
+            IconButton::paintIcon (g, IconButton::Icon::sliders, gear.withSizeKeepingCentre (14.0f, 14.0f));
+        }
     }
 
     void mouseUp (const juce::MouseEvent& e) override
@@ -137,6 +332,13 @@ public:
 
         const auto type = owner.getModuleType();
         const auto prefix = prefixOf (type);
+
+        if (hasGear() && gearArea().expanded (2.0f).contains (e.position))
+        {
+            if (onGear != nullptr)
+                onGear();
+            return;
+        }
 
         for (int i = 0; i < 2; ++i)
         {
@@ -198,16 +400,11 @@ struct ModulePanel::Impl
 
         if (hasChannelModes (type))
         {
-            juce::StringArray labels;
-
-            for (auto m : ps::supportedChannelModes (type))
-                if (m != ps::ChannelMode::TransientSustain)   // reserved for a later version
-                    labels.add (modeShortLabel (m));
-
-            modeSegments = std::make_unique<ParamSegments> (p, prefix + ".chMode", labels);
+            modeSegments = std::make_unique<ChannelModeSegments> (p, type);
             modeSegments->setOnColour (moduleColour (type));
             modeSegments->setTooltip ("Channel mode. Stereo: both channels together. M/S: Mid (centre) and Side (edges) "
-                                      "get their own settings. L/R: left and right get their own settings.");
+                                      "get their own settings. L/R: left and right get their own settings. T/S: the "
+                                      "attack of sounds (Transient) and what rings on (Sustain) get their own settings.");
             link = std::make_unique<ParamToggle> (p, prefix + ".link", "Link");
             link->setOnColour (moduleColour (type));
             link->setTooltip ("Link: edits change both channels at once.");
@@ -237,6 +434,8 @@ struct ModulePanel::Impl
             owner.showHeaderHint ("Module reset to defaults");
         };
 
+        tabs.onGear = [this] { showTsOptions(); };
+
         owner.addAndMakeVisible (presetChip);
         owner.addChildComponent (tabs);
         owner.addAndMakeVisible (delta);
@@ -248,6 +447,19 @@ struct ModulePanel::Impl
             owner.addAndMakeVisible (*modeSegments);
             owner.addChildComponent (*link);
         }
+    }
+
+    void showTsOptions()
+    {
+        // The panel owns both objects: a panel change or editor close must destroy the timer and parameter
+        // attachments before their panel / processor, even if the callout's modal dismissal is still queued.
+        tsCallout.reset();
+        tsContent = std::make_unique<TsPopover> (processor, type, [this] { return tabs.tsActivity; }, showPart,
+                                                [this] (bool on) { showPart = on; });
+        const auto area = owner.getScreenBounds().getTopLeft() + tabs.getBounds().getCentre();
+        tsCallout = std::make_unique<juce::CallOutBox> (*tsContent, juce::Rectangle<int> (area.x, area.y + 12, 1, 1), nullptr);
+        tsCallout->setVisible (true);
+        tsCallout->enterModalState (true);
     }
 
     void showPresetMenu (MenuChip& chip)
@@ -349,15 +561,12 @@ struct ModulePanel::Impl
         const auto nameFont = font (14.5f, 700);
         const juce::String fullName (ps::moduleInfo (type).name);
         const bool split = isSplitMode (currentMode (processor, type));
-        int numModes = 0;
-
-        if (modeSegments != nullptr)
-            for (auto m : ps::supportedChannelModes (type))
-                numModes += m != ps::ChannelMode::TransientSustain ? 1 : 0;   // (T/S is not offered yet)
+        const int numModes = modeSegments != nullptr ? modeSegments->numModes() : 0;
+        const bool ts = currentMode (processor, type) == ps::ChannelMode::TransientSustain;
 
         int segW = numModes * 52;
         int chipW = 128;
-        const int tabsW = 172, linkW = 62;
+        int tabsW = ts ? 200 : 172, linkW = 62;
 
         auto needed = [&] (const juce::String& name)
         {
@@ -372,6 +581,9 @@ struct ModulePanel::Impl
 
         if (needed (displayName) > r.getWidth())
             chipW = 104, segW = numModes * 44;
+
+        if (needed (displayName) > r.getWidth())
+            chipW = 84, segW = numModes * 40, tabsW = ts ? 184 : 160, linkW = 50;
 
         const int nameW = 18 + (int) std::ceil (textWidth (nameFont, displayName));
         nameArea = r.removeFromLeft (nameW);
@@ -416,6 +628,30 @@ struct ModulePanel::Impl
                 owner.setChannelSet (0);
         }
 
+        if (modeSegments != nullptr && mode != shownSegmentMode)
+        {
+            shownSegmentMode = mode;
+            modeSegments->repaint();
+        }
+
+        if (mode == ps::ChannelMode::TransientSustain)
+        {
+            const float a = processor.getChain().getIoMeters().moduleTsActivity[(size_t) type].exchange (0.0f);
+            tabs.tsActivity = juce::jmax (a, tabs.tsActivity * 0.8f);
+        }
+        else
+        {
+            tabs.tsActivity = 0.0f;
+        }
+
+        // the selected part in the module taps (T/S "show the selected part")
+        const int part = mode == ps::ChannelMode::TransientSustain && showPart ? owner.getChannelSet() : -1;
+        if (part != shownTapPart)
+        {
+            shownTapPart = part;
+            processor.getChain().setTapPart (part);
+        }
+
         if (split)
             tabs.repaint();
 
@@ -444,7 +680,7 @@ struct ModulePanel::Impl
     int channelSet = 0;
 
     MenuChip presetChip;
-    std::unique_ptr<ParamSegments> modeSegments;
+    std::unique_ptr<ChannelModeSegments> modeSegments;
     ChannelTabs tabs;
     std::unique_ptr<ParamToggle> link;
     PillButton delta, learn;
@@ -454,8 +690,12 @@ struct ModulePanel::Impl
     juce::uint32 hintShownMs = 0;
     juce::Rectangle<int> nameArea, hintArea;
     int rightEdge = 0;
-    ps::ChannelMode shownMode = ps::ChannelMode::Stereo;
+    ps::ChannelMode shownMode = ps::ChannelMode::Stereo, shownSegmentMode = ps::ChannelMode::Stereo;
     bool shownBypassed = false;
+    bool showPart = false;     // T/S: the module taps carry the selected part
+    int shownTapPart = -2;
+    std::unique_ptr<TsPopover> tsContent;
+    std::unique_ptr<juce::CallOutBox> tsCallout;  // destroyed before its referenced content
 };
 
 //==============================================================================
@@ -1009,6 +1249,10 @@ struct GenericModulePanel::GenericImpl
                 continue;
 
             if (channelModes && (rest == "chMode" || rest == "a.on" || rest == "b.on" || rest == "link"))
+                continue;
+
+            // T/S split controls: the gear in the header's Transient / Sustain tabs
+            if (rest == "ts.sens" || rest == "ts.len" || rest == "ts.on")
                 continue;
 
             auto control = std::make_unique<Control>();

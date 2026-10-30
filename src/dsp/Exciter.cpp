@@ -1074,9 +1074,12 @@ struct Exciter::Impl
         }
     }
 
-    void setParams (ParamValues values) noexcept
+    void setParams (ParamValues values, int parameterSet) noexcept
     {
         readExciterParams (values, requested);
+        if (parameterSet == 1)   // T/S sustain twin: set B for both channels (Module.h)
+            for (int b = 0; b < kMaxBands; ++b)
+                requested.bands[0][b] = requested.bands[1][b];
         requested.numBands = std::clamp (requested.numBands, 1, kMaxBands);
         configureEngines();
         // As for Crossover, report the most recently requested destination latency.
@@ -1179,7 +1182,7 @@ void Exciter::reset() noexcept { impl->reset(); }
 void Exciter::setParams (ParamValues v) noexcept
 {
     if (v != nullptr)
-        impl->setParams (v);
+        impl->setParams (v, getParamSet());
 }
 
 void Exciter::setMonitor (const ModuleMonitor& m) noexcept

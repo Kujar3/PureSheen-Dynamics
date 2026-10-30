@@ -1369,6 +1369,9 @@ void Equalizer::setParams (ParamValues v) noexcept
 {
     auto& m = *impl;
     readEqParams (v, m.type, m.params);
+    if (getParamSet() == 1)   // T/S sustain twin: set B for both channels (Module.h)
+        for (int b = 0; b < kEqBands; ++b)
+            m.params.bands[0][b] = m.params.bands[1][b];
     m.updateTargets();   // the first parameters after prepare / reset are applied without a fade by process()
 }
 

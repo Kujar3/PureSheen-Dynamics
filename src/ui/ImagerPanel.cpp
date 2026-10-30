@@ -19,8 +19,6 @@ constexpr int kCardsH = 148;
 constexpr float kCorrStripH = 26.0f;     // per-band correlation bar along the top of a band
 constexpr float kBottomKeepOut = 54.0f;
 
-juce::String bandWidthId (int band) { return "img.b" + juce::String (band + 1) + ".width"; }
-
 juce::String widthText (float w)
 {
     const int v = juce::roundToInt (w);
@@ -145,6 +143,50 @@ struct ImagerPanel::Impl
     }
 
     //==========================================================================
+    bool isSplit() const { return currentChannelMode (processor, ps::ModuleType::Imager) == ps::ChannelMode::TransientSustain; }
+    int currentSet() const { return isSplit() ? owner.getChannelSet() : 0; }
+    bool isLinked() const { return isSplit() && processor.getParameterValue ("img.link") >= 0.5f; }
+
+    juce::String setId (int set, const juce::String& suffix) const
+    {
+        return juce::String (set == 1 ? "img.b." : "img.") + suffix;
+    }
+    juce::String bandWidthId (int band) const { return setId (currentSet(), "b" + juce::String (band + 1) + ".width"); }
+    juce::String twinWidthId (int band) const
+    {
+        return isLinked() ? setId (1 - currentSet(), "b" + juce::String (band + 1) + ".width") : juce::String();
+    }
+
+    void rebind()
+    {
+        endDrag();
+        const int set = currentSet();
+        const auto c = set == 1 ? Colours::sideChannel : colour;
+        const auto twin = [&] (const char* suffix) { return isLinked() ? setId (1 - set, suffix) : juce::String(); };
+        stzOn.setParamId (setId (set, "stz.on"));
+        stzOn.setLinkedParamId (twin ("stz.on"));
+        stzMode.setParamId (setId (set, "stz.mode"));
+        stzMode.setLinkedParamId (twin ("stz.mode"));
+        stzModeShort.setParamId (setId (set, "stz.mode"));
+        stzModeShort.setLinkedParamId (twin ("stz.mode"));
+        stzAmount.setParamId (setId (set, "stz.amount"));
+        stzAmount.setLinkedParamId (twin ("stz.amount"));
+        recOn.setParamId (setId (set, "rec.on"));
+        recOn.setLinkedParamId (twin ("rec.on"));
+        recGain.setParamId (setId (set, "rec.gain"));
+        recGain.setLinkedParamId (twin ("rec.gain"));
+        for (auto* t : { &stzOn, &recOn }) t->setOnColour (c);
+        for (auto* k : { &stzAmount, &recGain }) k->setColour (c);
+        stzMode.setOnColour (c);
+        stzModeShort.setOnColour (c);
+        display.setAccentColour (c);
+        display.setChannelSet (set);
+        shownSet = set;
+        shownLinked = isLinked();
+        shownSplit = isSplit();
+        display.repaint();
+    }
+
     int numBands() const
     {
         return juce::jlimit (1, ps::kMaxBands, juce::roundToInt (processor.getParameterValue ("img.bands")));
@@ -273,7 +315,7 @@ struct ImagerPanel::Impl
         if (e.getNumberOfClicks() >= 2)   // the double-click resets (onBandDoubleClick): no drag
             return true;
 
-        drag.start (bandWidthId (band), {});
+        drag.start (bandWidthId (band), twinWidthId (band));
         dragBand = band;
         dragPixels = juce::jmax (40.0f, barArea (display.getBandArea (band)).getHeight());
         return true;
@@ -308,7 +350,7 @@ struct ImagerPanel::Impl
             return false;
 
         endDrag();
-        stereo::setParam (processor, bandWidthId (band), {}, stereo::defaultValueOf (bandWidthId (band)));
+        stereo::setParam (processor, bandWidthId (band), twinWidthId (band), stereo::defaultValueOf (bandWidthId (band)));
         display.repaint();
         return true;
     }
@@ -318,7 +360,7 @@ struct ImagerPanel::Impl
         if (band < 0 || band >= numBands())
             return false;
 
-        stereo::showParamMenu (display, processor, bandWidthId (band), {}, "Band " + juce::String (band + 1) + " Width");
+        stereo::showParamMenu (display, processor, bandWidthId (band), twinWidthId (band), "Band " + juce::String (band + 1) + " Width");
         return true;
     }
 
@@ -340,10 +382,13 @@ struct ImagerPanel::Impl
     //==========================================================================
     void update (bool force)
     {
+        if (force || currentSet() != shownSet || isLinked() != shownLinked || isSplit() != shownSplit)
+            rebind();
+
         // Per-band correlation from the module (only while it runs).
         const bool running = processor.isModuleInChain (ps::ModuleType::Imager)
                              && processor.getParameterValue ("img.on") >= 0.5f;
-        const auto* imager = dynamic_cast<const ps::Imager*> (&processor.getChain().getModule (ps::ModuleType::Imager));
+        const auto* imager = dynamic_cast<const ps::Imager*> (&moduleForChannelSet (processor, ps::ModuleType::Imager, currentSet()));
         const bool valid = running && imager != nullptr && processor.getChain().getSampleRate() > 0.0;
         bool changed = valid != metersValid;
         metersValid = valid;
@@ -526,6 +571,8 @@ struct ImagerPanel::Impl
     std::array<float, ps::kMaxBands> correlationShown {};
     bool metersValid = false, shownAnyWide = false, shownAnyNarrow = false;
     int shownXoverType = -1;
+    int shownSet = -1;
+    bool shownLinked = false, shownSplit = false;
 };
 
 //==============================================================================
@@ -561,6 +608,11 @@ void ImagerPanel::refresh()
 void ImagerPanel::layoutContent (juce::Rectangle<int> contentArea)
 {
     impl->layout (contentArea);
+}
+
+void ImagerPanel::channelSetChanged()
+{
+    impl->update (true);
 }
 
 } // namespace ps::ui

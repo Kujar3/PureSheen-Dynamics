@@ -275,7 +275,7 @@ std::vector<FactoryPreset> build()
             .set ("max.trans.amount", 30.0f)
             .set ("max.learnTarget", -11.0f)));
 
-    all.push_back (global ("Mid-Side Clarity", "Mastering",
+    all.push_back (global ("Mid-Side Detail", "Mastering",
         Builder()
             .set ("eq1.chMode", kMidSide)
             .set ("eq1.link", 0.0f)

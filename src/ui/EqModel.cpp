@@ -211,6 +211,9 @@ juce::String EqModel::setName (int set) const
     if (mode == ps::ChannelMode::LeftRight)
         return set == 0 ? "Left" : "Right";
 
+    if (mode == ps::ChannelMode::TransientSustain)
+        return set == 0 ? "Transient" : "Sustain";
+
     return {};
 }
 

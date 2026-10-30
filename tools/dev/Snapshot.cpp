@@ -273,6 +273,8 @@ int runSnapshot (const juce::File& outputDir)
 
     // 02: every module (Equalizer 2 added for its own shot)
     proc.addModule (ps::ModuleType::Equalizer2, 1);
+    for (int t = ps::kNumCoreModuleTypes; t < ps::kNumModuleTypes; ++t)   // (phase 2 modules)
+        proc.addModule ((ps::ModuleType) t);
     pumpMessages (30);
 
     for (int t = 0; t < ps::kNumModuleTypes; ++t)
@@ -299,7 +301,7 @@ int runSnapshot (const juce::File& outputDir)
         ok &= writePng (*editor, file (juce::String ("02_") + ps::moduleInfo (type).idPrefix + "_1180x720"));
     }
 
-    proc.removeModule (ps::ModuleType::Equalizer2);
+    proc.setChainOrder ({ ps::kDefaultChain.begin(), ps::kDefaultChain.end() });
     pumpMessages (30);
 
     // 03: EQ 1 in Mid/Side mode (channel tabs, Side selected)
@@ -552,6 +554,78 @@ int runSnapshot (const juce::File& outputDir)
         set (proc, "exc.chMode", 1.0f);
         rig.play (*editor, 40);
         ok &= writePng (*editor, file ("10_exc_4band_midside_1180x720"));
+    }
+
+    // 13: phase 2: every module in the chain (the strip with 14 tiles) at every size, the new panels at 980x600, and
+    //     the Transient/Sustain channel mode (EQ 1 with the Sustain tab, Exciter with its T/S switch)
+    {
+        set (proc, "exc.chMode", 0.0f);
+        std::vector<ps::ModuleType> all { ps::kDefaultChain.begin(), ps::kDefaultChain.end() - 1 };
+        all.push_back (ps::ModuleType::Equalizer2);
+        for (int t = ps::kNumCoreModuleTypes; t < ps::kNumModuleTypes; ++t)
+            all.push_back ((ps::ModuleType) t);
+        all.push_back (ps::ModuleType::Maximizer);
+        proc.setChainOrder (all);
+        pumpMessages (30);
+        const bool every = (int) proc.getChainOrder().size() == ps::kNumModuleTypes;
+        std::cout << (every ? "all 14 modules in the chain: ok\n" : "FAILED: not every module is in the chain\n");
+        ok &= every;
+
+        const Size allSizes[] = { { 980, 600, "980x600" }, { 1180, 720, "1180x720" }, { 1800, 1100, "1800x1100" } };
+        for (const auto& sz : allSizes)
+        {
+            editor->setSize (sz.w, sz.h);
+            editor->selectModule ((int) ps::ModuleType::DynamicEq);
+            rig.play (*editor, 8);
+            ok &= writePng (*editor, file (juce::String ("13_all_modules_") + sz.name));
+        }
+
+        editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+        editor->setHelpVisible (true);
+        rig.play (*editor, 2);
+        ok &= writePng (*editor, file ("13_help_980x600"));
+        editor->setHelpVisible (false);
+
+        for (int t = ps::kNumCoreModuleTypes; t < ps::kNumModuleTypes; ++t)
+        {
+            editor->selectModule (t);
+            rig.play (*editor, 6);
+            ok &= writePng (*editor, file (juce::String ("13_") + ps::moduleInfo ((ps::ModuleType) t).idPrefix + "_980x600"));
+        }
+
+        for (const auto& sz : { allSizes[1], allSizes[0] })
+        {
+            editor->setSize (sz.w, sz.h);
+            editor->selectModule ((int) ps::ModuleType::Equalizer1);
+            set (proc, "eq1.chMode", 3.0f);
+            set (proc, "eq1.link", 0.0f);
+            set (proc, "eq1.a.b2.on", 1.0f);
+            set (proc, "eq1.a.b2.freq", 3200.0f);
+            set (proc, "eq1.a.b2.gain", -2.0f);
+            set (proc, "eq1.b.b6.on", 1.0f);
+            set (proc, "eq1.b.b6.shape", (float) ps::EqShape::HighShelfBaxandall);
+            set (proc, "eq1.b.b6.freq", 9000.0f);
+            set (proc, "eq1.b.b6.gain", 1.5f);
+            rig.play (*editor, 6);
+            if (auto* panel = editor->getCurrentPanel())
+                panel->setChannelSet (1);
+            rig.play (*editor, 30);
+            ok &= writePng (*editor, file (juce::String ("13_eq1_transient_sustain_") + sz.name));
+            if (auto* panel = editor->getCurrentPanel())
+                panel->setChannelSet (0);
+        }
+        set (proc, "eq1.chMode", 0.0f);
+        set (proc, "eq1.link", 1.0f);
+
+        editor->selectModule ((int) ps::ModuleType::Exciter);
+        set (proc, "exc.ts.on", 1.0f);
+        rig.play (*editor, 20);
+        ok &= writePng (*editor, file ("13_exc_transient_sustain_980x600"));
+        set (proc, "exc.ts.on", 0.0f);
+
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        proc.setChainOrder ({ ps::kDefaultChain.begin(), ps::kDefaultChain.end() });
+        pumpMessages (30);
     }
 
     // 11: nothing takes keyboard focus

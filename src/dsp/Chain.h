@@ -23,9 +23,22 @@
 //   6. global bypass: output = latency-aligned input (* match gain in classic gain-match mode)
 //   7. dither (last)
 //   8. output taps (FIFO + meters: peak, true peak, LUFS M / S / I, LRA)
-// Latency = sum of getLatencySamples() of the modules in the chain (power on or off). A change (mode / chain edit)
-// takes effect immediately in the audio; getLatencySamples() reports it so the processor can update the host
+// Latency = sum of the slot latencies of the modules in the chain (power on or off): a module's getLatencySamples(),
+// or in Transient/Sustain the splitter latency + max (latency of instance A, of the twin). A change (mode / chain
+// edit) takes effect immediately in the audio; getLatencySamples() reports it so the processor can update the host
 // (setLatencySamples on the message thread).
+//
+// Transient/Sustain (phase 2): every type that offers T/S gets a second instance (the twin, getModule (type, 1),
+// paramSet 1). While a slot runs in T/S: x -> ps::TransientSplitter -> T (instance A, set A) and S (twin, set B), both
+// processed as Stereo, padded to a common latency, then
+//   channel power (a.on = Transient, b.on = Sustain): that part passes unprocessed (latency-aligned dry part)
+//   channel solo (setChannelSolo 0 / 1): only that processed part is heard (Delta then plays that part's change)
+//   power off / solo-out / mode fade: the latency-aligned dry signal, as in the other modes
+//   monitors: band solo / detector solo / region solo go to both instances; a band solo with soloChannelSet >= 0
+//   or an EQ audition goes only to the selected instance, and the other part is muted while it is on
+//   difference meter: T + S vs the aligned dry input; IoMeters::moduleTsActivity / moduleTsShareDb from the splitter
+// A channel-mode change that changes the slot latency (into or out of T/S) also fades the slot output to silence
+// (20 ms), switches at silence and fades back in, so the latency jump never clicks.
 //
 // Chain order changes (message thread, setOrder) are published lock-free (double-buffered, atomic index); a module
 // added to the chain is reset() first, a module removed stops processing. Max one instance per ModuleType.
@@ -48,6 +61,10 @@ struct IoMeters
     AtomicFloat gainMatchDb { 0.0f };                  // currently applied match gain
     AtomicFloat inputClip[2], outputClip[2];           // 1 once a sample > 0 dBFS was seen (UI resets to 0)
     AtomicFloat moduleDifferenceDb[kNumModuleTypes];   // slot difference meters (RMS out - in, smoothed ~300 ms)
+    // (phase 2) Transient/Sustain slots: splitter mask activity 0..1 (max since the UI exchanged it) and the transient
+    // part's energy share 10 log10 (E_T / E_x) (one-pole ~300 ms, -60 floor; -60 while the slot is not in T/S).
+    AtomicFloat moduleTsActivity[kNumModuleTypes];
+    AtomicFloat moduleTsShareDb[kNumModuleTypes];
 };
 
 class Chain
@@ -85,6 +102,10 @@ public:
     double getSampleRate() const noexcept;
 
     Module& getModule (ModuleType) noexcept;           // e.g. static_cast<Maximizer&> (getModule (Maximizer))
+    // (phase 2) part 0 = the normal instance, 1 = the T/S sustain twin (the normal instance when the type has no twin).
+    // The UI reads the meters of the instance of the selected T/S tab.
+    Module& getModule (ModuleType, int part) noexcept;
+    bool hasTwin (ModuleType) const noexcept;
     const IoMeters& getIoMeters() const noexcept;
     IoMeters& getIoMeters() noexcept;                  // (added) for the UI's exchange() / clip resets
     const DitherMeters& getDitherMeters() const noexcept;
@@ -93,6 +114,13 @@ public:
     // (added) Test / tooling hook, message thread, before prepare(): replaces the module instance that serves the
     // slot of `type` (tests inject small gain / latency modules). nullptr is ignored.
     void setModule (ModuleType type, std::unique_ptr<Module> module);
+    // (phase 2) the same for one part: part 1 replaces the twin (only for types that offer T/S; setParamSet (1) is
+    // called on it), part 0 the normal instance.
+    void setModule (ModuleType type, std::unique_ptr<Module> module, int part);
+
+    // (phase 2) T/S slots: what the module taps carry: the full slot input / output (-1, default), or the transient
+    // (0) / sustain (1) part, pre (latency aligned to the post tap) and post the module. Other modes ignore it.
+    void setTapPart (int partOrMinus1) noexcept;
 
     // UI taps (single consumer each: the editor). Capacity 2^15 samples.
     StereoSampleFifo& getInputFifo() noexcept;         // after input gain

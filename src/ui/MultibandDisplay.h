@@ -40,6 +40,7 @@ public:
     int getNumBands() const noexcept;                // current "<prefix>.bands"
     int getSelectedBand() const noexcept;
     void setSelectedBand (int band);
+    void setChannelSet (int set);                    // selected T/S part for band solo; other modes keep both channels
     juce::Rectangle<float> getBandArea (int band) const noexcept;   // x range of the band over the plot area
     juce::Rectangle<float> getPlotArea() const noexcept;
     float xForFrequency (float hz) const noexcept;

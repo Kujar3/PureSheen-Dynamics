@@ -635,9 +635,11 @@ struct Imager::Impl
         }
     }
 
-    void setParams (ParamValues values) noexcept
+    void setParams (ParamValues values, int parameterSet) noexcept
     {
         readImagerParams (values, latestParams);
+        if (parameterSet == 1)   // T/S sustain twin: set B for both channels (Module.h)
+            useImagerSet (latestParams, latestParams.setB);
         latestParams.numBands = std::clamp (latestParams.numBands, 1, kMaxBands);
         latency.store (engines[0].xover.getLatencySamples (latestParams.crossoverType), std::memory_order_relaxed);
         applyLatestParams();
@@ -732,7 +734,7 @@ void Imager::reset() noexcept { impl->reset(); }
 void Imager::setParams (ParamValues v) noexcept
 {
     if (v != nullptr)
-        impl->setParams (v);
+        impl->setParams (v, getParamSet());
 }
 
 void Imager::setMonitor (const ModuleMonitor& m) noexcept

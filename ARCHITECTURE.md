@@ -16,8 +16,8 @@ accent). The research notes are private.
 - I/O metering, gain match, delta, undo history, A-D snapshots, presets
 
 Later phases (enums are append-only, so they slot in):
-- Phase 2: Dynamic EQ, Match EQ, Tone Balance, Definition, Smoother, Punch, Low Contrast, Bass Shaper,
-  Transient/Sustain mode
+- Phase 2 (in progress, see "Phase 2" below): Dynamic EQ, Match EQ, Tone Balance, Definition, Smoother, Punch,
+  Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
 - Phase 3: Vintage modules, Unlimiter, rule-based Assistant, Track Referencing (from RefMatch), and one plug-in per
   module ("PureSheen EQ", "PureSheen Maximizer", ...)
 - Phase 4: MCP bridge
@@ -50,12 +50,21 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
   Equalizer.h/.cpp (+ EqDesign.cpp), Dynamics.h/.cpp, Imager.h/.cpp, Exciter.h/.cpp, Maximizer.h/.cpp (+ more
   files if needed), Dither.h/.cpp
   Chain.h/.cpp            the chain host: order, slots (channel modes, power, solo, delta, difference meters), I/O
-                          gain, gain match, mono / swap, bypass, dither, meters, FIFOs, latency
+                          gain, gain match, mono / swap, bypass, dither, meters, FIFOs, latency; T/S twins
+  (phase 2)
+  TransientSplit.h/.cpp   ps::TransientSplitter: the Transient/Sustain split of the chain (real)
+  SpectralEngine.h/.cpp   residual STFT engine shared by Tone Balance, Definition, Smoother (real)
+  Quadrature.h/.cpp       ripple-free envelope for Punch / Bass Shaper (functional fallback; real design: dsp-punch)
+  DynamicEq, MatchEq (+ MatchAnalysis), ToneBalance, Definition, Smoother, Punch, LowContrast, BassShaper .h/.cpp
+                          one contract header per module + a passthrough stub .cpp (first line "// STUB (contracts)")
 src/plugin/               PluginProcessor.h/.cpp (+ UndoHistory.cpp, Presets.cpp, FactoryPresets.cpp)
 src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, ModulePanel, ModulePanels),
                           PluginEditor, HeaderBar, ChainStrip, IoPanel, DitherPanel, HelpOverlay,
                           EqPanel, DynamicsPanel, ImagerPanel, ExciterPanel, MaximizerPanel, MultibandDisplay
-tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators)
+                          (phase 2) DynamicEqPanel, MatchEqPanel, ToneBalancePanel, DefinitionPanel, SmootherPanel,
+                          PunchPanel, LowContrastPanel, BassShaperPanel: GenericModulePanel stubs for now
+tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators);
+                          ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
                           AllocationTracking), snapshot <dir> (editor PNGs), render <in.wav> <out.wav>
 resources/fonts           Inter 400/600/700 (PureSheenBinary::Inter400_ttf ...)
@@ -114,7 +123,9 @@ out/                      snapshots, renders, measurements (gitignored)
   `Chain::getLatencySamples()` changes, the processor calls `setLatencySamples` on the message thread (async update).
 - The **UI** reads the meters (AtomicFloat) and pulls audio from the chain's FIFOs (input, output, module pre / post
   of the selected module). It does its FFTs on the message thread (`ps::ui::SpectrumAnalyser`, 30 Hz).
-- **Worker threads:** the EQ's FIR designer, one per EQ, owned by the module.
+- **Worker threads:** the EQ's FIR designer, one per EQ, owned by the module. Phase 2: the Dynamic EQ (Digital
+  kernels) and Match EQ (kernels + capture analysis) own one each; the processor owns the Match EQ file loader thread.
+  T/S twins are full instances, so they own their own workers.
 
 ## Parameters
 
@@ -122,6 +133,95 @@ out/                      snapshots, renders, measurements (gitignored)
 by id, and presets store it by id. The ID scheme is documented in `Params.h`.
 
 The table is append-only: never rename, reorder or remove an entry once released. A new phase appends at the end.
+- 0.1.1 = the first 479 entries (`ps::kNumParams_0_1_1`, last "dith.dc"); `tests/ParamCompatTests.cpp` checks their
+  count and an FNV fingerprint of every field (id, name, kind, range, default, skew, step, choices, unit, module).
+  The processor gives them APVTS version hint 1, the phase 2 appendix version hint 2.
+- Phase 2 appendix (after "dith.dc"): the Core T/S additions in ModuleType order (eq1 / eq2 `.ts.sens` / `.ts.len`,
+  the Imager's channel slot `img.chMode` / `.a.on` / `.b.on` / `.link` / `.ts.*` and its set B `img.b.b<n>.width`,
+  `img.b.stz.*`, `img.b.rec.*`, then `exc.ts.on`, `exc.ts.*`), then every phase 2 module in ModuleType order (slot
+  params, `.ts.*` when it offers T/S, then its own params in struct order). ParamTable.cpp builds the Core part with
+  the channel-mode lists as released (`releasedChannelModes`) and the appendix with the final ones.
+- The Exciter's released `exc.chMode` choice list { Stereo, Mid/Side } is kept (so 0.1.x host automation keeps its
+  meaning); its T/S mode is the appended switch `exc.ts.on` (on = T/S, overrides exc.chMode).
+  `ps::channelModeChoices` / `ps::channelModeParamValues` hide this from the UI and the importer.
+- Saved states and presets store values by id and the chain by id prefix, so 0.1.x states load unchanged (every
+  phase 2 parameter at its neutral default; selftest "state: a 0.1.x state ...").
+
+## Transient/Sustain channel mode (phase 2, implemented in the chain host)
+
+Per module, like M/S: the slot splits its own input. `ps::TransientSplitter` (TransientSplit.h) gives a transient
+part T and a sustain part S, both stereo, with T + S == input delayed by L (S is computed as x_L - T: exact up to one
+float rounding, < -135 dBFS; bit-exact where the mask is 0). The mask is per band (complementary 4-band split at 120 /
+800 / 5000 Hz, no all-pass phase), stereo-linked (the image of T is kept), from the ratio of a fast and a slow
+envelope with a baseline tracker. Controls: `<prefix>.ts.sens` (0..100 %, default 50) and `<prefix>.ts.len`
+(5..100 ms, default 20), our own addition (the T/S popover behind the gear in the channel tabs). L = 64 samples per
+48 kHz family (1.33..1.45 ms).
+
+Every type that offers T/S has a second instance (the "twin", `Chain::getModule (type, 1)`, `Module::getParamSet()
+== 1`): instance A processes T as Stereo with set A, the twin processes S as Stereo with set B; both get the same
+parameter array every block. Rule for modules (Module.h): with paramSet 1 read set B for both channels (the Core EQ,
+Exciter and Imager copy set B over set A in setParams); latency only from shared params; no shared mutable state.
+- Slot latency in T/S = L + max (latency A, latency B) (the parts are padded to the common value).
+- Channel power (a.on = Transient, b.on = Sustain), channel solo, delta, band solo / audition (selected-set band solo
+  and audition go only to that instance, the other part is muted meanwhile), power and module solo work per part; every crossfade
+  toward "dry" uses the latency-aligned dry parts Td (T delayed) and Sd = dry - Td, so it reconstructs the input.
+- A channel-mode change that changes the slot latency also dips the slot output, global bypass and delta bus
+  (20 ms out, switch at silence, 20 ms in): no click from their alignment-delay jumps.
+- Meters: `IoMeters::moduleTsActivity` (mask activity, drives the glow of the Transient tab) and `moduleTsShareDb`
+  (transient energy share). `Chain::setTapPart` lets the module taps carry one part ("show the selected part").
+- Channel modes per module: EQ 1 / 2, Dynamic EQ, Match EQ: Stereo, M/S, L/R, T/S. Exciter, Tone Balance,
+  Definition, Smoother, Low Contrast: Stereo, M/S, T/S. Dynamics, Punch: Stereo, M/S. Imager: Stereo, T/S.
+  Maximizer, Bass Shaper: Stereo.
+- CPU: a slot in T/S runs its module twice (plus < 0.2 % for the splitter). Memory: every twin is prepared with the
+  chain (the Digital EQ preallocates its FIR sizes); measure before release, lazy preparation is the fallback.
+
+## Phase 2: modules, contracts and ownership
+
+| ModuleType | prefix | display name (short) | channel modes | params | DSP owner | panel owner |
+|---|---|---|---|---|---|---|
+| DynamicEq | deq | Dynamic EQ (Dyn EQ) | St, M/S, L/R, T/S | 190 | dsp-deq | ui-deq |
+| MatchEq | meq | Match EQ | St, M/S, L/R, T/S | 21 | dsp-meq | ui-meq |
+| ToneBalance | tbal | Tone Balance | St, M/S, T/S | 27 | dsp-tone | ui-spectral |
+| Definition | defn | Definition | St, M/S, T/S | 19 | dsp-defn | ui-spectral |
+| Smoother | smth | Smoother | St, M/S, T/S | 21 | dsp-smth | ui-spectral |
+| Punch | pnch | Punch | St, M/S | 33 | dsp-punch | ui-punch |
+| LowContrast | lowc | Low Contrast | St, M/S, T/S | 16 | dsp-lowc | ui-lowend |
+| BassShaper | bass | Bass Shaper | St | 13 | dsp-bass | ui-lowend |
+
+(params = slot params incl. `.ts.*` + module params; plus 22 Core T/S additions; 841 entries in all.)
+
+Contracts written in the contracts wave (headers are contracts, rule 1):
+- `Types.h` (ModuleTypes, DynEqShape / Direction / Sidechain, MatchPhase, ToneBalanceMode, ToneTarget, SmootherMode,
+  LowContrastMode, kPunchSyncFractions), `Params.h` (typed structs + read*Params, SlotParams ts fields, ImagerParams
+  setB, channel-mode helpers), `Module.h` (ProcessContext::paramSet, ModuleMonitor::soloRegion / learnRegion,
+  Module::setParamSet / getParamSet), `Chain.h` (twins, setTapPart, T/S meters).
+- One header per module (behaviour precise enough to implement and test, from the private phase 2 specs) with a
+  passthrough stub .cpp, plus `MatchAnalysis.h`, `SpectralEngine.h` (real), `Quadrature.h` (fallback),
+  `TransientSplit.h` (real).
+- `PluginProcessor.h`: Match EQ reference-file loading API (stub) and the "MatchEq" state child contract.
+- `ui/Widgets.h`: currentChannelMode / isDualChannelMode / channelSetName / channelModeShortLabel /
+  moduleForChannelSet; the header's channel-mode segments offer T/S, the tabs read "Transient | Sustain" and carry
+  the T/S options gear.
+- Each panel file `src/ui/<Module>Panel.h/.cpp` derives from GenericModulePanel for now; its owner replaces the body.
+
+Ownership for the next wave (only edit your files; ask the lead for contract changes):
+- dsp-deq: DynamicEq.h/.cpp (+ new files), tests/DynamicEqTests.cpp ("deq.")
+- dsp-meq: MatchEq.h/.cpp, MatchAnalysis.h/.cpp, CurveFir.h/.cpp (new), tests/MatchEqTests.cpp ("meq.")
+- dsp-tone: ToneBalance.h/.cpp, ToneTargets.cpp (new), tests/ToneBalanceTests.cpp ("tbal.")
+- dsp-defn: Definition.h/.cpp, tests/DefinitionTests.cpp ("defn.")
+- dsp-smth: Smoother.h/.cpp, tests/SmootherTests.cpp ("smth.")
+- dsp-punch: Punch.h/.cpp, Quadrature.h/.cpp, tests/PunchTests.cpp ("pnch."), tests/QuadratureTests.cpp ("quad.")
+- dsp-lowc: LowContrast.h/.cpp, tests/LowContrastTests.cpp ("lowc.")
+- dsp-bass: BassShaper.h/.cpp, tests/BassShaperTests.cpp ("bass.")
+- ui-deq: DynamicEqPanel.h/.cpp (+ DynamicEqDisplay.h/.cpp); ui-meq: MatchEqPanel.h/.cpp (+ MatchDisplay);
+  ui-spectral: ToneBalancePanel, DefinitionPanel, SmootherPanel (+ SpectralDisplay.h/.cpp);
+  ui-punch: PunchPanel; ui-lowend: LowContrastPanel, BassShaperPanel (+ LowRegionDisplay, BassScope)
+- plugin-meq: the Match EQ parts of PluginProcessor.cpp (state child, snapshots / presets, undo, loader thread) in a
+  new src/plugin/MatchEqState.cpp where possible
+- ui-ts: factory presets with T/S (FactoryPresets.cpp); Imager set B editing and linked edits are implemented
+- SpectralEngine.*, TransientSplit.*, Chain.*, ParamTable.cpp, ModulePanel.cpp, ChainStrip.cpp: lead (contracts);
+  module owners report needed changes. Factory presets of the phase 2 modules: their DSP owners propose them, the
+  lead merges them into FactoryPresets.cpp.
 
 ## Verification (definition of done for Core)
 
@@ -149,6 +249,23 @@ presets, learn), the editor with a dedicated panel per module, and the dev tool.
 - Renders of a synthesized 30 s premaster (-20.2 LUFS, -4 dBFS peak) through the default chain (exact null) and every
   global factory preset: true peak within 0.02 dB under the Output Level, no NaN, no clicks found.
   Reproduce: `python tools/audio/make_test_mix.py test_audio/int_mix.wav`, then `sh tools/audio/render_presets.sh`.
+
+## Status (phase 2 contracts wave)
+
+Done: the contracts above; the Transient/Sustain mode for real (splitter, twins, latency, monitors, UI segments /
+tabs / options popover) on EQ 1 / 2, Exciter and Imager (and the phase 2 modules once they honour paramSet); the
+shared SpectralEngine; the eight modules as passthrough stubs registered everywhere (chain, Add menu, state,
+presets, undo, strip with up to 14 tiles, colours, help, panels, selftest, snapshots). Verification on build-p2c:
+CoreTests 224 test cases 0 failed; `PureSheenDev selftest` 208 checks 0 failed; snapshots of every new panel, the
+  strip with all 14 modules at 980x600 / 1180x720 / 1800x1100 and EQ 1 / Exciter in T/S; pluginval strictness 5
+(VST3): SUCCESS. Not done: the module DSP (stubs), dedicated phase 2 panels, phase 2
+factory presets, the Match EQ state / file loader (stub API), the preset importer.
+
+Phase 2 adversarial review: corrected monitor transport and mode routing, selected-part band solo and bypassed
+part taps, latency-switch fades on global bypass / upstream delta, Imager set B controls, and T/S popover lifetime.
+Clarified the Dynamic EQ timing, Bass Shaper peak-stage ordering and Smoother empty-neighbour contracts.
+Verification: CoreTests 229 cases / 0 failed; selftest 213 passed / 0 failed; 0 compiler warnings in our sources.
+An independent compiled comparison against the released HEAD table found all first 479 parameter entries unchanged.
 
 Known limitations:
 - EQ: no Notch / Band Pass / Tilt shapes yet (a narrow Bell at -30 dB acts as a notch). Digital mode designs on a

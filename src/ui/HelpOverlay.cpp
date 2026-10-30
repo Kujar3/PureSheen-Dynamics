@@ -69,9 +69,27 @@ struct HelpOverlay::Impl
             "**A B C D** - store up to four versions of your master and click between them to compare.",
             "**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to reset, right-click to type a value.",
             "**Mid / Side** - Mid is the centre (vocal, kick, bass), Side is the edges (width, reverb, room).",
+            "**T/S** - Transient / Sustain: the hits and what rings on after them get their own settings.",
             "**Integrated LUFS** - the loudness of the whole song. Streaming plays songs at about -14 LUFS.",
             "**True peak** - keep a finished master below **-1 dBTP** so it does not distort as MP3 or on streaming.",
             "**Dither** - only when you export at a lower bit depth (16 bit for CD), as the very last step.",
+        };
+
+        moreModules = {
+            { "**Dynamic EQ** - EQ bands that only move when a sound gets too loud (or too quiet).",
+              moduleColour (ps::ModuleType::DynamicEq) },
+            { "**Match EQ** - makes the tone of your song follow a reference you capture or load.",
+              moduleColour (ps::ModuleType::MatchEq) },
+            { "**Tone Balance** - keeps the tonal balance close to a genre target as the song goes on.",
+              moduleColour (ps::ModuleType::ToneBalance) },
+            { "**Definition** - brings out detail and openness above 300 Hz.", moduleColour (ps::ModuleType::Definition) },
+            { "**Smoother** - softens harsh, ringing peaks in a range you choose.", moduleColour (ps::ModuleType::Smoother) },
+            { "**Punch** - makes hits stand out more, or sit back, in up to four bands.",
+              moduleColour (ps::ModuleType::Punch) },
+            { "**Low Contrast** - tightens the low end (kick against bass) or makes it rounder.",
+              moduleColour (ps::ModuleType::LowContrast) },
+            { "**Bass Shaper** - level, punch, sustain and peaks of everything below a cutoff.",
+              moduleColour (ps::ModuleType::BassShaper) },
         };
 
         close.roundBackground = true;
@@ -123,14 +141,38 @@ struct HelpOverlay::Impl
             tipBlocks.push_back (std::move (b));
         }
 
-        return juce::jmax (leftBottom, y) + kPad - 10.0f;
+        // More modules (click +): under the steps (the left column), or under the tips when that is clearly shorter
+        moreBlocks.clear();
+        const bool left = leftBottom <= y + 40.0f;
+        const float colX = left ? kPad : rightX, colW = left ? leftW : rightW;
+        float my = (left ? leftBottom : y) + 8.0f;
+        moreTitleX = colX;
+        moreTitleY = my;
+        my += 22.0f;
+        for (const auto& m : moreModules)
+        {
+            Block b;
+            b.layout.createLayout (richText (m.text, size - 1.0f, body, strong), colW - 14.0f);
+            b.area = { colX + 14.0f, my, colW - 14.0f, b.layout.getHeight() };
+            my = b.area.getBottom() + 4.0f;
+            moreBlocks.push_back (std::move (b));
+        }
+
+        return juce::jmax (left ? my : leftBottom, left ? y : my) + kPad - 10.0f;
     }
+
+    struct More
+    {
+        juce::String text;
+        juce::Colour colour;
+    };
 
     std::vector<Step> steps;
     juce::StringArray tips;
-    std::vector<Block> stepBlocks, tipBlocks;
+    std::vector<More> moreModules;
+    std::vector<Block> stepBlocks, tipBlocks, moreBlocks;
     std::vector<float> stepTitleYs;
-    float tipsTitleY = 0.0f, rightX = 0.0f;
+    float tipsTitleY = 0.0f, rightX = 0.0f, moreTitleX = 0.0f, moreTitleY = 0.0f;
     juce::Rectangle<float> card;
     IconButton close { "Close help", IconButton::Icon::close };
 };
@@ -215,6 +257,17 @@ void HelpOverlay::paint (juce::Graphics& g)
     {
         g.setColour (Colours::accent.withAlpha (0.8f));
         g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre ({ d.rightX + 3.0f, b.area.getY() + 8.0f }));
+        b.layout.draw (g, b.area);
+    }
+
+    drawSectionTitle (g, "More modules (click + in the strip)",
+                      juce::Rectangle<float> (d.moreTitleX, d.moreTitleY - 2.0f, 320.0f, 18.0f).toNearestInt());
+
+    for (size_t i = 0; i < d.moreBlocks.size() && i < d.moreModules.size(); ++i)
+    {
+        const auto& b = d.moreBlocks[i];
+        g.setColour (d.moreModules[i].colour);
+        g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ d.moreTitleX + 3.0f, b.area.getY() + 7.5f }));
         b.layout.draw (g, b.area);
     }
 }
