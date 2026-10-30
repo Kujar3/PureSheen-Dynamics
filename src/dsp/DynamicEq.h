@@ -32,15 +32,22 @@
 // Analog mode: zero latency (+ lookahead): per band a matched SVF cascade redesigned at a control rate (32 samples at
 //   <= 50 kHz, 64 at <= 100 kHz, 128 above), parameters interpolated per sample in between; frequency / Q smoothed
 //   (5 ms); at most 16 section designs per tick (round robin). Off bands are skipped; a band at exactly 0 dB is exact
-//   unity. On / off and shape changes crossfade that band over 15 ms.
+//   unity. On / off and shape changes crossfade that band over 15 ms. The ticks run on a fixed sample grid (the output
+//   does not depend on the host's block sizes): each tick moves the filter to the band gain reached at the end of the
+//   previous tick, i.e. the audio path follows the gain with one tick (0.67 ms at 48 kHz) of control lag.
 // Digital mode: linear phase. N = firSize (x2 at 88.2/96 kHz, x4 above), D = N / 2, partition P = N / 16,
 //   Dt = D + P. Let la = round (lookaheadMs * fs / 1000), xLa (n) = x (n - la). Then
 //   y (n) = x (n - Dt - la) + sum_b c_b (n) (w_b * xLa)(n), including the convolver's partition delay P,
 //   c_b (n) = 10^(gain_b (n - Dt) / 20) - 1. The gain stream is delayed by Dt, so it leads its corresponding audio
-//   by exactly la (as in Analog mode); do not subtract la from the gain delay as well.
+//   by exactly la (as in Analog mode); do not subtract la from the gain delay as well. gain_b here is the same
+//   control-rate gain as in Analog mode (c at the tick ends, linear in between), so both modes move identically.
 //   w_b is the band's unit kernel, designed on the module's worker thread at its extreme gain g_ref:
-//   W_b = (|H_b,ref| - 1) / (10^(g_ref / 20) - 1), with zero kernel when g_ref is zero. Mode / FIR size switches
-//   fade out 4 ms, select already-prepared buffers / convolvers, then fade in (never allocate in setParams/process).
+//   W_b = (|H_b,ref| - 1) / (10^(g_ref / 20) - 1), with zero kernel when g_ref is zero; g_ref = the rest or the
+//   full-trigger gain, whichever is larger in magnitude. Mode / FIR size switches fade out 4 ms, select
+//   already-prepared buffers / convolvers, then fade in (never allocate in setParams/process). prepare() prepares the
+//   convolvers of the current FIR size; the worker prepares another size the first time it is requested (until then
+//   the output is the exact delayed input at the new latency). A band whose convolver starts (enabled, mode / size /
+//   channel-mode switch) joins after N + P samples of input history and its kernel, fading in over 15 ms.
 // Lookahead (0..10 ms): the audio path is delayed, the detector is not. Latency = la (Analog) or Dt + la (Digital);
 //   constant while only band parameters move. Lookahead changes crossfade delay taps over 10 ms and update latency
 //   to the new whole-sample delay; latency may also change on mode / FIR size switches.

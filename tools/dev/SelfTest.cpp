@@ -4,6 +4,7 @@
 #include "dsp/Maximizer.h"
 #include "dsp/TransientSplit.h"
 #include "plugin/FactoryPresets.h"
+#include "plugin/MatchEqState.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/PluginState.h"
 #include "ui/ImagerPanel.h"
@@ -2014,6 +2015,10 @@ int runSelfTest()
     testMonitoring();
     testTsPanelBindings();
     testThreads();
+
+    std::cout << "\n-- Match EQ state, undo and file loader\n";
+    const int matchFailures = psplug::runMatchEqStateTests();
+    check (matchFailures == 0, "match eq: state, undo and file loader checks", str (matchFailures, " failed"));
 
     std::cout << "\n-- Summary checks\n";
     std::string unknown;

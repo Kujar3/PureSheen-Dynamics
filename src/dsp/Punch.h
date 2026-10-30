@@ -11,7 +11,8 @@
 //
 //   in (2 ch, module domain) -> ps::Crossover (bands, xover, type) -> per band b, channel c:
 //     detector d = stereo link (Stereo mode) ? the band's mid (L + R) / 2 : the band channel itself
-//     P   = QuadratureEnvelope (d) (ripple-free power)
+//     P   = max (QuadratureEnvelope (d), d^2 / 4) (ripple-free power; the quarter of the instantaneous power only
+//           takes over on fast onsets, where the all-pass chains' group delay lags the quadrature power by > 6 dB)
 //     As  = one-pole (P; attack tau_a, release tau_r), Al = one-pole (P; tau_l)          (double)
 //     rel = 10 log10 ((As + 1e-9) / (Al + 1e-9)), clamped to [-40, +24] dB
 //     k   = band amount / 100 x amount / 100   (20 ms linear smoothing per sample)
@@ -31,6 +32,17 @@
 // all-pass sum; Digital -> the input delayed.
 // Monitors: soloBand = that band only (processed). Learn (crossovers) is the processor's learnCrossovers. Delta: the
 // slot's.
+// (dsp-punch) Structural changes (prepare / reset (), band count, crossover type, channel mode) "settle": the effect
+// fades out (10 ms; a band-count change reaches the crossover only then), the long envelopes are held equal to the
+// short ones for 30 ms (rel = 0 while the detectors warm up), then the effect fades in (20 ms). Band on / off ramps
+// over 20 ms, band solo over 10 ms, Stereo Link crossfades the complete gains (including make-up) over 20 ms.
+// Band-count changes apply at the exact sample boundary after the fade; while soloing, the monitor also fades out
+// for 10 ms before band membership changes and back in for 10 ms afterwards. reset () keeps the
+// learned auto-gain make-up. Meters in Stereo: unlinked, gainDb is the channel with the larger |gain| and the micro
+// meters the larger of the two channels; the gain meters show the effective gain (0 dB for a band that is off).
+// Measured (tests/PunchTests.cpp): step -30 -> -10 dBFS at amount +50, E = 100 ms: peak +7.6 dB 1.5 ms after the
+// step, +1.0 dB at 100 ms, +0.11 dB at 300 ms; steady 40 Hz / 1 kHz sines within 0.002 dB, THD+N -82 / -107 dB at
+// E = 10 ms, amount +100. CPU (48 kHz stereo): 1 band ~175x realtime, 4 bands Analog M/S ~94x.
 namespace ps
 {
 struct PunchMeters
@@ -61,6 +73,8 @@ public:
     int getLatencySamples() const noexcept override;
 
     const PunchMeters& getMeters() const noexcept;
+    // (added by dsp-punch) Non-const access for the UI: gainMinDb / gainMaxDb are read with exchange (+200 / -200).
+    PunchMeters& getMeters() noexcept;
 
 private:
     struct Impl;

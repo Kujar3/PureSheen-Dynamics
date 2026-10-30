@@ -2,6 +2,7 @@
 
 #include "dsp/Maximizer.h"
 #include "plugin/FactoryPresets.h"
+#include "plugin/MatchEqState.h"   // (phase 2) Match EQ state child, spectrum undo, reference-file loader
 #include "plugin/PluginState.h"
 #include "plugin/Presets.h"
 #include "plugin/UndoHistory.h"
@@ -226,6 +227,11 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         history.reset (capture());
         presetBaseline = capture();
 
+        // ---- Match EQ (MatchEqState.cpp)
+        matchEq = std::make_unique<psplug::MatchEqState> (chain);
+        matchEq->historyReset (history);
+        // ----
+
         startTimerHz (30);
     }
 
@@ -283,6 +289,35 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     };
     std::array<LearnSpectrum, ps::kNumModuleTypes> learnSpectra;
     bool maxLearnActive = false;
+
+    // ---- Match EQ (MatchEqState.cpp): spectra in the state / snapshots / presets, spectrum undo, file loader.
+    // Declared after `chain`, so it (and its loader thread) is destroyed first.
+    std::unique_ptr<psplug::MatchEqState> matchEq;
+
+    // A spectrum change is an undo step even when no parameter changed.
+    void recordMatchEq (const juce::String& description)
+    {
+        history.record (description, capture(), -1, nowMs());
+        matchEq->historyRecorded (history);
+        {
+            const juce::ScopedLock sl (extrasLock);
+            activeSnapshot = -1;
+        }
+        owner.sendChangeMessage();
+    }
+
+    // Records a pending spectrum change (capture stop, Clear, loaded file) as its own step.
+    void matchEqHousekeeping()
+    {
+        juce::String description;
+        if (matchEq != nullptr && matchEq->checkChange (description))
+        {
+            commitGesture (true);
+            matchEq->acceptChange();
+            recordMatchEq (description);
+        }
+    }
+    // ----
 
     ps::Maximizer& maximizer() noexcept
     {
@@ -359,6 +394,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (psplug::sameState (s, history.current().state))
             return false;
         history.record (description, s, singleParam, nowMs());
+        matchEq->historyRecorded (history);   // Match EQ: tag the step with the spectra
         {
             const juce::ScopedLock sl (extrasLock);
             activeSnapshot = -1;
@@ -404,11 +440,14 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
 
     void goTo (int index)
     {
+        const juce::ScopedLock editSl (editLock);   // Match EQ: restore parameters and spectra as one host-save transaction
         commitGesture (true);
+        matchEqHousekeeping();   // Match EQ: a pending spectrum change becomes its own step first
         if (index < 0 || index >= history.size() || index == history.getPosition())
             return;
         history.setPosition (index);
         applyState (history.current().state, true);
+        matchEq->applyHistory (history);   // Match EQ: the step's spectra
         history.updateCurrentState (capture());
         {
             const juce::ScopedLock sl (extrasLock);
@@ -421,6 +460,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // Presets
     bool applyPreset (const psplug::PresetData& d)
     {
+        const juce::ScopedLock editSl (editLock);   // Match EQ: keep preset parameters paired with their reference spectra
+        matchEqHousekeeping();   // Match EQ: preserve pending spectrum edits before replacing the preset
         commitGesture (true);
         const int scope = d.scope;
         applyValues (d.values, [scope] (int i) { return psplug::isInPresetScope (i, scope); });
@@ -429,7 +470,9 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
 
         const auto description = scope < 0 ? "Loaded preset " + d.name
                                             : "Loaded " + psplug::moduleName ((ps::ModuleType) scope) + " preset " + d.name;
-        record (description);
+        const bool spectraChanged = matchEq->applyPendingPreset();   // Match EQ: the preset's reference
+        if (! record (description) && spectraChanged)
+            recordMatchEq (description);
 
         if (scope < 0)
         {
@@ -437,6 +480,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
             presetName = d.name;
             presetBaseline = capture();
             presetForcedModified = false;
+            matchEq->setPresetBaseline();   // Match EQ: global presets also baseline their reference spectra
         }
         owner.sendChangeMessage();
         return true;
@@ -446,6 +490,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     void housekeeping (bool force)
     {
         const juce::ScopedLock sl (editLock);
+        matchEqHousekeeping();   // Match EQ: finished file loads, capture stops, clears
         commitGesture (force);
         updateLatency();
 
@@ -624,6 +669,7 @@ juce::AudioProcessorParameter* PureSheenProcessor::getBypassParameter() const
 void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     auto& d = *impl;
+    const juce::ScopedLock editSl (d.editLock);   // Match EQ: copy parameters and live spectra from the same transaction
     juce::ValueTree state (kStateTag);
     state.setProperty (kVersion, kStateVersion, nullptr);
     state.appendChild (d.apvts.copyState(), nullptr);
@@ -641,6 +687,8 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
             {
                 auto s = psplug::fullStateToTree (kSnapshotTag, *d.snapshots[(size_t) i]);
                 s.setProperty (kSlot, i, nullptr);
+                if (auto meq = d.matchEq->snapshotTree (i); meq.isValid())   // Match EQ spectra of the snapshot
+                    s.appendChild (meq, nullptr);
                 snaps.appendChild (s, nullptr);
             }
         snaps.setProperty (kActiveSnapshot, d.activeSnapshot, nullptr);
@@ -654,7 +702,11 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
         state.setProperty (kPresetName, d.presetName, nullptr);
         state.setProperty (kPresetModified, d.presetForcedModified
                                                 || ! psplug::sameState (d.capture(), d.presetBaseline), nullptr);
+        if (d.matchEq->isPresetModified())   // Match EQ: spectrum-only edits also modify the preset
+            state.setProperty (kPresetModified, true, nullptr);
     }
+
+    state.appendChild (d.matchEq->createStateTree(), nullptr);   // Match EQ: "MatchEq" child
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
@@ -710,9 +762,12 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
         d.applying.store (was);
     }
     d.setOrder (chainTree.isValid() ? psplug::chainFromTree (chainTree) : psplug::defaultChain());
+    // Match EQ: the spectra (a state without the child, e.g. 0.1.x, clears them)
+    d.matchEq->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("MatchEq") : juce::ValueTree());
 
     {
         const juce::ScopedLock sl (d.extrasLock);
+        d.matchEq->clearAllSnapshots();   // Match EQ: publish snapshot parameters and spectra under the same lock
         d.uiState = juce::ValueTree (kOptionsTag);
         if (optionsTree.isValid())
             d.uiState.copyPropertiesAndChildrenFrom (optionsTree, nullptr);
@@ -727,7 +782,10 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
                 const int slot = (int) s.getProperty (kSlot, -1);
                 psplug::FullState fs;
                 if (s.hasType (kSnapshotTag) && slot >= 0 && slot < kNumSnapshots && psplug::fullStateFromTree (s, fs))
+                {
                     d.snapshots[(size_t) slot] = std::move (fs);
+                    d.matchEq->restoreSnapshotTree (slot, s.getChildWithName ("MatchEq"));   // Match EQ
+                }
             }
             const int active = (int) snapsTree.getProperty (kActiveSnapshot, -1);
             if (active >= 0 && active < kNumSnapshots && d.snapshots[(size_t) active].has_value())
@@ -747,6 +805,7 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
 
     d.presetBaseline = d.capture();
     d.history.reset (d.capture());
+    d.matchEq->historyReset (d.history);   // Match EQ
     sendChangeMessage();
 }
 
@@ -1012,12 +1071,16 @@ bool PureSheenProcessor::canRedo() const
 
 void PureSheenProcessor::undo()
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: housekeeping and the restored spectrum set stay together
+    impl->matchEqHousekeeping();   // Match EQ: record pending spectra before calculating the relative target
     impl->commitGesture (true);
     impl->goTo (impl->history.getPosition() - 1);
 }
 
 void PureSheenProcessor::redo()
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: housekeeping and the restored spectrum set stay together
+    impl->matchEqHousekeeping();   // Match EQ: a pending spectrum edit discards the old redo branch
     impl->commitGesture (true);
     impl->goTo (impl->history.getPosition() + 1);
 }
@@ -1028,6 +1091,7 @@ void PureSheenProcessor::clearHistory()
 {
     impl->commitGesture (true);
     impl->history.reset (impl->capture());
+    impl->matchEq->historyReset (impl->history);   // Match EQ
     sendChangeMessage();
 }
 
@@ -1039,6 +1103,7 @@ void PureSheenProcessor::setHistoryDepth (int maxEntries)
 
 void PureSheenProcessor::storeSnapshot (int slot)
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: a host state restore cannot split the stored parameter/spectrum pair
     if (slot < 0 || slot >= kNumSnapshots)
         return;
     impl->commitGesture (true);
@@ -1046,12 +1111,14 @@ void PureSheenProcessor::storeSnapshot (int slot)
         const juce::ScopedLock sl (impl->extrasLock);
         impl->snapshots[(size_t) slot] = impl->capture();
         impl->activeSnapshot = slot;
+        impl->matchEq->storeSnapshot (slot);   // Match EQ: keep spectra atomic with the snapshot parameters
     }
     sendChangeMessage();
 }
 
 void PureSheenProcessor::storeSnapshotFromHistory (int slot, int historyIndex)
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: hold the history entry and its spectra stable while storing
     if (slot < 0 || slot >= kNumSnapshots)
         return;
     impl->commitGesture (true);
@@ -1061,15 +1128,18 @@ void PureSheenProcessor::storeSnapshotFromHistory (int slot, int historyIndex)
         const juce::ScopedLock sl (impl->extrasLock);
         impl->snapshots[(size_t) slot] = impl->history[historyIndex].state;
         impl->activeSnapshot = historyIndex == impl->history.getPosition() ? slot : -1;
+        impl->matchEq->storeSnapshotFromHistory (slot, impl->history, historyIndex);   // Match EQ
     }
     sendChangeMessage();
 }
 
 void PureSheenProcessor::recallSnapshot (int slot)
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: host saves see a complete snapshot recall
     if (! hasSnapshot (slot))
         return;
     auto& d = *impl;
+    d.matchEqHousekeeping();   // Match EQ: retain the spectra being replaced so recall can be undone
     d.commitGesture (true);
     psplug::FullState s;
     {
@@ -1077,7 +1147,9 @@ void PureSheenProcessor::recallSnapshot (int slot)
         s = *d.snapshots[(size_t) slot];
     }
     d.applyState (s, true);
-    d.record ("Recalled snapshot " + slotName (slot));
+    const bool spectraChanged = d.matchEq->recallSnapshot (slot);   // Match EQ
+    if (! d.record ("Recalled snapshot " + slotName (slot)) && spectraChanged)
+        d.recordMatchEq ("Recalled snapshot " + slotName (slot));
     {
         const juce::ScopedLock sl (d.extrasLock);
         d.activeSnapshot = slot;
@@ -1095,6 +1167,7 @@ bool PureSheenProcessor::hasSnapshot (int slot) const
 
 void PureSheenProcessor::clearSnapshot (int slot)
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: serialize snapshot removal with compound recalls/restores
     if (slot < 0 || slot >= kNumSnapshots)
         return;
     {
@@ -1102,6 +1175,7 @@ void PureSheenProcessor::clearSnapshot (int slot)
         impl->snapshots[(size_t) slot].reset();
         if (impl->activeSnapshot == slot)
             impl->activeSnapshot = -1;
+        impl->matchEq->clearSnapshot (slot);   // Match EQ: clear parameters and spectra together
     }
     sendChangeMessage();
 }
@@ -1178,11 +1252,13 @@ bool PureSheenProcessor::loadPreset (int scope, const PresetInfo& info)
         data.name = info.name.isNotEmpty() ? info.name : data.name;
     }
 
+    impl->matchEq->beginPresetLoad (scope, info.factory, info.name, info.file);   // Match EQ: its reference spectra
     return impl->applyPreset (data);
 }
 
 bool PureSheenProcessor::savePreset (int scope, const juce::String& name, const juce::String& category)
 {
+    const juce::ScopedLock editSl (impl->editLock);   // Match EQ: save matching parameters and references during host state restores
     if (scope >= ps::kNumModuleTypes)
         return false;
     scope = scope < 0 ? -1 : scope;
@@ -1208,7 +1284,10 @@ bool PureSheenProcessor::savePreset (int scope, const juce::String& name, const 
     data.order = current.order;
     data.values = current.values;
 
-    if (! psplug::writePresetFile (folder.getChildFile (cleanName + psplug::kPresetExtension), data))
+    const auto presetFile = folder.getChildFile (cleanName + psplug::kPresetExtension);
+    if (! psplug::writePresetFile (presetFile, data))
+        return false;
+    if (! d.matchEq->appendToPresetFile (presetFile, scope))   // Match EQ: report failure to save the references
         return false;
 
     if (scope < 0)
@@ -1217,6 +1296,7 @@ bool PureSheenProcessor::savePreset (int scope, const juce::String& name, const 
         d.presetName = cleanName;
         d.presetBaseline = current;
         d.presetForcedModified = false;
+        d.matchEq->setPresetBaseline();   // Match EQ: baseline the references saved in this global preset
     }
     sendChangeMessage();
     return true;
@@ -1242,6 +1322,8 @@ juce::String PureSheenProcessor::getCurrentPresetName() const
 bool PureSheenProcessor::isPresetModified() const
 {
     const juce::ScopedLock sl (impl->extrasLock);
+    if (impl->matchEq->isPresetModified())   // Match EQ: references are part of global presets
+        return true;
     return impl->presetForcedModified || ! psplug::sameState (impl->capture(), impl->presetBaseline);
 }
 
@@ -1314,8 +1396,12 @@ juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 }
 
 //==============================================================================
-// (phase 2) Match EQ reference from a file. STUB (contracts): replaced by plugin (Match EQ state + loader thread).
-bool PureSheenProcessor::startMatchReferenceFile (const juce::File&, int) { return false; }
-void PureSheenProcessor::cancelMatchReferenceFile() {}
-float PureSheenProcessor::getMatchReferenceFileProgress() const { return -1.0f; }
-juce::String PureSheenProcessor::getMatchReferenceFileError() const { return "Loading a reference file is not available yet"; }
+// (phase 2) Match EQ reference from a file: the loader thread lives in MatchEqState.cpp; housekeeping (30 Hz timer /
+// flushPendingChanges) applies the result and records the undo step.
+bool PureSheenProcessor::startMatchReferenceFile (const juce::File& file, int part)
+{
+    return impl->matchEq->startFile (file, part);
+}
+void PureSheenProcessor::cancelMatchReferenceFile() { impl->matchEq->cancelFile(); }
+float PureSheenProcessor::getMatchReferenceFileProgress() const { return impl->matchEq->getFileProgress(); }
+juce::String PureSheenProcessor::getMatchReferenceFileError() const { return impl->matchEq->getFileError(); }

@@ -20,6 +20,10 @@
 //          rises slowly (150 ms); s x 10^(lift / 20). Character < 100: harmonics h = A (0.30 u^2 + 0.12 u^3)       |
 //          (1 - char / 100), u = lifted s / A, A = 10^(thr / 20), high-passed at 20 Hz, low-passed at 8 x cutoff,  |
 //          added to the shaped low part BEFORE peak control (order 3 on a band-limited input)                   |
+//          (dsp-bass: A is in fact A_eff = max (A, held peak of the lifted sustain: 30 ms hold, 300 ms release), so |
+//          |u| <= 1 for a sustain above the threshold; at or below the threshold this is the formula above.        |
+//          Pf's input is max (QuadratureEnvelope (m), m^2) (Ps keeps the quadrature power): the all-pass pair lags  |
+//          ~10 ms at 55 Hz; m^2 never exceeds a steady tone's squared envelope but rises within a quarter cycle)   |
 //        peak control (peak.on), lookahead L2 = round (1.5 ms fs): Clean = brickwall lookahead limiter on        |
 //          max (|L|, |R|) of the low part INCLUDING h (hold over L2, 50 ms release, box <= L2: <= threshold);    |
 //          Dirty = 4x minimum-phase oversampled clipper with a 0.5 dB knee; out = char x clean + (1 - char) x      |
@@ -31,7 +35,10 @@
 // parameter value (sections off still delay).
 // Neutral switch: when balance == 0, punch == 0 and both sections are off (after the smoothing settles) the crossover
 // runs 1 band (bit-exact passthrough, delayed by D), else 2 bands (the crossover's own 20 ms crossfade): the defaults
-// give output == input delayed by D exactly.
+// give output == input delayed by D exactly. (dsp-bass: instead of that crossfade, which nulls a tone at the cutoff
+// halfway through since the split's all-pass is -180 degrees there, the switch is phase-continuous: the delayed input
+// fades into an all-pass parked at 8 Hz, which glides to the cutoff and then fades into the processed signal;
+// 0.3-0.36 s to engage, the reverse after 250 ms of settled neutral controls; level within +-0.65 dB throughout.)
 // Stereo: bands stay stereo; mask and sustain gains from the mid (linked); the limiter from the channel maximum; the
 // clipper per channel. Meters work while every section is off (the UI's sweet-spot meters can be used alone).
 // Monitors: none of its own. Delta: the slot's.
@@ -67,6 +74,7 @@ public:
     int getLatencySamples() const noexcept override;
 
     const BassShaperMeters& getMeters() const noexcept;
+    BassShaperMeters& getMeters() noexcept;   // (added by dsp-bass) for the UI's exchange() of lowPeakDb
     // Oscilloscope data (single consumer: the panel). Per 16 output samples one pair: L = min, R = max of the
     // low-band output mid. And per 16 samples: L = transient mask w, R = low-band envelope (for colouring).
     StereoSampleFifo& getScopeFifo() noexcept;

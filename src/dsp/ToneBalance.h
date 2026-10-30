@@ -34,6 +34,28 @@
 // Neutral: Amount 0 (the default) -> exact null against the input delayed by N.
 // Monitors: none of its own (Delta and channel solo are the slot's).
 // T/S: the twin (getParamSet() == 1) reads set B for both channels (Module.h).
+// (dsp-tone) Implementation notes (details at the top of ToneBalance.cpp): the step-2 dB one-pole runs on a short
+// power pre-average (min (50 ms, tauS / 2)) so noise does not bias the few-bin low bands; step 7 is solved on the
+// amount-scaled, region-weighted, limited curve (neutral at every Amount; a region at 0 % gets no shift either);
+// step 8 limits scale with Amount (+9 x Amount / 100 dB at most); boosts also fade out in bands that are gated.
+// Silent frames hold detector history while control ramps and gain releases continue, so edits during a pause
+// have settled when audio resumes.
+// Measured behaviour (tests/ToneBalanceTests.cpp, 48 kHz, Amount 100, defaults unless noted):
+//   - Shape, Flat, pink noise with a +6 dB one-octave bell at 2 kHz: the output bump is <= 2.5 dB at Smoothing 50
+//     (2.1 measured) and <= 1.5 dB at Smoothing 0 (0.9); the correction reaches 63 % of its final value 0.5 .. 1.5 tauS
+//     after the bump appears (0.69 s at tauS 0.49 s). A +8 dB bass shelf on pink drops to < 2.5 dB (0.7).
+//   - Speed: 63 % time of a level step 4.6 s at Speed 0, 0.53 s at 50, 75 ms at 100.
+//   - Shape is loudness neutral within 0.5 LU (BS.1770 integrated; <= 0.27 LU on the test materials, including sparse
+//     tonal pairs). The solve uses each bin's interpolated dB gain before conversion to power.
+//   - Flat target on pink noise: every 1/3-octave band within +-0.75 dB (0.35).
+//   - Cut, Sensitivity 100: a steady sine 12 dB over its 1/12-octave band is cut >= 5 dB (5.4), an octave away < 1 dB;
+//     Sensitivity 50: >= 2 dB (2.8); Sensitivity 0: a peak is left alone until it is tol + 10 dB over the target.
+//   - Smoothing 0: a +10 dB 1/6-octave bump gets a >= 5 dB correction <= 0.5 octave wide at half depth (5.2, 0.37);
+//     Smoothing 100: >= 2 octaves wide (2.2).
+//   - Tame Transients (Cut, Cut Speed 30): >= 70 % of a hit's cut is in place in the first hop whose frame centre has
+//     passed the onset (0.75; 0.12 without Tame).
+//   - Steady pink, every mode: gain std at the display points < 0.5 dB over 2 s (0.36), output spectral flux <= 1.1 x
+//     the input's (1.01). CPU: ~170x realtime (Stereo), ~100x (M/S with Smoothing automated every block).
 namespace ps
 {
 // Display grid of the meters: kToneDisplayPoints log-spaced points 20 Hz .. 20 kHz.
@@ -50,8 +72,9 @@ struct ToneBalanceMeters
 {
     AtomicFloat gainDb[kNumChannelSets][kToneDisplayPoints];    // current correction at the display points
     AtomicFloat levelDb[kNumChannelSets][kToneDisplayPoints];   // S: the smoothed, octave-normalised measurement
+                                                                // (Cut: F, which the cut compares with T + o + margin)
     AtomicFloat targetOffsetDb[kNumChannelSets];                // o (the target floats with the program level)
-    AtomicFloat maxBoostDb[kNumChannelSets], maxCutDb[kNumChannelSets];
+    AtomicFloat maxBoostDb[kNumChannelSets], maxCutDb[kNumChannelSets];   // of the current curve: boost >= 0, cut <= 0
 };                                                              // Stereo / T/S: set B mirrors set A
 
 class ToneBalance final : public Module

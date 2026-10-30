@@ -82,4 +82,42 @@ double matchSmoothingOctaves (float smoothPercent) noexcept;
 void computeMatchCurve (const MatchSpectrum& reference, const MatchSpectrum& current, MatchChannel,
                         const MatchEqSetParams&, float* outDb /* kMatchPoints */) noexcept;
 
+//==============================================================================
+// (added, dsp-meq) Spectrum builders for spectra that do not come from a MatchAnalyser: an imported preset curve
+// (per-bin levels on its own linear grid), phase 3 Track Referencing, synthesised factory references. All are
+// allocation-free and deterministic.
+
+// Copies an ASCII tag into MatchSpectrum::source (truncated to 95 characters, zero terminated; null = empty).
+void setMatchSource (MatchSpectrum&, const char* tag) noexcept;
+
+// Maps per-bin levels on ANY ascending frequency grid onto one channel of the 540-point grid:
+//   hz[0..n): bin centre frequencies (strictly ascending, > 0), levelDb[0..n): power per bin in dB
+//   binWidthHz > 0: the levels are powers of bins that wide (converted to PSD: levelDb - 10 log10 (binWidthHz));
+//   binWidthHz == 0: the levels already are PSD values in dB re 1/Hz
+// Each grid point f_i gets the power average of the bins inside its cell [f_i 2^(-1/96), f_i 2^(1/96)); a cell with no
+// bin is interpolated linearly in log f (dB) between the neighbouring bins; points below hz[0] or above hz[n-1] get
+// no value (kMatchNoValue), as do levels at or below kMatchNoValue (and non-finite ones). Returns the number of grid
+// points that got a value. The spectrum's valid / seconds / sampleRate / source are left to the caller.
+int setMatchChannelFromBins (MatchSpectrum&, MatchChannel, const float* hz, const float* levelDb, int numBins,
+                             double binWidthHz) noexcept;
+
+// One curve for the whole spectrum (an imported single-curve snapshot): Left = Right = Mid = the curve, Side = no
+// value (so set B of an M/S match stays flat); valid when at least 2 grid points got a value; seconds = 0.
+void setMatchSpectrumFromBins (MatchSpectrum&, const float* hz, const float* levelDb, int numBins, double binWidthHz,
+                               const char* source) noexcept;
+
+// A synthesised reference: PSD slope in dB per octave re 1 kHz (pink noise = -3, brown = -6, white = 0), plus an
+// optional smooth low shelf (lowShelfDb at DC, half of it at lowShelfHz, 2nd-order shape). Left = Right = Mid, Side =
+// no value, valid, seconds 0, sampleRate 0. The absolute level is irrelevant (matching is level-normalised).
+MatchSpectrum makeMatchTiltSpectrum (double slopeDbPerOctave, double lowShelfDb = 0.0, double lowShelfHz = 60.0,
+                                     const char* source = "synth") noexcept;
+
+// (added, dsp-meq) Level normalisation term of computeMatchCurve step 3, for the UI (to draw both spectra at the same
+// loudness): 10 log10 sum K^2 (f) P (f) df over 20 Hz .. 20 kHz of the (smoothed) PSD in dB per grid point, using only
+// points where `mask` is null or mask[i] is true. Returns kMatchNoValue when no point has a value.
+double matchWeightedLevelDb (const float* psdDb /* kMatchPoints */, const bool* mask = nullptr) noexcept;
+
+// (added, dsp-meq) The grid cell width of point i in Hz: f_i (2^(1/96) - 2^(-1/96)) (integration weight).
+double matchGridCellHz (int index) noexcept;
+
 } // namespace ps
