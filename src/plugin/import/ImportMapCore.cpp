@@ -532,7 +532,7 @@ const std::vector<Rule>& exciterRules()
         { kNumBands,        Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         likely (4.0),                            "band count (older files)" },
         { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,          nullptr,         noDefault(),                             "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,          nullptr,         known (0.0),                             "band bypass" },
-        { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,          crossoverKind,   noDefault(),                             "crossover kind" },
+        { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,          crossoverKind,   likely (2.0),                            "crossover kind" },
         { kExcBandMode,     Act::Hook,         1, 4, Band::Same,   nullptr,          nullptr,          nullptr,         known (5.0),                             "band model" },
         { kExcModeAll,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         known (5.0),                             "model of every band" },
         { kExcAmount,       Act::Map,          1, 4, Band::Layout, "~.a.b#.drive",   "~.b.b#.drive",   nullptr,         known (0.0),                             "band drive" },
