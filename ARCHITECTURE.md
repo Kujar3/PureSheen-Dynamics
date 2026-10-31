@@ -362,7 +362,12 @@ menus, and the dev tool's `import` / `importkey` / `importtest` and `render --im
   module sections holding `<Param ElementID ParamID Value>` and `<ExtraBytes ElementID Data>`. Exactly one enabled
   module section = a single-module file; otherwise a whole chain in the order of the decoded chain blob (sections not
   in the chain hold stale settings and are never read). Modules we do not have are skipped and named in our words
-  (analog-style compressor / EQ / limiter, tape emulation, de-limiter, stem-separation EQ, mix rebalancing).
+  (analog-style compressor / EQ / limiter, tape emulation, de-limiter, stem-separation EQ, mix rebalancing). A
+  well-formed empty chain is refused as holding no modules (`ImportPlan::holdsNoModules`).
+- Module power (whole-chain files) comes from the section's own power switch (`kSectionBypassKey`, any module type,
+  >= 0.5 = off, absent = on; counted as an imported setting), handled once in `ModuleImport::run`. The chain entries'
+  flag byte is parsed but is not power (a test save proved it stays 0 for a switched-off module). Single-module files
+  ignore the switch (our module presets never carry power).
 - One table per module (`ImportMap*.cpp`): a row per foreign control with an action (Map / ChannelMode / Hook / Ignore
   / Unsupported), numbering, band layout, our set A / set B ids, a transform, the foreign default and a label in our
   words; optional prepare / finish hooks for cross-parameter rules (multiband layouts with gaps closed, version
@@ -391,9 +396,15 @@ checks run only through `PureSheenDev import <local folders>`.
 
 **Defaults and confidence.** Files are sparse (only values that differ from the WRITER version's own default are
 stored), so an absent value takes the foreign default of that writer version (`PluginVer` eras), never ours. Each
-row's default is `known` (proven from sparse storage or documented), `likely`, `guess`, `byVersion (fn, conf)` or
-`noDefault()`; that table column is the one place to correct them. `PureSheenDev import --defaults` lists the 96
-uncertain ones (39 likely, 57 guess); they need Reset screenshots or one-change test saves in the real product.
+row's default is `known` (proven from sparse storage, documented, or confirmed in the real product), `likely`,
+`guess`, `byVersion (fn, conf)` or `noDefault()`; that table column is the one place to correct them. The defaults
+of writer 120000 were confirmed from Reset screenshots and one-change test saves of the real product (and the enum
+lists: EQ shapes 0..16, Dynamics detection, limiter algorithms and styles, band phase scale, knee units); a confirmed
+value that no file of any writer stores is used for every writer, an older writer the files prove different keeps its
+own. `PureSheenDev import --defaults` lists the 40 still uncertain (16 likely, 24 guess: EQ band 1 / 7 / 8 shape and
+Q, band frequency layouts, multiband crossovers, Dynamic EQ timing, Tone Balance cut mode, a few never-shown
+controls). `PureSheenDev importtest` also compares the user's local check saves with the confirmed results when that
+git-ignored folder exists (skipped otherwise; the files are never copied).
 
 **Limits.**
 - Not imported (counted as such): stem-separation mode, the per-module auto gain of Tone Balance / Definition, the
@@ -402,8 +413,9 @@ uncertain ones (39 likely, 57 guess); they need Reset screenshots or one-change 
 - Approximations (with a note in the report): Dynamic EQ automatic timing multipliers on our base times, the older
   Smoother threshold -> amount, surgical shelves -> analog shelves, Punch sync notes beyond 1/2 dotted, Dynamics set B
   output gain / module mix folded into the band gains / mixes.
-- Uncertain meanings: EQ shape indices (shelf variants), the chain flag byte (non-zero read as module off), Maximizer
-  mode indices 4 / 5 by version, the Bass Shaper thresholds (1:1 dB), the Exciter drive calibration.
+- Uncertain meanings: the chain flag byte (parsed, not power), limiter algorithm index 4 before writer 120000 (read as
+  low latency), the Bass Shaper thresholds (1:1 dB), the Exciter drive calibration. The Dynamics knee is stored in
+  0..10 display units and read 1:1 as dB (our choice).
 - Dither and I/O are never stored in the files.
 
 Verification (build-impint, all five targets, 0 warnings in our sources), after an independent review-and-fix (two
@@ -417,3 +429,9 @@ stored Match EQ references imported, 15 values not imported (all intended, see L
 imported global presets:
 no NaN, peaks within the imported Maximizer ceiling; snapshots of the menus and result notes at 980x600 / 1180x720;
 pluginval strictness 10 with GUI (VST3): SUCCESS.
+
+Real-product confirmation round (build-impfix, CoreTests / PureSheenDev / VST3, 0 warnings in our sources): section
+power switch, confirmed enum tables and writer-120000 defaults. CoreTests 517 test cases, 0 failed (80 "import."
+cases); selftest 236 passed, 0 failed; importtest all passed (incl. 54 local check saves compared); corpus over the
+same 706 files: identical per-file counts (the corpus never stores the power switch), 48353 parameters now set from
+foreign defaults (was 47338).

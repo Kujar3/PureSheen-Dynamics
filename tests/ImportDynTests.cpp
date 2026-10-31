@@ -101,6 +101,8 @@ const Aliases& aliases()
         m["Steep"] = ruleKey (dyn, "crossover steepness");
         m["Lane # Solo"] = ruleKey (dyn, "band solo");
         m["Lane # Spread"] = ruleKey (ModuleType::Imager, "band width");
+        m["Wide On"] = ruleKey (ModuleType::Imager, "stereoize on");
+        m["Rescue On"] = ruleKey (ModuleType::Imager, "recover sides on");
 
         // Exciter
         m["Lane # Model"] = ruleKey (exc, "band model");
@@ -182,7 +184,7 @@ int unmappedWithReason (const ImportPlan& p, const std::string& reason)
 
 //==============================================================================
 // Dynamics
-TEST_CASE ("import.core. dynamics: absent band values take the writer-era foreign defaults")
+TEST_CASE ("import.core. dynamics: absent band values take the foreign defaults confirmed in the real product")
 {
     // 110000: one band (slot 0 only), only its threshold stored.
     const auto plan = importModule ("Squash", "110000", { param ("Lane 1 Thr", "-20.5") });
@@ -192,18 +194,19 @@ TEST_CASE ("import.core. dynamics: absent band values take the writer-era foreig
     CHECK (near (value (plan, "dyn.a.b1.comp.thr"), -20.5));
     CHECK (near (value (plan, "dyn.a.b1.comp.ratio"), 2.0));
     CHECK (near (value (plan, "dyn.a.b1.comp.att"), 20.0));
-    CHECK (near (value (plan, "dyn.a.b1.comp.rel"), 125.0));
-    CHECK (near (value (plan, "dyn.a.b1.comp.knee"), 3.0));
+    CHECK (near (value (plan, "dyn.a.b1.comp.rel"), 60.0));
+    CHECK (near (value (plan, "dyn.a.b1.comp.knee"), 10.0));       // knob maximum = the default (display units = dB)
     CHECK (near (value (plan, "dyn.a.b1.lim.thr"), 0.0));
     CHECK (near (value (plan, "dyn.a.b1.lim.on"), 0.0));          // at 0 dB the band limiter stays off
     CHECK (near (value (plan, "dyn.a.b1.lim.ratio"), 10.0));
-    CHECK (near (value (plan, "dyn.a.b1.lim.att"), 1.0));
+    CHECK (near (value (plan, "dyn.a.b1.lim.att"), 20.0));
     CHECK (near (value (plan, "dyn.a.b1.lim.rel"), 100.0));
+    CHECK (near (value (plan, "dyn.a.b1.lim.knee"), 10.0));
     CHECK (near (value (plan, "dyn.a.b1.mix"), 100.0));
     CHECK (near (value (plan, "dyn.b.b1.comp.thr"), -12.0));       // set B from the same defaults
     CHECK (near (value (plan, "dyn.b.b1.comp.ratio"), 2.0));
     CHECK (near (value (plan, "dyn.adaptRel"), 1.0));              // absent release mode = adaptive
-    CHECK (near (value (plan, "dyn.detect"), (double) ps::DetectionMode::Envelope));
+    CHECK (near (value (plan, "dyn.detect"), (double) ps::DetectionMode::Peak));   // absent detection = peak
     CHECK (near (value (plan, "dyn.detSlope"), 1.0));
     CHECK (near (value (plan, "dyn.xoverType"), (double) ps::CrossoverType::Hybrid));
     CHECK (near (value (plan, "dyn.a.on"), 1.0));
@@ -211,11 +214,12 @@ TEST_CASE ("import.core. dynamics: absent band values take the writer-era foreig
     CHECK_EQ (plan.report.mapped, 1);
     CHECK_EQ (plan.report.unmapped, 0);
 
-    // An older writer: four contiguous bands by default, its own threshold default.
+    // An older writer: four contiguous bands by default; the band defaults are the same (no writer stores them).
     const auto old = importModule ("Squash", "8000", { param ("Lane 2 Ratio", "3") });
     REQUIRE (old.ok);
     CHECK (near (value (old, "dyn.bands"), 4.0));
-    CHECK (near (value (old, "dyn.a.b1.comp.thr"), -10.0));
+    CHECK (near (value (old, "dyn.a.b1.comp.thr"), -12.0));
+    CHECK (near (value (old, "dyn.a.b3.lim.att"), 20.0));
     CHECK (near (value (old, "dyn.a.b2.comp.ratio"), 3.0));
     CHECK (near (value (old, "dyn.a.b4.comp.ratio"), 2.0));
 
@@ -226,8 +230,9 @@ TEST_CASE ("import.core. dynamics: absent band values take the writer-era foreig
 
 TEST_CASE ("import.core. dynamics: detection kinds, release mode, detection filter (every index)")
 {
-    const double expected[] { (double) ps::DetectionMode::Envelope, (double) ps::DetectionMode::Rms,
-                              (double) ps::DetectionMode::Peak };
+    // Detection kinds as confirmed by one test save each: 0 peak (the default), 1 RMS, 2 envelope.
+    const double expected[] { (double) ps::DetectionMode::Peak, (double) ps::DetectionMode::Rms,
+                              (double) ps::DetectionMode::Envelope };
     for (int i = 0; i < 3; ++i)
     {
         const auto p = importModule ("Squash", "100000", { param ("Sense", std::to_string (i)) });
@@ -294,7 +299,7 @@ TEST_CASE ("import.core. dynamics: shared controls take set A; set B gain and mo
     // Mid/side: set B's detection kind differs (shared here: set A wins, with a note); set B's output gain is 2 dB
     // above set A's; set A's module mix is 50 %, set B's 50 % over a band mix of 80 %.
     const auto plan = importModule ("Squash", "100000", { param ("Split", "1"),
-                                                         param ("Sense", "2"),
+                                                         param ("Sense", "0"),
                                                          param ("Aux: Sense", "1"),
                                                          param ("Out", "1"),
                                                          param ("Aux: Out", "3"),
@@ -323,7 +328,7 @@ TEST_CASE ("import.core. dynamics: shared controls take set A; set B gain and mo
 
     // In Stereo, a stored set B leftover equal or not, no note.
     const auto st = importModule ("Squash", "100000", { param ("Aux: Sense", "1") });
-    CHECK (near (value (st, "dyn.detect"), (double) ps::DetectionMode::Envelope));
+    CHECK (near (value (st, "dyn.detect"), (double) ps::DetectionMode::Peak));
     CHECK (st.report.notes.empty());
     CHECK_EQ (st.report.ignored, 1);
 }
@@ -342,11 +347,11 @@ TEST_CASE ("import.core. dynamics: older files with linked sets copy set A into 
     CHECK (near (value (plan, "dyn.b.b2.comp.thr"), -25.0));       // copied from set A
     CHECK (near (value (plan, "dyn.b.b2.lim.thr"), -4.0));
     CHECK (near (value (plan, "dyn.b.b2.lim.on"), 1.0));
-    CHECK (near (value (plan, "dyn.b.b3.comp.thr"), -10.0));       // set A default of that era
+    CHECK (near (value (plan, "dyn.b.b3.comp.thr"), -12.0));       // the foreign default
 
     // Without the link switch the set B values stay at the defaults; newer files keep our link switch.
     const auto unlinked = importModule ("Squash", "8000", { param ("Lane 2 Thr", "-25") });
-    CHECK (near (value (unlinked, "dyn.b.b2.comp.thr"), -10.0));
+    CHECK (near (value (unlinked, "dyn.b.b2.comp.thr"), -12.0));
     CHECK (near (value (unlinked, "dyn.link"), 0.0));
     const auto newer = importModule ("Squash", "100000", {});
     CHECK (near (value (newer, "dyn.link"), 1.0));
@@ -510,19 +515,19 @@ TEST_CASE ("import.core. maximizer: gain from the older threshold or the newer g
     CHECK (near (value (newer, "max.trans.amount"), 60.0));        // 0..200 -> 0..100 %
     CHECK (near (value (newer, "max.clip.on"), 1.0));
     CHECK (near (value (newer, "max.clip.mode"), (double) ps::SoftClipMode::Heavy));
-    CHECK (near (value (newer, "max.clip.amount"), 25.0));         // the foreign default amount
+    CHECK (near (value (newer, "max.clip.amount"), 0.0));          // the foreign default amount (0 %)
     CHECK (near (value (newer, "max.si.trans"), 70.0));
     CHECK (near (value (newer, "max.si.sus"), 20.0));
     CHECK_EQ (newer.report.unmapped, 0);
 
-    // Upward compression: its amount only while it is on; on without an amount = the default amount.
+    // Upward compression: its amount only while it is on; on without an amount = the default amount (0 dB).
     const auto liftOff = importModule ("Wall", "120000", { param ("Lift", "2.5") });
     CHECK (near (value (liftOff, "max.upward"), 0.0));
     CHECK_EQ (liftOff.report.ignored, 1);
     const auto liftOn = importModule ("Wall", "120000", { param ("Lift On", "1"), param ("Lift", "2.5") });
     CHECK (near (value (liftOn, "max.upward"), 2.5));
     const auto liftDefault = importModule ("Wall", "120000", { param ("Lift On", "1") });
-    CHECK (near (value (liftDefault, "max.upward"), 6.0));
+    CHECK (near (value (liftDefault, "max.upward"), 0.0));
 
     // A positive older threshold would be a negative gain: clamped to 0 and counted.
     const auto positive = importModule ("Wall", "100000", { param ("Push Old", "2") });
@@ -672,7 +677,7 @@ TEST_CASE ("import.core. shared dynamics controls report omitted set B defaults 
         REQUIRE (plan.ok);
         CHECK (hasNote (plan, "Dynamics: the second set's detection kind"));
         CHECK (hasNote (plan, "Dynamics: the second set's auto gain"));
-        CHECK (near (value (plan, "dyn.detect"), (double) ps::DetectionMode::Peak));
+        CHECK (near (value (plan, "dyn.detect"), (double) ps::DetectionMode::Envelope));
         CHECK (near (value (plan, "dyn.autoGain"), 1.0));
     }
     const auto linked = importModule ("Squash", "8000", { param ("Split", "1"), param ("Tie", "1"),
@@ -700,4 +705,62 @@ TEST_CASE ("import.core. imager removed bands ignore bypass and crossover leftov
     CHECK (near (value (plan, "img.b.b2.width"), 0.0));
     CHECK_EQ (plan.report.ignored, 4);  // removed slot's bypass / width and the two unused crossover edges
     CHECK_EQ (plan.report.unmapped, 0);
+}
+
+TEST_CASE ("import.core. dynamics knee: stored in display units 0..10, read as dB; both knees default to 10")
+{
+    const auto plan = importModule ("Squash", "120000", { param ("Lane 1 Knee", "4.99411774"),
+                                                         param ("Lane 1 Cap Knee", "0"),
+                                                         param ("Aux: Lane 1 Knee", "0") });
+    REQUIRE (plan.ok);
+    CHECK (near (value (plan, "dyn.a.b1.comp.knee"), 4.994, 0.01));
+    CHECK (near (value (plan, "dyn.a.b1.lim.knee"), 0.0));
+    CHECK (near (value (plan, "dyn.b.b1.comp.knee"), 0.0));
+    CHECK (near (value (plan, "dyn.b.b1.lim.knee"), 10.0));         // absent: the knob maximum
+    CHECK_EQ (plan.report.mapped, 3);
+    CHECK_EQ (plan.report.clamped, 0);
+}
+
+TEST_CASE ("import.core. maximizer, exciter and imager defaults confirmed in the real product")
+{
+    const auto max = importModule ("Wall", "120000", {});
+    REQUIRE (max.ok);
+    CHECK (near (value (max, "max.mode"), (double) ps::MaximizerMode::Smooth));
+    CHECK (near (value (max, "max.style3"), (double) ps::AggressiveStyle::Balanced));
+    CHECK (near (value (max, "max.style4"), (double) ps::SpectralStyle::Modern));
+    CHECK (near (value (max, "max.gain"), 0.0));
+    CHECK (near (value (max, "max.ceiling"), 0.0));
+    CHECK (near (value (max, "max.character"), 2.0));
+    CHECK (near (value (max, "max.truePeak"), 0.0));
+    CHECK (near (value (max, "max.clip.on"), 0.0));
+    CHECK (near (value (max, "max.clip.amount"), 0.0));
+    CHECK (near (value (max, "max.upward"), 0.0));
+    CHECK (near (value (max, "max.trans.on"), 0.0));
+    CHECK (near (value (max, "max.trans.amount"), 0.0));
+    CHECK (near (value (max, "max.si.trans"), 0.0));
+    CHECK (near (value (max, "max.si.sus"), 0.0));
+    CHECK (near (value (max, "max.learnTarget"), -11.0));
+    CHECK_EQ (max.report.mapped, 0);
+
+    const auto exc = importModule ("Glow", "120000", {});
+    REQUIRE (exc.ok);
+    CHECK (near (value (exc, "exc.bands"), 1.0));
+    CHECK (near (value (exc, "exc.a.b1.mode"), (double) ps::ExciterMode::Triode));
+    CHECK (near (value (exc, "exc.a.b1.drive"), 0.0));
+    CHECK (near (value (exc, "exc.a.b1.mix"), 100.0));
+
+    // Imager: one band at width 0, amount 100 %, stereoize mode I with a 6 ms delay (= 30 % of our amount), recover
+    // sides at 0 dB.
+    const auto img = importModule ("Spread", "120000", { param ("Wide On", "1"), param ("Rescue On", "1") });
+    REQUIRE (img.ok);
+    CHECK (near (value (img, "img.bands"), 1.0));
+    CHECK (near (value (img, "img.b1.width"), 0.0));
+    CHECK (near (value (img, "img.amount"), 100.0));
+    CHECK (near (value (img, "img.stz.on"), 1.0));
+    CHECK (near (value (img, "img.stz.mode"), (double) ps::StereoizeMode::ModeI));
+    CHECK (near (value (img, "img.stz.amount"), 30.0));
+    CHECK (near (value (img, "img.rec.on"), 1.0));
+    CHECK (near (value (img, "img.rec.gain"), 0.0));
+    CHECK_EQ (img.report.mapped, 2);
+    CHECK_EQ (img.report.unmapped, 0);
 }

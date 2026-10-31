@@ -3,6 +3,7 @@
 #include "plugin/import/ImportEngine.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cfenv>
 #include <cstdint>
 #include <set>
@@ -111,6 +112,7 @@ const Aliases& aliases()
         m["Wide Style"] = ruleKey (img, "stereoize mode");
         m["Wide Time"] = ruleKey (img, "stereoize amount");
         m["Split"] = ruleKey (img, "channel mode");
+        m["Power Off"] = kSectionBypassKey;   // every module section's own power switch
         return m;
     }();
     return a;
@@ -368,19 +370,105 @@ TEST_CASE ("import. whole-chain file: chain order, skipped and unknown modules, 
     CHECK_EQ (line, std::string ("Imported 2 modules, 1 setting. Skipped: tape emulation, unknown module."));
 }
 
-TEST_CASE ("import. a non-zero chain flag powers the module off")
+TEST_CASE ("import. the section power switch turns a chain module off; the chain flag byte is not power")
 {
-    const auto root = el ("Root", { { "PresetVer", "3" }, { "PluginVer", "120000" } },
-                          { el ("Common", { { "Enabled", "1" } }, { chainNode ({ { "SpreadChain", 1 }, { "ToneChain", 0 } }) }),
-                            el ("Spread", { { "Enabled", "1" } }),
-                            el ("Tone", { { "Enabled", "1" } }) });
-    const auto plan = buildImportPlan (root, opts());
-    REQUIRE (plan.ok);
-    CHECK (near (value (plan, "img.on"), 0.0));
-    CHECK (near (value (plan, "eq1.on"), 1.0));
+    // The flag byte of the chain entries is parsed but stays 0 for a switched-off module in the real product, so a
+    // non-zero flag no longer switches anything; the section's own power switch does.
+    for (const char* off : { "1", "0.5", "0", "0.25" })
+    {
+        const auto root = el ("Root", { { "PresetVer", "3" }, { "PluginVer", "120000" } },
+                              { el ("Common", { { "Enabled", "1" } },
+                                    { chainNode ({ { "SpreadChain", 0 }, { "ToneChain", 1 } }) }),
+                                el ("Spread", { { "Enabled", "1" } }, { param ("SpreadChain", "Power Off", off) }),
+                                el ("Tone", { { "Enabled", "1" } }) });
+        const auto plan = buildImportPlan (root, opts());
+        REQUIRE (plan.ok);
+        const bool isOff = std::atof (off) >= 0.5;
+        CHECK (near (value (plan, "img.on"), isOff ? 0.0 : 1.0));
+        CHECK (near (value (plan, "eq1.on"), 1.0));           // flag 1, no power switch stored: on
+        CHECK_EQ (plan.report.mapped, 1);                     // the power switch counts as imported
+        CHECK_EQ (plan.report.unmapped, 0);
+    }
+
+    // An unreadable switch is not imported and leaves the module on.
+    const auto bad = buildImportPlan (
+        el ("Root", { { "PresetVer", "3" }, { "PluginVer", "120000" } },
+              { el ("Common", { { "Enabled", "1" } }, { chainNode ({ { "SpreadChain", 0 } }) }),
+                el ("Spread", { { "Enabled", "1" } }, { param ("SpreadChain", "Power Off", "x") }),
+                el ("Tone", { { "Enabled", "1" } }) }), opts());
+    REQUIRE (bad.ok);
+    CHECK (near (value (bad, "img.on"), 1.0));
+    CHECK_EQ (bad.report.unmapped, 1);
 }
 
-TEST_CASE ("import. whole-chain power follows the first decoded entry regardless of section load masks")
+TEST_CASE ("import. the section power switch works for every module type")
+{
+    for (const auto* spec : allModuleSpecs())
+    {
+        Aliases a;
+        a["Unit"] = spec->tagKey;
+        a["UnitChain"] = spec->elementKey;
+        a["Other"] = specOf (spec->type == ps::ModuleType::Imager ? ps::ModuleType::Equalizer1
+                                                                  : ps::ModuleType::Imager).tagKey;
+        a["OtherChain"] = specOf (spec->type == ps::ModuleType::Imager ? ps::ModuleType::Equalizer1
+                                                                       : ps::ModuleType::Imager).elementKey;
+        a["Common"] = kGlobalSectionKey;
+        a["Order"] = kChainBlobKey;
+        a["Power Off"] = kSectionBypassKey;
+        ImportOptions o;
+        o.aliases = &a;
+
+        const auto root = el ("Root", { { "PresetVer", "3" }, { "PluginVer", "120000" } },
+                              { el ("Common", { { "Enabled", "1" } },
+                                    { chainNode ({ { "UnitChain", 0 }, { "OtherChain", 0 } }) }),
+                                el ("Unit", { { "Enabled", "1" } }, { param ("UnitChain", "Power Off", "1") }),
+                                el ("Other", { { "Enabled", "1" } }) });
+        const auto plan = buildImportPlan (root, o);
+        REQUIRE (plan.ok);
+        const std::string prefix = ps::moduleInfo (spec->type).idPrefix;
+        const std::string other = ps::moduleInfo (plan.order.size() > 1 ? plan.order[1] : spec->type).idPrefix;
+        CHECK_EQ (plan.order.size(), (size_t) 2);
+        CHECK (near (value (plan, (prefix + ".on").c_str()), 0.0));
+        CHECK (near (value (plan, (other + ".on").c_str()), 1.0));
+        CHECK_EQ (plan.report.mapped, 1);
+        CHECK_EQ (plan.report.unmapped, 0);
+    }
+}
+
+TEST_CASE ("import. a single-module file ignores the power switch (module presets never carry power)")
+{
+    const auto plan = buildImportPlan (moduleFile ("120000", { param ("SpreadChain", "Power Off", "1"),
+                                                               param ("SpreadChain", "Width 1", "30") }), opts());
+    REQUIRE (plan.ok);
+    CHECK_EQ (plan.scope, (int) ps::ModuleType::Imager);
+    CHECK (near (value (plan, "img.b1.width"), 30.0));
+    CHECK_EQ (plan.report.mapped, 1);
+    CHECK_EQ (plan.report.ignored, 1);
+    CHECK_EQ (plan.report.unmapped, 0);
+}
+
+TEST_CASE ("import. a well-formed empty chain is refused as holding no modules")
+{
+    const auto root = el ("Root", { { "PresetVer", "1" }, { "PluginVer", "120000" } },
+                          { el ("Common", { { "Enabled", "1" } },
+                                { el ("ExtraBytes", { { "ElementID", "Order" }, { "Data", "" } }) }),
+                            el ("Spread", { { "Enabled", "1" } }), el ("Tone", { { "Enabled", "1" } }) });
+    const auto plan = buildImportPlan (root, opts());
+    CHECK (! plan.ok);
+    CHECK (plan.holdsNoModules);
+    CHECK (plan.order.empty());
+    CHECK_EQ (plan.error, std::string ("This preset holds no modules."));
+
+    // A damaged chain is not "empty".
+    const auto damaged = buildImportPlan (
+        el ("Root", { { "PresetVer", "1" }, { "PluginVer", "120000" } },
+              { el ("Common", { { "Enabled", "1" } }, { el ("ExtraBytes", { { "ElementID", "Order" }, { "Data", "A" } }) }),
+                el ("Spread", { { "Enabled", "1" } }), el ("Tone", { { "Enabled", "1" } }) }), opts());
+    CHECK (! damaged.ok);
+    CHECK (! damaged.holdsNoModules);
+}
+
+TEST_CASE ("import. whole-chain order follows the first decoded entry regardless of section load masks")
 {
     for (const bool enabled : { false, true })
     {
@@ -395,7 +483,7 @@ TEST_CASE ("import. whole-chain power follows the first decoded entry regardless
         REQUIRE (plan.ok);
         CHECK_EQ (plan.scope, -1);
         CHECK (plan.order == (std::vector<ps::ModuleType> { ps::ModuleType::Equalizer1, ps::ModuleType::Imager }));
-        CHECK (near (value (plan, "eq1.on"), 0.0));
+        CHECK (near (value (plan, "eq1.on"), 1.0));           // the entry flags are not power
         CHECK (near (value (plan, "img.on"), 1.0));
         CHECK (near (value (plan, "img.b1.width"), 27.0));
         CHECK_EQ (plan.report.mapped, 1);

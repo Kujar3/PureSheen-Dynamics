@@ -9,7 +9,8 @@
 //
 // Every table's "def" column is the FOREIGN default of the writer version (sparse files: an absent value takes it).
 // Likely / Guess rows are listed in out/importer/defaults-to-confirm.md ("Phase 2 family") and by
-// `PureSheenDev import --defaults`.
+// `PureSheenDev import --defaults`. Known rows include the defaults confirmed in the real product for writer 120000
+// (Reset screenshots); none of those exact values is stored by any writer in the files, so they hold for every era.
 //
 // Decisions (approximations are implemented in the hooks and noted in the report):
 // - The three spectral modules' Amount defaults to 0 in the foreign writers: every file whose module is in the chain
@@ -20,8 +21,8 @@
 //   relative amount by a heuristic (approximate, noted).
 // - Punch, Low Contrast: controls the foreign module keeps per channel set but ours shares (envelope, sync, amount,
 //   region) take set A; a differing set B value is reported as not imported (with a note).
-// - Bass Shaper: explicit section power is honoured; otherwise a section is switched on when the file stores a control
-//   (the foreign section powers and several defaults are unknown; see defaults-to-confirm.md).
+// - Bass Shaper: every section follows its power switch (on by default, confirmed); at the confirmed defaults
+//   (thresholds 0 dB, sustain amount 0 %) an untouched section does nothing in either module.
 namespace ps::imp
 {
 namespace
@@ -127,7 +128,7 @@ const std::vector<Rule>& toneBalanceRules()
         //  key            act               first count band        set A id          set B id          transform     foreign default   what
         { kTbalTarget,    Act::Map,          0, 0, Band::Same, "~.target",       nullptr,          toneTarget,   known (0.0),      "target curve" },
         { kTbalMode,      Act::Map,          0, 0, Band::Same, "~.mode",         nullptr,          toneMode,     known (0.0),      "correction mode" },
-        { kAmount,        Act::Map,          0, 0, Band::Same, "~.a.amount",     "~.b.amount",     nullptr,      likely (0.0),     "amount" },
+        { kAmount,        Act::Map,          0, 0, Band::Same, "~.a.amount",     "~.b.amount",     nullptr,      known (0.0),      "amount" },
         { kTbalSpeed,     Act::Map,          0, 0, Band::Same, "~.a.speed",      "~.b.speed",      nullptr,      known (50.0),     "speed" },
         { kTbalSmooth,    Act::Map,          0, 0, Band::Same, "~.a.smooth",     "~.b.smooth",     nullptr,      known (50.0),     "smoothing" },
         { kTbalCutSpeed,  Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,      guess (50.0),     "cut speed" },
@@ -183,10 +184,10 @@ const std::vector<Rule>& definitionRules()
 {
     static const std::vector<Rule> rules {
         //  key            act               first count band        set A id          set B id          transform     foreign default   what
-        { kAmount,        Act::Map,          0, 0, Band::Same, "~.a.amount",     "~.b.amount",     nullptr,      likely (0.0),     "amount" },
+        { kAmount,        Act::Map,          0, 0, Band::Same, "~.a.amount",     "~.b.amount",     nullptr,      known (0.0),      "amount" },
         { kDefnTilt,      Act::Map,          0, 0, Band::Same, "~.a.tilt",       "~.b.tilt",       nullptr,      known (0.0),      "tilt" },
-        { kDefnAttack,    Act::Map,          0, 0, Band::Same, "~.a.att",        "~.b.att",        nullptr,      noDefault(),      "attack" },
-        { kDefnRelease,   Act::Map,          0, 0, Band::Same, "~.a.rel",        "~.b.rel",        nullptr,      noDefault(),      "release" },
+        { kDefnAttack,    Act::Map,          0, 0, Band::Same, "~.a.att",        "~.b.att",        nullptr,      known (100.0),    "attack" },
+        { kDefnRelease,   Act::Map,          0, 0, Band::Same, "~.a.rel",        "~.b.rel",        nullptr,      known (100.0),    "release" },
         { kRegionLow,     Act::Map,          0, 0, Band::Same, "~.a.low",        "~.b.low",        nullptr,      known (300.0),    "region start" },
         { kRegionHigh,    Act::Map,          0, 0, Band::Same, "~.a.high",       "~.b.high",       nullptr,      known (20000.0),  "region end" },
         { kChannelMode,   Act::ChannelMode,  0, 0, Band::Same, nullptr,          nullptr,          nullptr,      known (0.0),      "channel mode" },
@@ -245,14 +246,14 @@ const std::vector<Rule>& smootherRules()
 {
     static const std::vector<Rule> rules {
         //  key              act               first count band        set A id          set B id          transform     foreign default   what
-        { kAmount,          Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,      guess (0.0),      "amount" },
+        { kAmount,          Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,      known (0.0),      "amount" },
         { kSmthThreshold,   Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,      guess (0.0),      "threshold (older files)" },
-        { kSmthMode,        Act::Map,          0, 0, Band::Same, "~.a.mode",       "~.b.mode",       smootherMode, likely (1.0),     "reduction style" },
-        { kSmthAttack,      Act::Map,          0, 0, Band::Same, "~.a.att",        "~.b.att",        nullptr,      noDefault(),      "attack" },
-        { kSmthRelease,     Act::Map,          0, 0, Band::Same, "~.a.rel",        "~.b.rel",        nullptr,      noDefault(),      "release" },
+        { kSmthMode,        Act::Map,          0, 0, Band::Same, "~.a.mode",       "~.b.mode",       smootherMode, known (1.0),      "reduction style" },
+        { kSmthAttack,      Act::Map,          0, 0, Band::Same, "~.a.att",        "~.b.att",        nullptr,      known (1.0),      "attack" },
+        { kSmthRelease,     Act::Map,          0, 0, Band::Same, "~.a.rel",        "~.b.rel",        nullptr,      known (30.0),     "release" },
         { kSmthTone,        Act::Map,          0, 0, Band::Same, "~.a.tone",       "~.b.tone",       nullptr,      known (0.0),      "tone" },
-        { kSmthLow,         Act::Map,          0, 0, Band::Same, "~.a.low",        "~.b.low",        nullptr,      noDefault(),      "region start" },
-        { kSmthHigh,        Act::Map,          0, 0, Band::Same, "~.a.high",       "~.b.high",       nullptr,      noDefault(),      "region end" },
+        { kSmthLow,         Act::Map,          0, 0, Band::Same, "~.a.low",        "~.b.low",        nullptr,      known (2000.0),   "region start" },
+        { kSmthHigh,        Act::Map,          0, 0, Band::Same, "~.a.high",       "~.b.high",       nullptr,      known (8000.0),   "region end" },
         { kSmthChMode,      Act::ChannelMode,  0, 0, Band::Same, nullptr,          nullptr,          nullptr,      known (0.0),      "channel mode" },
         { kSmthPowerA,      Act::Map,          0, 0, Band::Same, "~.a.on",         nullptr,          xf::invertBool, known (0.0),    "set A bypass" },
         { kSmthPowerB,      Act::Map,          0, 0, Band::Same, "~.b.on",         nullptr,          xf::invertBool, known (0.0),    "set B bypass" },
@@ -321,14 +322,15 @@ constexpr Key kPnchLearnDone  = 0x51a4def809081cf2ull;   // crossover learn fini
 constexpr Key kPnchMakeUp     = 0x1fc591663dc1b629ull;   // automatic make-up gain on
 constexpr Key kPnchViewBand   = 0xc56e49739be780c3ull;   // selected band in the view
 
-// Four bands by default, at 120 / 2000 / 10000 Hz.
+// Four bands by default, at 150 / 1000 / 6000 Hz (writer 120000 Reset; 1 kHz and 6 kHz confirmed, the lowest one read
+// off the screenshot between grid lines, so the rule stays "likely"). No file stores any of them at its own number.
 double punchCutoffDefault (const ModuleImport&, int number, int)
 {
     switch (number)
     {
-        case 1:  return 120.0;
-        case 2:  return 2000.0;
-        case 3:  return 10000.0;
+        case 1:  return 150.0;
+        case 2:  return 1000.0;
+        case 3:  return 6000.0;
         default: return kNoValue;
     }
 }
@@ -355,14 +357,14 @@ const std::vector<Rule>& punchRules()
 {
     static const std::vector<Rule> rules {
         //  key              act               first count band          set A id          set B id            transform     foreign default                             what
-        { kPnchBandActive,  Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,      likely (1.0),                               "band present" },
+        { kPnchBandActive,  Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,      known (1.0),                                "band present" },
         { kPnchCutoff,      Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,            nullptr,      byVersion (punchCutoffDefault, Conf::Likely), "crossover frequency" },
         { kPnchBandBypass,  Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,      known (0.0),                                "band bypass" },
         { kPnchBandAmount,  Act::Map,          1, 4, Band::Layout, "~.a.b#.amount",  "~.b.b#.amount",    nullptr,      known (0.0),                                "band amount" },
-        { kPnchAmount,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      likely (100.0),                             "module amount" },
+        { kPnchAmount,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (100.0),                              "module amount" },
         { kPnchEnvelope,    Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      likely (100.0),                             "envelope" },
-        { kPnchSyncOn,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      likely (1.0),                               "envelope sync" },
-        { kPnchSyncNote,    Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      guess (4.0),                                "sync note" },
+        { kPnchSyncOn,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (1.0),                                "envelope sync" },
+        { kPnchSyncNote,    Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (4.0),                                "sync note" },
         { kPnchMakeUp,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (0.0),                                "auto gain" },
         { kAutoGain,        Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (0.0),                                "auto gain (module switch)" },
         { kChannelMode,     Act::ChannelMode,  0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (0.0),                                "channel mode" },
@@ -437,8 +439,8 @@ const std::vector<Rule>& lowContrastRules()
         { kLowcContrast,    Act::Map,          0, 0, Band::Same, "~.a.contrast",   "~.b.contrast",   nullptr,         known (0.0),      "contrast" },
         { kLowcGain,        Act::Map,          0, 0, Band::Same, "~.a.gain",       "~.b.gain",       nullptr,         known (0.0),      "region gain" },
         { kLowcCharacter,   Act::Map,          0, 0, Band::Same, "~.a.mode",       "~.b.mode",       lowContrastMode, known (0.0),      "character" },
-        { kRegionLow,       Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,         likely (20.0),    "region start" },
-        { kRegionHigh,      Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,         likely (250.0),   "region end" },
+        { kRegionLow,       Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,         known (20.0),     "region start" },
+        { kRegionHigh,      Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,         known (250.0),    "region end" },
         { kLowcMix,         Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,         guess (100.0),    "mix" },
         { kAutoGain,        Act::Map,          0, 0, Band::Same, "~.autoGain",     nullptr,          xf::boolean,     known (0.0),      "auto gain" },
         { kChannelMode,     Act::ChannelMode,  0, 0, Band::Same, nullptr,          nullptr,          nullptr,         known (0.0),      "channel mode" },
@@ -504,23 +506,23 @@ const std::vector<Rule>& bassShaperRules()
         { kBassCutoff,      Act::Map,          0, 0, Band::Same, "~.cutoff",       nullptr,          nullptr,           known (120.0),    "cutoff" },
         { kBassBalance,     Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           known (0.0),      "balance" },
         { kBassPunch,       Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           known (0.0),      "punch" },
-        { kBassSusThr,      Act::Map,          0, 0, Band::Same, "~.sus.thr",      nullptr,          nullptr,           noDefault(),      "sustain threshold" },
-        { kBassSusAmount,   Act::Map,          0, 0, Band::Same, "~.sus.amount",   nullptr,          nullptr,           noDefault(),      "sustain amount" },
-        { kBassSusChar,     Act::Map,          0, 0, Band::Same, "~.sus.char",     nullptr,          nullptr,           guess (50.0),     "sustain character" },
-        { kBassPeakThr,     Act::Map,          0, 0, Band::Same, "~.peak.thr",     nullptr,          nullptr,           noDefault(),      "peak threshold" },
-        { kBassPeakChar,    Act::Map,          0, 0, Band::Same, "~.peak.char",    nullptr,          bassPeakCharacter, guess (3.0),      "peak character" },
-        { kBassBalanceOn,   Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           guess (1.0),      "balance power" },
-        { kBassPunchOn,     Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           guess (1.0),      "punch power" },
-        { kBassSusOn,       Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           guess (1.0),      "sustain power" },
-        { kBassPeakOn,      Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           guess (1.0),      "peak power" },
+        { kBassSusThr,      Act::Map,          0, 0, Band::Same, "~.sus.thr",      nullptr,          nullptr,           known (0.0),      "sustain threshold" },
+        { kBassSusAmount,   Act::Map,          0, 0, Band::Same, "~.sus.amount",   nullptr,          nullptr,           known (0.0),      "sustain amount" },
+        { kBassSusChar,     Act::Map,          0, 0, Band::Same, "~.sus.char",     nullptr,          nullptr,           known (50.0),     "sustain character" },
+        { kBassPeakThr,     Act::Map,          0, 0, Band::Same, "~.peak.thr",     nullptr,          nullptr,           known (0.0),      "peak threshold" },
+        { kBassPeakChar,    Act::Map,          0, 0, Band::Same, "~.peak.char",    nullptr,          bassPeakCharacter, known (3.0),      "peak character" },
+        { kBassBalanceOn,   Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           known (1.0),      "balance power" },
+        { kBassPunchOn,     Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           known (1.0),      "punch power" },
+        { kBassSusOn,       Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           known (1.0),      "sustain power" },
+        { kBassPeakOn,      Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,           known (1.0),      "peak power" },
         { kBassSoloCutoff,  Act::Ignore,       0, 0, Band::Same, nullptr,          nullptr,          nullptr,           noDefault(),      "listen below cutoff" },
         { kListen,          Act::Ignore,       0, 0, Band::Same, nullptr,          nullptr,          nullptr,           noDefault(),      "listen difference" },
     };
     return rules;
 }
 
-// Balance / punch: 0 dB while their section is off. Sustain / peak: explicit power wins; without one, the presence
-// of a control enables the section (a section left at unknown foreign defaults stays off here).
+// Balance / punch: 0 dB while their section is off. Sustain / peak: our switch follows the section power (stored,
+// else on); an untouched section sits at the confirmed defaults, where it does nothing.
 void bassShaperFinish (ModuleImport& m)
 {
     auto level = [&m] (Key powerKey, Key valueKey, const char* id)
@@ -536,11 +538,8 @@ void bassShaperFinish (ModuleImport& m)
     level (kBassBalanceOn, kBassBalance, "~.balance");
     level (kBassPunchOn, kBassPunch, "~.punch");
 
-    const bool susStored = m.has (kBassSusThr) || m.has (kBassSusAmount) || m.has (kBassSusChar);
-    m.set ("~.sus.on", ((m.has (kBassSusOn) || susStored) && m.get (kBassSusOn) >= 0.5) ? 1.0 : 0.0);
-
-    const bool peakStored = m.has (kBassPeakThr) || m.has (kBassPeakChar);
-    m.set ("~.peak.on", ((m.has (kBassPeakOn) || peakStored) && m.get (kBassPeakOn) >= 0.5) ? 1.0 : 0.0);
+    m.set ("~.sus.on", m.get (kBassSusOn) >= 0.5 ? 1.0 : 0.0);
+    m.set ("~.peak.on", m.get (kBassPeakOn) >= 0.5 ? 1.0 : 0.0);
 }
 } // namespace
 

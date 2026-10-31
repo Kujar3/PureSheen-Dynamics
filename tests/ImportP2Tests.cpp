@@ -228,8 +228,8 @@ TEST_CASE ("import.p2. every module imports its foreign defaults from an empty s
     CHECK (near (value (defn, "defn.a.tilt"), 0.0));
     CHECK (near (value (defn, "defn.a.low"), 300.0));
     CHECK (near (value (defn, "defn.b.high"), 20000.0));
-    CHECK (near (value (defn, "defn.a.att"), 150.0));   // no foreign default known: ours kept
-    CHECK (near (value (defn, "defn.a.rel"), 120.0));
+    CHECK (near (value (defn, "defn.a.att"), 100.0));   // confirmed foreign defaults
+    CHECK (near (value (defn, "defn.b.rel"), 100.0));
 
     const auto smth = moduleFile (ModuleType::Smoother, "120000", {});
     REQUIRE (smth.ok);
@@ -237,13 +237,19 @@ TEST_CASE ("import.p2. every module imports its foreign defaults from an empty s
     CHECK (near (value (smth, "smth.a.mode"), 1.0));    // medium
     CHECK (near (value (smth, "smth.b.mode"), 1.0));
     CHECK (near (value (smth, "smth.a.tone"), 0.0));
+    CHECK (near (value (smth, "smth.a.att"), 1.0));
+    CHECK (near (value (smth, "smth.b.rel"), 30.0));
+    CHECK (near (value (smth, "smth.a.low"), 2000.0, 0.5));
+    CHECK (near (value (smth, "smth.b.high"), 8000.0, 1.0));
 
     const auto pnch = moduleFile (ModuleType::Punch, "120000", {});
     REQUIRE (pnch.ok);
     CHECK (near (value (pnch, "pnch.bands"), 4.0));
-    CHECK (near (value (pnch, "pnch.xover1"), 120.0));
-    CHECK (near (value (pnch, "pnch.xover2"), 2000.0, 0.5));
-    CHECK (near (value (pnch, "pnch.xover3"), 10000.0, 2.0));
+    CHECK (near (value (pnch, "pnch.xover1"), 150.0, 0.1));
+    CHECK (near (value (pnch, "pnch.xover2"), 1000.0, 0.5));
+    CHECK (near (value (pnch, "pnch.xover3"), 6000.0, 2.0));
+    CHECK (near (value (pnch, "pnch.stLink"), 0.0));     // stereo link / band link off (ours, the same as theirs)
+    CHECK (near (value (pnch, "pnch.bandLink"), 0.0));
     CHECK (near (value (pnch, "pnch.amount"), 100.0));
     CHECK (near (value (pnch, "pnch.env"), 100.0));
     CHECK (near (value (pnch, "pnch.sync"), 1.0));
@@ -269,8 +275,14 @@ TEST_CASE ("import.p2. every module imports its foreign defaults from an empty s
     CHECK (near (value (bass, "bass.cutoff"), 120.0));
     CHECK (near (value (bass, "bass.balance"), 0.0));
     CHECK (near (value (bass, "bass.punch"), 0.0));
-    CHECK (near (value (bass, "bass.sus.on"), 0.0));
-    CHECK (near (value (bass, "bass.peak.on"), 0.0));
+    CHECK (near (value (bass, "bass.sus.on"), 1.0));      // every section on by default, at inert settings
+    CHECK (near (value (bass, "bass.sus.thr"), 0.0));
+    CHECK (near (value (bass, "bass.sus.amount"), 0.0));
+    CHECK (near (value (bass, "bass.sus.char"), 50.0));
+    CHECK (near (value (bass, "bass.peak.on"), 1.0));
+    CHECK (near (value (bass, "bass.peak.thr"), 0.0));
+    CHECK (near (value (bass, "bass.peak.char"), 50.0));
+    CHECK_EQ (bass.report.unmapped, 0);
 }
 
 TEST_CASE ("import.p2. tone balance: target and mode tables, set B, power, channel mode")
@@ -509,8 +521,8 @@ TEST_CASE ("import.p2. punch: band layout with a gap, crossovers, band bypass in
     // A sparse four-band file relies on the foreign cutoff defaults for the edges it does not store.
     const auto sparse = moduleFile (ModuleType::Punch, "100000", { { "crossover frequency", "230", 1 } });
     CHECK (near (value (sparse, "pnch.xover1"), 230.0));
-    CHECK (near (value (sparse, "pnch.xover2"), 2000.0, 0.5));
-    CHECK (near (value (sparse, "pnch.xover3"), 10000.0, 2.0));
+    CHECK (near (value (sparse, "pnch.xover2"), 1000.0, 0.5));
+    CHECK (near (value (sparse, "pnch.xover3"), 6000.0, 2.0));
 }
 
 TEST_CASE ("import.p2. punch: sync note table, shared per-set controls, auto gain switches")
@@ -649,12 +661,12 @@ TEST_CASE ("import.p2. punch layout always uses presence flags without a band co
         REQUIRE (p.ok);
         CHECK (near (value (p, "pnch.bands"), 3.0));
         CHECK (near (value (p, "pnch.b.b2.amount"), 42.0));
-        CHECK (near (value (p, "pnch.xover1"), 2000.0, 0.5));
+        CHECK (near (value (p, "pnch.xover1"), 1000.0, 0.5));
         CHECK_EQ (p.report.unmapped, 0);
     }
 }
 
-TEST_CASE ("import.p2. bass shaper: sections follow their power and stored controls; character scale")
+TEST_CASE ("import.p2. bass shaper: sections follow their power (on by default); character scale")
 {
     const auto p = moduleFile (ModuleType::BassShaper, "120000", { { "cutoff", "140.4" },
                                                                     { "balance", "0.96" },
@@ -683,7 +695,7 @@ TEST_CASE ("import.p2. bass shaper: sections follow their power and stored contr
         const auto q = moduleFile (ModuleType::BassShaper, "120000", { { "peak character", std::to_string (c[0]) } });
         CHECK (near (value (q, "bass.peak.char"), c[1], 0.01));
         CHECK (near (value (q, "bass.peak.on"), 1.0));
-        CHECK (near (value (q, "bass.sus.on"), 0.0));
+        CHECK (near (value (q, "bass.sus.on"), 1.0));
     }
 
     // A section powered off: levels read 0 dB (the stored value is stale), lift / limiter off.
@@ -701,7 +713,7 @@ TEST_CASE ("import.p2. bass shaper: sections follow their power and stored contr
     CHECK_EQ (off.report.ignored, 1);
 }
 
-TEST_CASE ("import.p2. bass shaper explicit power enables sections with sparse controls")
+TEST_CASE ("import.p2. bass shaper explicit power switches sections with sparse controls")
 {
     for (const char* power : { "0", "1" })
     {

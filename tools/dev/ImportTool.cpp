@@ -47,7 +47,11 @@ struct XmlImportChooserTestAccess
 //       Prints the template, set, number and key the importer computes (for writing table constants).
 //   PureSheenDev importtest
 //       The XML text path and processor-level checks: juce::XmlDocument parsing, decimal commas, hostile text (fuzz),
-//       one undo step per import, chain replace / module insert, preset name, finite audio.
+//       one undo step per import, chain replace / module insert, preset name, finite audio. Then, only when the
+//       user's local folder of real-product check saves exists (a "checks" folder inside a git-ignored "ignore_*"
+//       folder of the repository, or the folder named by the PURESHEEN_IMPORT_CHECKS environment variable), every
+//       check save is imported and compared with what the user confirmed (module power, L/R, band shapes, detection,
+//       knee, limiter algorithm, Reset defaults). The files are read in place, never copied.
 namespace
 {
 using namespace ps::imp;
@@ -224,7 +228,7 @@ int runImport (const juce::StringArray& args)
 
         if (! plan.ok)
         {
-            const bool refused = ! plan.report.skipped.empty();
+            const bool refused = ! plan.report.skipped.empty() || plan.holdsNoModules;
             (refused ? notImportable : failed)++;
             for (const auto& s : plan.report.skipped)
                 ++skippedCounts[s + " (module file)"];
@@ -304,8 +308,8 @@ int runImport (const juce::StringArray& args)
 
     std::cout << "\n==== import summary\n"
               << "files " << files.size() << ": " << ok << " imported (" << globalFiles << " chain, " << moduleFiles
-              << " single module), " << notImportable << " not importable (module we do not have), " << failed
-              << " failed\n";
+              << " single module), " << notImportable << " not importable (module we do not have, or no module), "
+              << failed << " failed\n";
     if (audio)
         std::cout << "audio check: " << (ok - audioFailures) << " of " << ok << " imported states play finite audio\n";
     std::cout << "values: " << mapped << " mapped, " << unmapped << " unmapped, " << ignored << " ignored, " << clamped
@@ -632,6 +636,206 @@ void runChooserTests()
 }
 } // namespace
 
+//==============================================================================
+namespace
+{
+// The user's local folder of real-product check saves: PURESHEEN_IMPORT_CHECKS, else "<dir>/ignore_*/checks" for the
+// working directory, the dev tool's folder and their parents. Empty when there is none.
+juce::File findCheckSaves()
+{
+    const auto env = juce::SystemStats::getEnvironmentVariable ("PURESHEEN_IMPORT_CHECKS", {});
+    if (env.isNotEmpty())
+        return juce::File (env).isDirectory() ? juce::File (env) : juce::File();
+
+    std::vector<juce::File> starts { juce::File::getCurrentWorkingDirectory(),
+                                     juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory() };
+    for (auto dir : starts)
+        for (int up = 0; up < 6 && dir.exists(); ++up, dir = dir.getParentDirectory())
+        {
+            for (const auto& sub : dir.findChildFiles (juce::File::findDirectories, false, "ignore_*"))
+                if (sub.getChildFile ("checks").isDirectory())
+                    return sub.getChildFile ("checks");
+            if (dir.getParentDirectory() == dir)
+                break;
+        }
+    return {};
+}
+
+// The choice label our parameter `id` has in the plan ("" when not a choice).
+std::string choiceLabel (const ImportPlan& p, const char* id)
+{
+    const int i = ps::paramIndex (id);
+    if (i < 0 || i >= (int) p.values.size())
+        return {};
+    const auto& choices = ps::paramSpecs()[(size_t) i].choices;
+    const int c = (int) std::lround (p.values[(size_t) i]);
+    return c >= 0 && c < (int) choices.size() ? choices[(size_t) c] : std::string();
+}
+
+bool nearValue (const ImportPlan& p, const char* id, double expected, double tolerance = 1.0e-3)
+{
+    return std::abs ((double) valueOf (p, id) - expected) <= tolerance;
+}
+
+bool inChain (const ImportPlan& p, ps::ModuleType t)
+{
+    return std::find (p.order.begin(), p.order.end(), t) != p.order.end();
+}
+
+// Each check save is named after what the user set ("<group>-<what>.xml"); the expected result is read from the name
+// in our words (shape, style and detection names are the same as ours). Groups: F format (power, solo, L/R, a moved
+// band, I/O), E1 band shapes (band 2), E6 band phase, D detection and knee, M limiter algorithm and style, R Reset.
+void runCheckSaveTests()
+{
+    std::cout << "== importer: real-product check saves\n";
+    const auto folder = findCheckSaves();
+    if (folder == juce::File())
+    {
+        std::cout << "  SKIP no local folder of check saves (ignore_*/checks or PURESHEEN_IMPORT_CHECKS); nothing compared\n";
+        return;
+    }
+
+    auto files = folder.findChildFiles (juce::File::findFiles, false, "*.xml");
+    struct Less
+    {
+        static int compareElements (const juce::File& a, const juce::File& b)
+        {
+            return a.getFileName().compareNatural (b.getFileName());
+        }
+    } less;
+    files.sort (less);
+
+    int compared = 0;
+    for (const auto& file : files)
+    {
+        const auto name = file.getFileNameWithoutExtension();
+        const auto label = "check save " + name.toStdString();
+        const auto plan = psplug::planXmlPresetFile (file);
+        ++compared;
+
+        if (name.startsWith ("F-d-"))
+        {
+            // Input / output and mono are not stored; the save holds an empty chain: refused as holding no module.
+            check (! plan.ok && plan.holdsNoModules, label + ": empty chain refused as holding no module", plan.error);
+            continue;
+        }
+        if (! plan.ok)
+        {
+            check (false, label + ": imports", plan.error);
+            continue;
+        }
+        check (plan.report.unmapped == 0 && inRange (plan), label + ": every stored value imported, all in range",
+               std::to_string (plan.report.unmapped) + " not imported");
+
+        if (name.startsWith ("F-a-"))
+            check (inChain (plan, ps::ModuleType::Equalizer1) && nearValue (plan, "eq1.on", 0.0)
+                       && nearValue (plan, "max.on", 1.0),
+                   label + ": the module's power switch turns the equalizer off (the next module stays on)");
+        else if (name.startsWith ("F-a2-"))
+            check (nearValue (plan, "eq1.on", 1.0) && nearValue (plan, "max.on", 1.0),
+                   label + ": solo is not stored, both modules on");
+        else if (name.startsWith ("F-b-"))
+            check (nearValue (plan, "eq1.chMode", (double) ps::ChannelMode::LeftRight)
+                       && nearValue (plan, "eq1.b.b1.on", 1.0) && nearValue (plan, "eq1.a.b1.on", 0.0)
+                       && std::abs (valueOf (plan, "eq1.b.b1.gain")) > 0.5f,
+                   label + ": L/R mode, the second-channel band lands in set B",
+                   "chMode " + std::to_string (valueOf (plan, "eq1.chMode")));
+        else if (name.startsWith ("F-c-"))
+            check (nearValue (plan, "eq1.a.b2.on", 1.0) && std::abs (valueOf (plan, "eq1.a.b2.gain")) > 0.0f,
+                   label + ": a control moved and set back near its default is imported");
+        else if (name.startsWith ("E1-"))
+        {
+            // "E1-<family> - <variant>": the bell family names the bell variants alone.
+            const auto family = name.fromFirstOccurrenceOf ("E1-", false, false).upToFirstOccurrenceOf (" - ", false, false);
+            const auto variant = name.fromFirstOccurrenceOf (" - ", false, false);
+            const auto expected = (family == "Bell" ? variant : family + " " + variant).toStdString();
+            const auto got = choiceLabel (plan, "eq1.a.b2.shape");
+            check (got == expected && nearValue (plan, "eq1.a.b2.on", 1.0), label + ": band 2 shape " + expected, got);
+        }
+        else if (name.startsWith ("E6-"))
+        {
+            const double percent = name.fromLastOccurrenceOf (" ", false, false).getDoubleValue();
+            check (nearValue (plan, "eq1.a.b1.phase", percent, 0.01) && nearValue (plan, "eq1.mode", 1.0),
+                   label + ": band 1 phase " + std::to_string ((int) percent) + " % (digital mode)",
+                   std::to_string (valueOf (plan, "eq1.a.b1.phase")));
+        }
+        else if (name.startsWith ("D-"))
+        {
+            const auto detect = choiceLabel (plan, "dyn.detect");
+            if (name.endsWith ("-Env"))
+                check (detect == "Envelope", label + ": envelope detection", detect);
+            else if (name.endsWith ("-Peak"))
+                check (detect == "Peak" && nearValue (plan, "dyn.a.b1.comp.knee", 10.0)
+                           && nearValue (plan, "dyn.a.b1.lim.knee", 10.0),
+                       label + ": peak detection (nothing stored), both knees at the default 10", detect);
+            else if (name.endsWith ("-RMS"))
+                check (detect == "RMS", label + ": RMS detection", detect);
+            else if (name.contains ("knee-comp"))
+            {
+                const double knee = name.fromLastOccurrenceOf ("-", false, false).getDoubleValue();
+                check (nearValue (plan, "dyn.a.b1.comp.knee", knee, 0.05) && nearValue (plan, "dyn.a.b1.lim.knee", 10.0),
+                       label + ": compressor knee " + std::to_string ((int) knee), std::to_string (valueOf (plan, "dyn.a.b1.comp.knee")));
+            }
+            else if (name.contains ("knee-lim"))
+            {
+                const double knee = name.fromLastOccurrenceOf ("-", false, false).getDoubleValue();
+                check (nearValue (plan, "dyn.a.b1.lim.knee", knee, 0.05), label + ": limiter knee " + std::to_string ((int) knee),
+                       std::to_string (valueOf (plan, "dyn.a.b1.lim.knee")));
+            }
+        }
+        else if (name.startsWith ("M-"))
+        {
+            // "M-<algorithm> [<n>] [- <style>]": n 1..5 = our Smooth .. Multiband; low latency named in words.
+            using M = ps::MaximizerMode;
+            const auto rest = name.fromFirstOccurrenceOf ("M-", false, false);
+            const auto algorithm = rest.upToFirstOccurrenceOf (" - ", false, false);
+            const auto style = rest.contains (" - ") ? rest.fromFirstOccurrenceOf (" - ", false, false) : juce::String();
+            const int n = algorithm.retainCharacters ("0123456789").getIntValue();
+            const M modes[] { M::Smooth, M::Transparent, M::Aggressive, M::Spectral, M::Multiband };
+            const M expected = algorithm.containsIgnoreCase ("low latency") ? M::LowLatency
+                                                                            : (n >= 1 && n <= 5 ? modes[n - 1] : M::Count);
+            bool ok = nearValue (plan, "max.mode", (double) expected);
+            std::string detail = choiceLabel (plan, "max.mode");
+            if (expected == M::Aggressive)
+            {
+                ok = ok && choiceLabel (plan, "max.style3") == style.toStdString();
+                detail += " / " + choiceLabel (plan, "max.style3");
+            }
+            else if (expected == M::Spectral)
+            {
+                ok = ok && choiceLabel (plan, "max.style4") == style.toStdString();
+                detail += " / " + choiceLabel (plan, "max.style4");
+            }
+            check (ok, label + ": limiter mode" + (style.isEmpty() ? std::string() : " and style " + style.toStdString()),
+                   detail);
+        }
+        else if (name.startsWith ("R-"))
+        {
+            // Reset saves: the module at its defaults, on.
+            bool on = ! plan.order.empty();
+            for (const auto t : plan.order)
+                on = on && nearValue (plan, (std::string (ps::moduleInfo (t).idPrefix) + ".on").c_str(), 1.0);
+            check (on, label + ": every module of the chain on");
+            if (name == "R-Dynamics")
+                check (nearValue (plan, "dyn.bands", 1.0) && nearValue (plan, "dyn.a.b1.comp.thr", -12.0)
+                           && nearValue (plan, "dyn.a.b1.comp.ratio", 2.0) && nearValue (plan, "dyn.a.b1.comp.rel", 60.0)
+                           && nearValue (plan, "dyn.a.b1.comp.knee", 10.0) && nearValue (plan, "dyn.a.b1.lim.att", 20.0)
+                           && choiceLabel (plan, "dyn.detect") == "Peak",
+                       label + ": Dynamics Reset defaults (one band, -12 dB 2:1 20 / 60 ms knee 10, peak)");
+            else if (name == "R-Maximizer")
+                check (choiceLabel (plan, "max.mode") == "Smooth" && choiceLabel (plan, "max.style3") == "Balanced"
+                           && choiceLabel (plan, "max.style4") == "Modern" && nearValue (plan, "max.character", 2.0)
+                           && nearValue (plan, "max.clip.amount", 0.0) && nearValue (plan, "max.upward", 0.0),
+                       label + ": Maximizer Reset defaults");
+            else if (name == "R-Match EQ")
+                check (nearValue (plan, "meq.a.amount", 10.0) && nearValue (plan, "meq.a.smooth", 50.0),
+                       label + ": Match EQ Reset defaults (amount 10 %, smoothing 50 %)");
+        }
+    }
+    std::cout << "  " << compared << " check saves compared (" << folder.getFullPathName() << ")\n";
+}
+} // namespace
+
 int runImportTests()
 {
     failures = 0;
@@ -949,6 +1153,8 @@ int runImportTests()
         const auto noSlot = psplug::planXmlPresetText (matchFileText (3, data), testOptions());
         check (noSlot.ok && noSlot.matchReference == nullptr, "import: a flag for an empty / missing record is not applied");
     }
+
+    runCheckSaveTests();
 
     std::cout << "\nimporttest: " << (failures == 0 ? "all passed" : std::to_string (failures) + " FAILED") << "\n";
     return failures == 0 ? 0 : 1;

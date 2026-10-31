@@ -67,7 +67,8 @@ Key sectionKey (std::string_view tagOrElementId, const Aliases* aliases = nullpt
 // Mapping tables
 //==============================================================================
 
-// How sure we are of a foreign default. Known: proven from the files (sparse storage, never stored) or documented;
+// How sure we are of a foreign default. Known: proven from the files (sparse storage, never stored), documented, or
+// confirmed in the real product (Reset screenshots and one-change test saves of writer 120000);
 // Likely: consistent evidence of one kind; Guess: no evidence, needs a Reset check in the foreign app
 // (out/importer/defaults-to-confirm.md lists every Likely / Guess default; `PureSheenDev import --defaults` prints them).
 enum class Conf : std::uint8_t { Known, Likely, Guess };
@@ -128,6 +129,10 @@ struct Rule
 };
 
 using Hook = void (*) (ModuleImport&);
+
+// The module power switch every foreign module section may store (one key for all modules, no number, set A only):
+// stored >= 0.5 = the module is switched off. Handled by ModuleImport::run for every module (see setWritesModulePower).
+inline constexpr Key kSectionBypassKey = 0xe40567630146944dull;
 
 // One foreign module that maps to one of ours.
 struct ModuleSpec
@@ -260,7 +265,11 @@ public:
     void setLayout (const BandLayout& l) noexcept { bands = l; }
 
     // ---- engine side
-    void run();          // prepare hook, table, finish hook, leftover accounting
+    void run();          // prepare hook, table, finish hook, module power, leftover accounting
+    // Module power from the section's own power switch (kSectionBypassKey). true (whole-chain files): run() writes
+    // "~.on" (absent = on) and counts a stored switch as imported. false (the default; single-module files): module
+    // presets never carry power here, so a stored switch is counted as ignored.
+    void setWritesModulePower (bool writes) noexcept { writesPower = writes; }
     const Rule* findRule (Key) const noexcept;
     // The section's <ExtraBytes> children as (ElementID key, base64 Data); the strings must outlive run().
     void setExtraBytes (std::vector<std::pair<Key, const std::string*>> blobs) { extra = std::move (blobs); }
@@ -274,7 +283,9 @@ private:
     std::string section, idPrefix;
     BandLayout bands;
     std::vector<std::pair<Key, const std::string*>> extra;
+    bool writesPower = false;
 
+    void applyModulePower();
     StoredParam* find (Key, int number, int set);
     const StoredParam* find (Key, int number, int set) const;
     std::string resolve (std::string_view pattern, int band) const;

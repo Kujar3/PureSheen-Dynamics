@@ -11,12 +11,13 @@
 //
 // Choices made where the format does not say (all listed with their evidence in the private defaults notes; the
 // "def" columns below are the one place to correct them):
-// - Equalizer band shapes use a legacy 20-value index (pairs low / high for shelves and cuts, a bell family and three
-//   digital-only shapes). The table eqShape() is reconstructed from where each index occurs; the shelf variants are
-//   the least certain part (a wrong variant changes the curve only modestly).
+// - Equalizer band shapes: indices 0..16 are confirmed with one test save per shape (writer 120000; the index is
+//   stored, so it is read the same way for every writer). 17..19 (three digital-only shapes) occur only in older
+//   files and are kept from where they occur.
 // - Absent band frequency / Q / shape take a per-version guess of the foreign node layout. Bands that a file does not
 //   switch on are inaudible at 0 dB, so these guesses only matter for bands a file enables without storing them.
-// - The foreign band phase (Digital mode) is stored as 0 .. -1; |value| x 100 % is our linear .. minimum phase amount.
+// - The foreign band phase (Digital mode) is stored as -(percent / 100) and 0 % is not stored (confirmed with test
+//   saves); -value x 100 % is our linear (0) .. minimum phase (100) amount.
 // - Dynamic EQ: the foreign "auto" timing stores multipliers of a frequency-dependent time; ours scales a 1 kHz base
 //   time by the band frequency, so a multiplier becomes base x multiplier. Ratio, knee, sidechain and the static
 //   switch have no foreign counterpart and keep our defaults.
@@ -75,7 +76,7 @@ constexpr Key kEq1ChainName  = 0xb4ecd1805373188full;   // main equalizer (Eleme
 constexpr Key kEq2SectionTag = 0xd96fdf198e710f43ull;   // second (post) equalizer section (tag)
 constexpr Key kEq2ChainName  = 0xc9ef7673ea0f7f4full;   // second (post) equalizer (ElementID / chain name)
 
-constexpr Key kEqBandPhase     = 0x65ed77c57b8447ecull;   // band phase in Digital mode, 0 .. -1
+constexpr Key kEqBandPhase     = 0x65ed77c57b8447ecull;   // band phase in Digital mode, -(percent / 100)
 constexpr Key kEqFilterMode    = 0xd1c4ce22808a1df6ull;   // 0 = minimum phase (analog), 1 = linear phase (digital)
 constexpr Key kEqAnalyserSmooth= 0x6ab838f9e55c8b83ull;   // spectrum analyser smoothing (view)
 constexpr Key kEqMsSelection   = 0xb6004e16c48d94d3ull;   // which of mid / side the view edits
@@ -90,32 +91,34 @@ constexpr Key kEqSpecRangeMin  = 0xb1e0056e6eafdd24ull;   // display range of th
 constexpr Key kEqRulerMax      = 0xde378e4addd52bf7ull;   // display range of the frequency ruler, top
 constexpr Key kEqRulerMin      = 0xde527c4addebd519ull;   // display range of the frequency ruler, bottom
 
-// Foreign band shape index -> our EqShape. NaN (shape not representable): our bell stays, counted as not imported.
-//   0 proportional-Q bell   15 plain bell            16 flat-topped band
-//   1 / 2   gentle (fixed-slope) low / high shelf    11 / 12 analog low / high shelf (Q shapes the corner)
-//   9 / 10  resonant low / high shelf                13 / 14 passive-style low / high shelf (dip past the corner)
-//   3 / 4   flat low-pass / high-pass                5 / 6   resonant low-pass / high-pass
-//   7 / 8   brickwall low-pass / high-pass           17 surgical bell; 18 / 19 surgical low / high shelf
+// Foreign band shape index -> our EqShape (each one has a same-named shape here). NaN (not representable): our bell
+// stays, counted as not imported.
+//   0 bell                  15 proportional-Q bell   16 flat-topped band
+//   1 / 2   analog low / high shelf (Q shapes the corner)
+//   3 / 4   resonant low-pass / high-pass            5 / 6   flat low-pass / high-pass
+//   7 / 8   brickwall low-pass / high-pass           9 / 10  passive-style low / high shelf (dip past the corner)
+//   11 / 12 gentle (fixed-slope) low / high shelf    13 / 14 resonant low / high shelf
+//   17 surgical bell; 18 / 19 surgical low / high shelf (older files only)
 double eqShape (double v, ModuleImport& m, int, int)
 {
     switch (indexOf (v))
     {
-        case 0:  return (double) EqShape::ProportionalQ;
-        case 1:  return (double) EqShape::LowShelfBaxandall;
-        case 2:  return (double) EqShape::HighShelfBaxandall;
-        case 3:  return (double) EqShape::LowPassFlat;
-        case 4:  return (double) EqShape::HighPassFlat;
-        case 5:  return (double) EqShape::LowPassResonant;
-        case 6:  return (double) EqShape::HighPassResonant;
+        case 0:  return (double) EqShape::Bell;
+        case 1:  return (double) EqShape::LowShelfAnalog;
+        case 2:  return (double) EqShape::HighShelfAnalog;
+        case 3:  return (double) EqShape::LowPassResonant;
+        case 4:  return (double) EqShape::HighPassResonant;
+        case 5:  return (double) EqShape::LowPassFlat;
+        case 6:  return (double) EqShape::HighPassFlat;
         case 7:  return (double) EqShape::LowPassBrickwall;
         case 8:  return (double) EqShape::HighPassBrickwall;
-        case 9:  return (double) EqShape::LowShelfResonant;
-        case 10: return (double) EqShape::HighShelfResonant;
-        case 11: return (double) EqShape::LowShelfAnalog;
-        case 12: return (double) EqShape::HighShelfAnalog;
-        case 13: return (double) EqShape::LowShelfVintage;
-        case 14: return (double) EqShape::HighShelfVintage;
-        case 15: return (double) EqShape::Bell;
+        case 9:  return (double) EqShape::LowShelfVintage;
+        case 10: return (double) EqShape::HighShelfVintage;
+        case 11: return (double) EqShape::LowShelfBaxandall;
+        case 12: return (double) EqShape::HighShelfBaxandall;
+        case 13: return (double) EqShape::LowShelfResonant;
+        case 14: return (double) EqShape::HighShelfResonant;
+        case 15: return (double) EqShape::ProportionalQ;
         case 16: return (double) EqShape::BandShelf;
         case 17: return (double) EqShape::Surgical;
         case 18:
@@ -136,19 +139,21 @@ double eqEnableDefault (const ModuleImport& m, int n, int)
     return (writer (m) < 110000 && n % 2 == 1) ? 1.0 : 0.0;
 }
 
-// Default shape index per band and writer era (the foreign index, mapped through eqShape).
+// Default shape index per band and writer era (the foreign index, mapped through eqShape). The indices come from the
+// never-stored sets of each era; bands 2..6 = bell is confirmed for writer 120000 (band 2), band 1 is proven not to be
+// a bell there (an explicit bell is stored), its real default is still open.
 double eqShapeDefault (const ModuleImport& m, int n, int)
 {
     const int v = writer (m);
     if (n >= 2 && n <= 6)
-        return v < 7000 ? 15.0 : 0.0;                                  // middle bands: plain bell (oldest), then prop. Q
+        return v < 7000 ? 15.0 : 0.0;                                  // middle bands: prop. Q (oldest), then bell
     if (v < 9000)
-        return n == 1 ? 1.0 : 2.0;                                     // oldest writers: gentle shelves
+        return n == 1 ? 1.0 : 2.0;                                     // oldest writers: analog shelves
     if (n == 8)
-        return 3.0;                                                    // top band: flat low-pass
+        return 3.0;                                                    // top band: resonant low-pass
     if (v < 100000)
-        return n == 1 ? 11.0 : 12.0;                                   // analog shelves
-    return n == 1 ? 1.0 : 2.0;                                         // gentle shelves
+        return n == 1 ? 11.0 : 12.0;                                   // gentle shelves
+    return n == 1 ? 1.0 : 2.0;                                         // analog shelves
 }
 
 // Default node frequencies (a plausible layout consistent with every stored value; see the private notes).
@@ -164,8 +169,9 @@ double eqQDefault (const ModuleImport& m, int n, int)
     return (writer (m) >= 100000 && (n == 1 || n == 7)) ? 1.0 : 0.707;
 }
 
-// Band phase 0 .. -1 (Digital mode) -> our 0 (linear) .. 100 % (minimum phase).
-double eqPhase (double v, ModuleImport&, int, int) { return std::min (std::fabs (v), 1.0) * 100.0; }
+// Band phase -(percent / 100) (Digital mode) -> our 0 (linear) .. 100 % (minimum phase). A value outside 0 .. -1 is
+// clamped by set() and counted.
+double eqPhase (double v, ModuleImport&, int, int) { return std::clamp (-v, -1.0, 2.0) * 100.0 + 0.0; }   // + 0: no -0
 
 //------------------------------------------------------------------------------------------------------------------
 // EQUALIZER TABLE. The "def" column is the foreign default of each control (the one place to correct them).
@@ -256,6 +262,13 @@ double deqShapeDefault (const ModuleImport&, int n, int)
     return n == 1 ? 3.0 : (n == 6 ? 4.0 : 1.0);
 }
 
+// Default Q: 0.7 on bands 2..6 from 110000 on (a new band, confirmed for writer 120000). Band 1 stores an explicit
+// 0.7 in a 110000 file and band 3 one in a 9000-era file, so those are not 0.7: they keep the older guess 0.707.
+double deqQDefault (const ModuleImport& m, int n, int)
+{
+    return (writer (m) >= 110000 && n >= 2) ? 0.7 : 0.707;
+}
+
 // Default frequencies: unknown; our own layout (the same as our parameter defaults).
 double deqFreqDefault (const ModuleImport&, int n, int)
 {
@@ -273,8 +286,8 @@ const std::vector<Rule>& dynamicEqRules()
         { kBandShape,       Act::Map,          1, 6, Band::Same, "~.a.b#.shape",   "~.b.b#.shape",   deqShape,       byVersion (deqShapeDefault, Conf::Likely), "band shape" },
         { kBandFreq,        Act::Map,          1, 6, Band::Same, "~.a.b#.freq",    "~.b.b#.freq",    nullptr,        byVersion (deqFreqDefault, Conf::Guess),   "band frequency" },
         { kBandGain,        Act::Map,          1, 6, Band::Same, "~.a.b#.gain",    "~.b.b#.gain",    nullptr,        known (0.0),                               "band gain" },
-        { kBandQ,           Act::Map,          1, 6, Band::Same, "~.a.b#.q",       "~.b.b#.q",       nullptr,        guess (0.707),                             "band Q" },
-        { kDeqThreshold,    Act::Map,          1, 6, Band::Same, "~.a.b#.thr",     "~.b.b#.thr",     nullptr,        guess (-30.0),                             "band threshold" },
+        { kBandQ,           Act::Map,          1, 6, Band::Same, "~.a.b#.q",       "~.b.b#.q",       nullptr,        byVersion (deqQDefault, Conf::Likely),     "band Q" },
+        { kDeqThreshold,    Act::Map,          1, 6, Band::Same, "~.a.b#.thr",     "~.b.b#.thr",     nullptr,        known (-30.0),                             "band threshold" },
         { kDeqDirection,    Act::Map,          1, 6, Band::Same, "~.a.b#.dir",     "~.b.b#.dir",     xf::boolean,    known (0.0),                               "band direction" },
         { kDeqAutoTimes,    Act::Map,          1, 6, Band::Same, "~.a.b#.auto",    "~.b.b#.auto",    xf::boolean,    known (1.0),                               "band automatic timing" },
         { kDeqAttack,       Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        guess (kDeqAutoAttackMs),                  "band attack" },
@@ -348,10 +361,10 @@ const std::vector<Rule>& matchEqRules()
 {
     static const std::vector<Rule> rules {
         //  key              act               first count band        set A id     set B id     transform  foreign default  what
-        { kMeqAmount,       Act::Map,          0, 0, Band::Same, "~.a.amount", "~.b.amount", nullptr,   guess (50.0),    "match amount" },
-        { kMeqSmoothing,    Act::Map,          0, 0, Band::Same, "~.a.smooth", "~.b.smooth", nullptr,   guess (50.0),    "match smoothing" },
-        { kMeqRegionLow,    Act::Map,          0, 0, Band::Same, "~.a.lo",     "~.b.lo",     nullptr,   likely (20.0),   "region low edge" },
-        { kMeqRegionHigh,   Act::Map,          0, 0, Band::Same, "~.a.hi",     "~.b.hi",     nullptr,   likely (20000.0),"region high edge" },
+        { kMeqAmount,       Act::Map,          0, 0, Band::Same, "~.a.amount", "~.b.amount", nullptr,   known (10.0),    "match amount" },
+        { kMeqSmoothing,    Act::Map,          0, 0, Band::Same, "~.a.smooth", "~.b.smooth", nullptr,   known (50.0),    "match smoothing" },
+        { kMeqRegionLow,    Act::Map,          0, 0, Band::Same, "~.a.lo",     "~.b.lo",     nullptr,   known (20.0),    "region low edge" },
+        { kMeqRegionHigh,   Act::Map,          0, 0, Band::Same, "~.a.hi",     "~.b.hi",     nullptr,   known (20000.0), "region high edge" },
         { kProcessingMode,  Act::ChannelMode,  0, 0, Band::Same, nullptr,      nullptr,      nullptr,   known (0.0),     "channel mode" },
         { kMeqSpectrumOn,   Act::Hook,         1, 7, Band::Same, nullptr,      nullptr,      nullptr,   known (0.0),     "reference spectrum slot" },
     };

@@ -58,7 +58,8 @@ std::optional<std::vector<unsigned char>> decodeBase64 (std::string_view);
 struct ChainEntry
 {
     std::string name;
-    int flag = 0;            // 0 in every file seen; non-zero is treated as "module bypassed" (a guess, unverified)
+    int flag = 0;            // meaning unknown (0 in every file seen); NOT module power: it stays 0 when the module is
+                             // switched off, which the section's own power switch stores (kSectionBypassKey)
 };
 struct ChainDecode
 {
@@ -77,6 +78,7 @@ struct ImportPlan
 {
     bool ok = false;
     std::string error;                    // plain words, no foreign names ("This file is not a preset ...")
+    bool holdsNoModules = false;          // not ok because the file is well formed but its chain holds no module
     int scope = -1;                       // -1 = a whole chain; else the (int) ModuleType of a single-module file
     std::vector<ModuleType> order;        // global files: our chain in the foreign order
     std::vector<float> values;            // paramSpecs() order: our defaults + every imported / foreign-default value

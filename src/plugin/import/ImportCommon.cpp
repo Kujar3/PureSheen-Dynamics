@@ -458,6 +458,34 @@ void ModuleImport::applyRule (const Rule& r)
     }
 }
 
+void ModuleImport::applyModulePower()
+{
+    if (idPrefix.empty() || findRule (kSectionBypassKey) != nullptr)
+        return;   // the global section, or a table that handles the switch itself
+
+    auto* p = find (kSectionBypassKey, -1, 0);
+    if (! writesPower)
+    {
+        if (p != nullptr && p->use == StoredParam::Use::None)
+            p->use = StoredParam::Use::Ignored;
+        return;
+    }
+
+    bool off = false;
+    if (p != nullptr)
+    {
+        if (std::isnan (p->value))
+            p->use = StoredParam::Use::Rejected;   // unreadable: the module stays on
+        else
+        {
+            off = p->value >= 0.5;
+            if (p->use == StoredParam::Use::None)
+                p->use = StoredParam::Use::Mapped;
+        }
+    }
+    set ("~.on", off ? 0.0 : 1.0);
+}
+
 void ModuleImport::run()
 {
     if (spec.prepare != nullptr)
@@ -469,6 +497,8 @@ void ModuleImport::run()
 
     if (spec.finish != nullptr)
         spec.finish (*this);
+
+    applyModulePower();
 
     for (auto& p : stored)
     {

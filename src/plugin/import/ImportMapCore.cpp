@@ -10,7 +10,9 @@
 //
 // Status: every table is complete. Defaults marked likely / guess are listed (with their evidence) in the private
 // out/importer/defaults-to-confirm.md and printed by `PureSheenDev import --defaults`; the "def" column of each table
-// is the one place to correct them.
+// is the one place to correct them. Rows marked known include the defaults confirmed in the real product (writer
+// 120000: Reset screenshots and one-change test saves); where the files prove an older writer differed, that writer
+// keeps its own default (byVersion).
 //
 // Choices made here (no foreign behaviour documented; what a mastering engineer would expect):
 // - Controls the foreign module keeps per channel set while ours are shared (Dynamics detection, release mode,
@@ -22,6 +24,10 @@
 //   catches overs; ours stays off there, which is the same in practice and costs nothing).
 // - The Maximizer's older threshold control (a negative dB value) and the newer gain control drive our gain: gain =
 //   -threshold. Its transient control spans twice our range (0..200 -> 0..100 %).
+// - The Dynamics knee is stored in the foreign knob's display units, 0..10 (10 = the maximum and the default, for the
+//   compressor and the limiter). It is read 1:1 as our knee width in dB (0..10 dB of our 0..30 dB): the foreign
+//   scale is unitless, and 10 dB is a usual soft knee (a 3x stretch to our full range would make the default knee
+//   30 dB wide, far softer than any foreign setting sounds).
 // - Dither and the I/O section are never stored by the foreign writer, so there are no rules for them: a whole-chain
 //   import leaves them at our defaults (spec decision).
 namespace ps::imp
@@ -131,7 +137,7 @@ constexpr Key kImgVectorscope  = 0xc8651bff7c08b32bull;   // vectorscope smoothi
 constexpr Key kImgPartView     = 0x395c02b9fcbbb955ull;   // which part (transient / sustain) the view shows
 
 // The stereoize mode default moved between writer versions (sparse storage: only the non-default is ever stored):
-// 0 below 9900, 1 from 9900 to 109999, 0 from 110000 on.
+// 0 below 9900, 1 from 9900 to 109999, 0 from 110000 on (0 = our Mode I, confirmed for writer 120000).
 double imagerStereoizeModeDefault (const ModuleImport& m, int, int)
 {
     const int v = m.pluginVersion();
@@ -154,12 +160,12 @@ const std::vector<Rule>& imagerRules()
         { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,            crossoverKind,       likely (2.0),                            "crossover kind" },
         { kImgWidth,        Act::Map,          1, 4, Band::Layout, "~.b#.width",     "~.b.b#.width",     nullptr,             known (0.0),                             "band width" },
         { kImgStzOn,        Act::Map,          0, 0, Band::Same,   "~.stz.on",       "~.b.stz.on",       xf::boolean,         known (0.0),                             "stereoize on" },
-        { kImgStzMode,      Act::Map,          0, 0, Band::Same,   "~.stz.mode",     "~.b.stz.mode",     xf::roundIndex,      byVersion (imagerStereoizeModeDefault, Conf::Likely), "stereoize mode" },
-        { kImgStzDelay,     Act::Map,          0, 0, Band::Same,   "~.stz.amount",   "~.b.stz.amount",   imagerDelayToAmount, noDefault(),                             "stereoize amount" },
+        { kImgStzMode,      Act::Map,          0, 0, Band::Same,   "~.stz.mode",     "~.b.stz.mode",     xf::roundIndex,      byVersion (imagerStereoizeModeDefault, Conf::Known), "stereoize mode" },
+        { kImgStzDelay,     Act::Map,          0, 0, Band::Same,   "~.stz.amount",   "~.b.stz.amount",   imagerDelayToAmount, known (6.0),                             "stereoize amount" },
         { kImgRecOn,        Act::Map,          0, 0, Band::Same,   "~.rec.on",       "~.b.rec.on",       xf::boolean,         known (0.0),                             "recover sides on" },
-        { kImgRecGain,      Act::Map,          0, 0, Band::Same,   "~.rec.gain",     "~.b.rec.gain",     nullptr,             noDefault(),                             "recover sides gain" },
+        { kImgRecGain,      Act::Map,          0, 0, Band::Same,   "~.rec.gain",     "~.b.rec.gain",     nullptr,             known (0.0),                             "recover sides gain" },
         { kImgAntiphase,    Act::Map,          0, 0, Band::Same,   "~.antiphase",    nullptr,            xf::boolean,         likely (0.0),                            "prevent antiphase" },
-        { kImgAmount,       Act::Map,          0, 0, Band::Same,   "~.amount",       nullptr,            nullptr,             likely (100.0),                          "module amount" },
+        { kImgAmount,       Act::Map,          0, 0, Band::Same,   "~.amount",       nullptr,            nullptr,             known (100.0),                           "module amount" },
         { kProcessingMode,  Act::ChannelMode,  0, 0, Band::Same,   nullptr,          nullptr,            nullptr,             known (0.0),                             "channel mode" },
         { kImgBandDelay,    Act::Unsupported,  1, 4, Band::Same,   nullptr,          nullptr,            nullptr,             noDefault(),                             "per-band delay" },
         { kBandSolo,        Act::Ignore,       0, 4, Band::Same,   nullptr,          nullptr,            nullptr,             noDefault(),                             "band solo" },
@@ -238,12 +244,12 @@ constexpr Key kDynCompThr      = 0x6bc6f43e63902cb5ull;   // compressor threshol
 constexpr Key kDynCompRatio    = 0x02a9e68d3bfa9649ull;   // compressor ratio
 constexpr Key kDynCompAtt      = 0xbeeb0197c8a89a76ull;   // compressor attack in ms
 constexpr Key kDynCompRel      = 0x35ddf47e6c800c7bull;   // compressor release in ms
-constexpr Key kDynCompKnee     = 0xd1cb2accf9898509ull;   // compressor knee (taken as dB)
+constexpr Key kDynCompKnee     = 0xd1cb2accf9898509ull;   // compressor knee, display units 0..10 (= our dB)
 constexpr Key kDynLimThr       = 0x572cb2c2e342a9a2ull;   // band limiter threshold in dB
 constexpr Key kDynLimRatio     = 0x40303d2a81640962ull;   // band limiter ratio
 constexpr Key kDynLimAtt       = 0x43332321a7bb57dfull;   // band limiter attack in ms
 constexpr Key kDynLimRel       = 0x203b6cfd9ab2ba8cull;   // band limiter release in ms
-constexpr Key kDynLimKnee      = 0x00724232b98d93deull;   // band limiter knee (taken as dB)
+constexpr Key kDynLimKnee      = 0x00724232b98d93deull;   // band limiter knee, display units 0..10 (= our dB)
 constexpr Key kDynBandGain     = 0xe6fa16efcbd9c742ull;   // band output gain in dB
 // module controls (per set where noted)
 constexpr Key kDynDetection    = 0xee969af2907d970dull;   // level detection kind, per set
@@ -268,21 +274,17 @@ constexpr Key kDynLinkBands    = 0x56aa461a655a2ba6ull;   // bands edited togeth
 constexpr Key kDynShowBands    = 0x41b328cffdade7e7ull;   // show every band (view)
 constexpr Key kDynCrestLearn   = 0x4ab2335d6c31735eull;   // detector learn state (view)
 
-// Compressor threshold: -12 dB from 9000 on (never stored by those writers, which store -10 in bulk), -10 dB for the
-// older writers (never stored there). Both are guesses for the Reset check.
-double dynCompThrDefault (const ModuleImport& m, int, int) { return olderWriter (m) ? -10.0 : -12.0; }
-
 // The set link switch only exists in the older writers (default off); for newer files ours is kept.
 double dynLinkDefault (const ModuleImport& m, int, int) { return olderWriter (m) ? 0.0 : kNoValue; }
 
-// Detection kind: 0 (the default) = envelope, 1 = RMS, 2 = peak.
+// Detection kind: 0 (the default) = peak, 1 = RMS, 2 = envelope (confirmed with one test save per kind).
 double dynDetection (double v, ModuleImport&, int, int)
 {
     switch (indexOf (v, 3))
     {
-        case 0:  return (double) DetectionMode::Envelope;
+        case 0:  return (double) DetectionMode::Peak;
         case 1:  return (double) DetectionMode::Rms;
-        case 2:  return (double) DetectionMode::Peak;
+        case 2:  return (double) DetectionMode::Envelope;
         default: return kNoValue;
     }
 }
@@ -317,6 +319,9 @@ const BandCopy kDynLinkedBandValues[] {
 
 //------------------------------------------------------------------------------------------------------------------
 // DYNAMICS TABLE. The "def" column is the foreign default of each control (the one place to correct them).
+// Band defaults confirmed for writer 120000 (Reset and a new band): compressor -12 dB, 2:1, 20 / 60 ms, knee 10;
+// limiter 0 dB, 10:1, 20 / 100 ms, knee 10; mix 100 %, gain 0 dB, peak detection. No file of any writer stores one
+// of these exact values, so they hold for every writer.
 const std::vector<Rule>& dynamicsRules()
 {
     static const std::vector<Rule> rules {
@@ -326,16 +331,16 @@ const std::vector<Rule>& dynamicsRules()
         { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,               nullptr,               nullptr,          noDefault(),                             "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,               nullptr,               nullptr,          known (0.0),                             "band bypass" },
         { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",         nullptr,               crossoverKind,    likely (2.0),                            "crossover kind" },
-        { kDynCompThr,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.thr",     "~.b.b#.comp.thr",     nullptr,          byVersion (dynCompThrDefault, Conf::Guess), "compressor threshold" },
-        { kDynCompRatio,    Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.ratio",   "~.b.b#.comp.ratio",   nullptr,          likely (2.0),                            "compressor ratio" },
-        { kDynCompAtt,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.att",     "~.b.b#.comp.att",     attackMs,         guess (20.0),                            "compressor attack" },
-        { kDynCompRel,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.rel",     "~.b.b#.comp.rel",     releaseMs,        guess (125.0),                           "compressor release" },
-        { kDynCompKnee,     Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.knee",    "~.b.b#.comp.knee",    nullptr,          guess (3.0),                             "compressor knee" },
-        { kDynLimThr,       Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.thr",      "~.b.b#.lim.thr",      nullptr,          likely (0.0),                            "limiter threshold" },
-        { kDynLimRatio,     Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.ratio",    "~.b.b#.lim.ratio",    nullptr,          likely (10.0),                           "limiter ratio" },
-        { kDynLimAtt,       Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.att",      "~.b.b#.lim.att",      attackMs,         guess (1.0),                             "limiter attack" },
-        { kDynLimRel,       Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.rel",      "~.b.b#.lim.rel",      releaseMs,        guess (100.0),                           "limiter release" },
-        { kDynLimKnee,      Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.knee",     "~.b.b#.lim.knee",     nullptr,          guess (3.0),                             "limiter knee" },
+        { kDynCompThr,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.thr",     "~.b.b#.comp.thr",     nullptr,          known (-12.0),                           "compressor threshold" },
+        { kDynCompRatio,    Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.ratio",   "~.b.b#.comp.ratio",   nullptr,          known (2.0),                             "compressor ratio" },
+        { kDynCompAtt,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.att",     "~.b.b#.comp.att",     attackMs,         known (20.0),                            "compressor attack" },
+        { kDynCompRel,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.rel",     "~.b.b#.comp.rel",     releaseMs,        known (60.0),                            "compressor release" },
+        { kDynCompKnee,     Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.knee",    "~.b.b#.comp.knee",    nullptr,          known (10.0),                            "compressor knee" },
+        { kDynLimThr,       Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.thr",      "~.b.b#.lim.thr",      nullptr,          known (0.0),                             "limiter threshold" },
+        { kDynLimRatio,     Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.ratio",    "~.b.b#.lim.ratio",    nullptr,          known (10.0),                            "limiter ratio" },
+        { kDynLimAtt,       Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.att",      "~.b.b#.lim.att",      attackMs,         known (20.0),                            "limiter attack" },
+        { kDynLimRel,       Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.rel",      "~.b.b#.lim.rel",      releaseMs,        known (100.0),                           "limiter release" },
+        { kDynLimKnee,      Act::Map,          1, 4, Band::Layout, "~.a.b#.lim.knee",     "~.b.b#.lim.knee",     nullptr,          known (10.0),                            "limiter knee" },
         { kBandMix,         Act::Map,          1, 4, Band::Layout, "~.a.b#.mix",          "~.b.b#.mix",          nullptr,          known (100.0),                           "band mix" },
         { kDynBandGain,     Act::Map,          1, 4, Band::Layout, "~.a.b#.gain",         "~.b.b#.gain",         nullptr,          known (0.0),                             "band gain" },
         { kDynDetection,    Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          known (0.0),                             "detection kind" },
@@ -346,7 +351,7 @@ const std::vector<Rule>& dynamicsRules()
         { kDynScTilt,       Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          guess (50.0),                            "detection tilt amount" },
         { kDynAutoGain,     Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          known (0.0),                             "auto gain" },
         { kDynOutGain,      Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          known (0.0),                             "output gain" },
-        { kDynOutMix,       Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          likely (100.0),                          "module mix" },
+        { kDynOutMix,       Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          known (100.0),                           "module mix" },
         { kDynLookahead,    Act::Map,          0, 0, Band::Same,   "~.lookahead",         nullptr,               nullptr,          noDefault(),                             "lookahead" },
         { kDynSetAOff,      Act::Map,          0, 0, Band::Same,   "~.a.on",              nullptr,               xf::invertBool,   known (0.0),                             "set A off" },
         { kDynSetBOff,      Act::Map,          0, 0, Band::Same,   "~.b.on",              nullptr,               xf::invertBool,   known (0.0),                             "set B off" },
@@ -522,8 +527,8 @@ const std::vector<Rule>& exciterRules()
         { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,          nullptr,         noDefault(),                             "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,          nullptr,         known (0.0),                             "band bypass" },
         { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,          crossoverKind,   noDefault(),                             "crossover kind" },
-        { kExcBandMode,     Act::Hook,         1, 4, Band::Same,   nullptr,          nullptr,          nullptr,         likely (5.0),                            "band model" },
-        { kExcModeAll,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         likely (5.0),                            "model of every band" },
+        { kExcBandMode,     Act::Hook,         1, 4, Band::Same,   nullptr,          nullptr,          nullptr,         known (5.0),                             "band model" },
+        { kExcModeAll,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         known (5.0),                             "model of every band" },
         { kExcAmount,       Act::Map,          1, 4, Band::Layout, "~.a.b#.drive",   "~.b.b#.drive",   nullptr,         known (0.0),                             "band drive" },
         { kBandMix,         Act::Map,          1, 4, Band::Layout, "~.a.b#.mix",     "~.b.b#.mix",     nullptr,         known (100.0),                           "band mix" },
         { kExcPostFreq,     Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         noDefault(),                             "post filter frequency" },
@@ -630,8 +635,10 @@ constexpr Key kMaxLearnLevel   = 0x5d470e3af9bbb8eeull;   // learn state
 constexpr Key kMaxLearnOn      = 0x2e3b9c82899c93fdull;   // learn state
 constexpr Key kMaxLearnGr      = 0xe50487396147fdf9ull;   // learn state
 
-// Algorithm index -> our mode. 0 (the default) = our Smooth, 1 Transparent, 2 Aggressive, 3 Spectral. Index 4 is the
-// low-latency algorithm before 120000; from 120000 a new multiband algorithm took index 4 and low latency moved to 5.
+// Algorithm index -> our closest mode (the list confirmed for writer 120000 with one test save per algorithm):
+// 0 (the default) = our Smooth, 1 Transparent, 2 Aggressive (with its styles), 3 Spectral (with its styles), 4 the
+// multiband algorithm = our Multiband, 5 low latency = our LowLatency. Before 120000 the list had no multiband
+// algorithm and index 4 was low latency.
 double maximizerMode (double v, ModuleImport& m, int, int)
 {
     const int version = m.pluginVersion();
@@ -648,7 +655,8 @@ double maximizerMode (double v, ModuleImport& m, int, int)
     }
 }
 
-// Aggressive style: stored 0 pumping, 1 balanced, 2 crisp, 3 clipping; ours runs the other way.
+// Aggressive style: stored 0 pumping, 1 balanced (the default), 2 crisp, 3 clipping; ours runs the other way. The
+// spectral style is stored in our order (0 classic, 1 modern = the default, 2 transient). Both confirmed by test saves.
 double maximizerStyle3 (double v, ModuleImport&, int, int)
 {
     const int i = indexOf (v, 4);
@@ -665,24 +673,24 @@ const std::vector<Rule>& maximizerRules()
     static const std::vector<Rule> rules {
         //  key              act               first count band          set A id          set B id  transform         foreign default  what
         { kMaxMode,         Act::Map,          0, 0, Band::Same,   "~.mode",         nullptr,  maximizerMode,    known (0.0),     "algorithm" },
-        { kMaxStyle3,       Act::Map,          0, 0, Band::Same,   "~.style3",       nullptr,  maximizerStyle3,  likely (1.0),    "aggressive style" },
-        { kMaxStyle4,       Act::Map,          0, 0, Band::Same,   "~.style4",       nullptr,  xf::roundIndex,   likely (1.0),    "spectral style" },
+        { kMaxStyle3,       Act::Map,          0, 0, Band::Same,   "~.style3",       nullptr,  maximizerStyle3,  known (1.0),     "aggressive style" },
+        { kMaxStyle4,       Act::Map,          0, 0, Band::Same,   "~.style4",       nullptr,  xf::roundIndex,   known (1.0),     "spectral style" },
         { kMaxThreshold,    Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          known (0.0),     "threshold (older files)" },
         { kMaxGain,         Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          known (0.0),     "gain" },
-        { kMaxCeiling,      Act::Map,          0, 0, Band::Same,   "~.ceiling",      nullptr,  nullptr,          likely (0.0),    "output ceiling" },
+        { kMaxCeiling,      Act::Map,          0, 0, Band::Same,   "~.ceiling",      nullptr,  nullptr,          known (0.0),     "output ceiling" },
         { kMaxLink,         Act::Map,          0, 0, Band::Same,   "~.link",         nullptr,  xf::boolean,      known (0.0),     "gain and ceiling linked" },
-        { kMaxCharacter,    Act::Map,          0, 0, Band::Same,   "~.character",    nullptr,  nullptr,          likely (2.0),    "character" },
+        { kMaxCharacter,    Act::Map,          0, 0, Band::Same,   "~.character",    nullptr,  nullptr,          known (2.0),     "character" },
         { kMaxTruePeak,     Act::Map,          0, 0, Band::Same,   "~.truePeak",     nullptr,  xf::boolean,      known (0.0),     "true peak" },
         { kMaxTransOn,      Act::Map,          0, 0, Band::Same,   "~.trans.on",     nullptr,  xf::boolean,      known (0.0),     "transient emphasis on" },
         { kMaxTransAmount,  Act::Map,          0, 0, Band::Same,   "~.trans.amount", nullptr,  halfScale,        known (0.0),     "transient emphasis" },
         { kMaxClipOn,       Act::Map,          0, 0, Band::Same,   "~.clip.on",      nullptr,  xf::boolean,      known (0.0),     "soft clip on" },
         { kMaxClipMode,     Act::Map,          0, 0, Band::Same,   "~.clip.mode",    nullptr,  xf::roundIndex,   known (1.0),     "soft clip kind" },
-        { kMaxClipMix,      Act::Map,          0, 0, Band::Same,   "~.clip.amount",  nullptr,  nullptr,          guess (25.0),    "soft clip amount" },
+        { kMaxClipMix,      Act::Map,          0, 0, Band::Same,   "~.clip.amount",  nullptr,  nullptr,          known (0.0),     "soft clip amount" },
         { kMaxUpwardOn,     Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          known (0.0),     "upward compression on" },
-        { kMaxUpwardAmount, Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          guess (6.0),     "upward compression" },
-        { kMaxSiTransient,  Act::Map,          0, 0, Band::Same,   "~.si.trans",     nullptr,  nullptr,          likely (0.0),    "transient independence" },
-        { kMaxSiSustain,    Act::Map,          0, 0, Band::Same,   "~.si.sus",       nullptr,  nullptr,          likely (0.0),    "sustain independence" },
-        { kMaxLearnTarget,  Act::Map,          0, 0, Band::Same,   "~.learnTarget",  nullptr,  nullptr,          noDefault(),     "learn target" },
+        { kMaxUpwardAmount, Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          known (0.0),     "upward compression" },
+        { kMaxSiTransient,  Act::Map,          0, 0, Band::Same,   "~.si.trans",     nullptr,  nullptr,          known (0.0),     "transient independence" },
+        { kMaxSiSustain,    Act::Map,          0, 0, Band::Same,   "~.si.sus",       nullptr,  nullptr,          known (0.0),     "sustain independence" },
+        { kMaxLearnTarget,  Act::Map,          0, 0, Band::Same,   "~.learnTarget",  nullptr,  nullptr,          known (-11.0),   "learn target" },
         { kMaxStereoSwitch, Act::Unsupported,  0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          noDefault(),     "stereo link switch" },
         { kMaxSiLinked,     Act::Ignore,       0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          noDefault(),     "independence linked" },
         { kMaxLearnLevel,   Act::Ignore,       0, 0, Band::Same,   nullptr,          nullptr,  nullptr,          noDefault(),     "learn level" },

@@ -14,7 +14,9 @@
 //   - one "global" section holds the chain blob (an ExtraBytes child) and a few global switches.
 // Enabled is a load mask, not module power. A file with exactly one enabled module section is a single-module preset
 // (its chain blob may be stale and is ignored); otherwise it is a whole-chain preset whose modules are exactly the
-// chain entries, in that order (sections outside the chain hold stale settings and are ignored).
+// chain entries, in that order (sections outside the chain hold stale settings and are ignored). Module power is the
+// section's own power switch (kSectionBypassKey, confirmed with a test save); the flag byte of the chain entries is
+// parsed but is not power (it stays 0 for a switched-off module).
 namespace ps::imp
 {
 namespace
@@ -702,7 +704,13 @@ ImportPlan buildImportPlan (const XmlNode& root, const ImportOptions& options)
         }
     }
 
-    if (! chainComplete || chain.empty())
+    if (chainComplete && chain.empty())
+    {
+        plan.error = "This preset holds no modules.";   // a well-formed empty chain: nothing to import
+        plan.holdsNoModules = true;
+        return plan;
+    }
+    if (! chainComplete)
     {
         plan.error = "The module order is missing, empty or damaged.";
         return plan;
@@ -749,15 +757,13 @@ ImportPlan buildImportPlan (const XmlNode& root, const ImportOptions& options)
         if (section != nullptr)
             stored = collect (*section->node, aliases, plan.report, name);
 
+        // Enabled is only the section load mask used to identify single-module files. In a whole chain, module power
+        // comes from the section's own power switch (absent = on), written by run(); the entry's flag is not power.
         ModuleImport m (spec, stored, version, plan.values, plan.report, name);
         if (section != nullptr)
             m.setExtraBytes (collectExtraBytes (*section->node, aliases));
+        m.setWritesModulePower (true);
         m.run();
-
-        // Enabled is only the section load mask used to identify single-module files. In a whole chain, the
-        // decoded entry alone controls module power (non-zero read as bypassed, unverified).
-        const bool on = modules[i].second == 0;
-        m.set ("~.on", on ? 1.0 : 0.0);
 
         plan.order.push_back (spec.type);
         plan.report.imported.push_back (spec.type);

@@ -210,17 +210,19 @@ TEST_CASE ("import.eq. extreme finite phase amounts clamp without overflow")
     const int exceptions = std::fetestexcept (FE_INVALID | FE_OVERFLOW);
     REQUIRE (plan.ok);
     CHECK_EQ (exceptions, 0);
-    CHECK (near (value (plan, "eq1.a.b1.phase"), 100.0));
+    CHECK (near (value (plan, "eq1.a.b1.phase"), 0.0));     // a positive phase is outside the foreign range
     CHECK (near (value (plan, "eq1.b.b1.phase"), 100.0));
+    CHECK_EQ (plan.report.clamped, 2);
 }
 
 TEST_CASE ("import.eq. every foreign band shape index maps to our shape")
 {
+    // 0..16 as confirmed in the real product (one test save per shape); 17..19 only occur in older files.
     using S = ps::EqShape;
-    const S expected[20] { S::ProportionalQ,     S::LowShelfBaxandall, S::HighShelfBaxandall, S::LowPassFlat,
-                           S::HighPassFlat,      S::LowPassResonant,   S::HighPassResonant,   S::LowPassBrickwall,
-                           S::HighPassBrickwall, S::LowShelfResonant,  S::HighShelfResonant,  S::LowShelfAnalog,
-                           S::HighShelfAnalog,   S::LowShelfVintage,   S::HighShelfVintage,   S::Bell,
+    const S expected[20] { S::Bell,              S::LowShelfAnalog,    S::HighShelfAnalog,    S::LowPassResonant,
+                           S::HighPassResonant,  S::LowPassFlat,       S::HighPassFlat,       S::LowPassBrickwall,
+                           S::HighPassBrickwall, S::LowShelfVintage,   S::HighShelfVintage,   S::LowShelfBaxandall,
+                           S::HighShelfBaxandall, S::LowShelfResonant, S::HighShelfResonant,  S::ProportionalQ,
                            S::BandShelf,         S::Surgical,          S::LowShelfAnalog,     S::HighShelfAnalog };
     for (int i = 0; i < 20; ++i)
     {
@@ -249,12 +251,12 @@ TEST_CASE ("import.eq. absent band shape takes the writer's default per band")
     using S = ps::EqShape;
     struct Row { const char* version; int bandNo; S shape; };
     const Row rows[] {
-        { "6100", 1, S::LowShelfBaxandall },  { "6100", 3, S::Bell },           { "6100", 7, S::HighShelfBaxandall },
-        { "8000", 3, S::ProportionalQ },      { "8000", 8, S::HighShelfBaxandall },
-        { "9030", 1, S::LowShelfAnalog },     { "9030", 2, S::ProportionalQ },  { "9030", 6, S::ProportionalQ },
-        { "9030", 7, S::HighShelfAnalog },    { "9030", 8, S::LowPassFlat },
-        { "100000", 1, S::LowShelfBaxandall },{ "110000", 5, S::ProportionalQ },{ "120000", 7, S::HighShelfBaxandall },
-        { "120000", 8, S::LowPassFlat },
+        { "6100", 1, S::LowShelfAnalog },     { "6100", 3, S::ProportionalQ },  { "6100", 7, S::HighShelfAnalog },
+        { "8000", 3, S::Bell },               { "8000", 8, S::HighShelfAnalog },
+        { "9030", 1, S::LowShelfBaxandall },  { "9030", 2, S::Bell },           { "9030", 6, S::Bell },
+        { "9030", 7, S::HighShelfBaxandall }, { "9030", 8, S::LowPassResonant },
+        { "100000", 1, S::LowShelfAnalog },   { "110000", 5, S::Bell },         { "120000", 2, S::Bell },
+        { "120000", 7, S::HighShelfAnalog },  { "120000", 8, S::LowPassResonant },
     };
     for (const auto& r : rows)
     {
@@ -336,7 +338,7 @@ TEST_CASE ("import.eq. the second equalizer uses the same table")
     REQUIRE (plan.ok);
     CHECK_EQ (plan.scope, (int) T::Equalizer2);
     CHECK (near (value (plan, "eq2.a.b3.gain"), -2.0));
-    CHECK (near (value (plan, "eq2.a.b3.shape"), (double) ps::EqShape::Bell));
+    CHECK (near (value (plan, "eq2.a.b3.shape"), (double) ps::EqShape::ProportionalQ));
     CHECK (near (value (plan, "eq2.a.b3.on"), 1.0));
     CHECK (near (value (plan, "eq2.b.b1.freq"), 40.0, 0.01));
     CHECK (near (value (plan, "eq1.a.b3.gain"), 0.0));   // the first equalizer is untouched
@@ -362,9 +364,17 @@ TEST_CASE ("import.eq. dynamic EQ band on and shape defaults per version")
             CHECK (near (value (older, band ("deq", set, n, "dir")), (double) ps::DynEqDirection::Down));
         }
 
+    for (int n = 1; n <= 6; ++n)
+        CHECK (near (value (older, band ("deq", 0, n, "q")), 0.707));   // older writers: the older guess
+
+    // From 110000: bands 2..6 default to Q 0.7 (confirmed); band 1 stores an explicit 0.7, so it keeps the guess.
     const auto newer = moduleFile ("Swell", "110000", { p ("Node 6 On", "1") });
     for (int n = 1; n <= 6; ++n)
+    {
         CHECK (near (value (newer, band ("deq", 0, n, "on")), n == 6 ? 1.0 : 0.0));
+        CHECK (near (value (newer, band ("deq", 1, n, "q")), n == 1 ? 0.707 : 0.7));
+        CHECK (near (value (newer, band ("deq", 0, n, "thr")), -30.0));
+    }
 }
 
 TEST_CASE ("import.eq. dynamic EQ shape index, direction, threshold, offset, filter mode")
@@ -431,7 +441,7 @@ TEST_CASE ("import.eq. match EQ settings into both sets; a flagged spectrum with
     REQUIRE (plan.ok);
     CHECK_EQ (plan.scope, (int) T::MatchEq);
     CHECK (near (value (plan, "meq.a.amount"), 28.5714, 0.01));
-    CHECK (near (value (plan, "meq.b.amount"), 50.0));   // set B absent: the default
+    CHECK (near (value (plan, "meq.b.amount"), 10.0));   // set B absent: the default (10 %)
     CHECK (near (value (plan, "meq.a.smooth"), 63.4921, 0.01));
     CHECK (near (value (plan, "meq.a.lo"), 250.0, 0.01));
     CHECK (near (value (plan, "meq.b.lo"), 20.0, 0.01));
@@ -445,7 +455,8 @@ TEST_CASE ("import.eq. match EQ settings into both sets; a flagged spectrum with
 
     const auto empty = moduleFile ("Copy", "120000", {});
     REQUIRE (empty.ok);
-    CHECK (near (value (empty, "meq.a.amount"), 50.0));
+    CHECK (near (value (empty, "meq.a.amount"), 10.0));
+    CHECK (near (value (empty, "meq.a.smooth"), 50.0));
     CHECK (empty.report.notes.empty());
 }
 
@@ -611,7 +622,7 @@ TEST_CASE ("import.eq. a whole chain with all four modules keeps their order and
     CHECK_EQ (plan.order[2], T::DynamicEq);
     CHECK_EQ (plan.order[3], T::Equalizer2);
     CHECK (near (value (plan, "eq1.a.b7.gain"), 1.5));
-    CHECK (near (value (plan, "eq1.a.b7.shape"), (double) ps::EqShape::HighShelfBaxandall));
+    CHECK (near (value (plan, "eq1.a.b7.shape"), (double) ps::EqShape::HighShelfAnalog));
     CHECK (near (value (plan, "eq2.a.b1.shape"), (double) ps::EqShape::HighPassBrickwall));
     CHECK (near (value (plan, "deq.a.b6.gain"), -3.0));
     CHECK (near (value (plan, "meq.a.amount"), 40.0));
