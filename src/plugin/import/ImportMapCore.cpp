@@ -277,6 +277,10 @@ constexpr Key kDynCrestLearn   = 0x4ab2335d6c31735eull;   // detector learn stat
 // The set link switch only exists in the older writers (default off); for newer files ours is kept.
 double dynLinkDefault (const ModuleImport& m, int, int) { return olderWriter (m) ? 0.0 : kNoValue; }
 
+// Absent crossovers: the third one shows 10 kHz in the real product (writer 120000, a four-band file storing only the
+// first two); the first two stay unknown (ours are kept).
+double dynCutoffDefault (const ModuleImport&, int number, int) { return number == 3 ? 10000.0 : kNoValue; }
+
 // Detection kind: 0 (the default) = peak, 1 = RMS, 2 = envelope (confirmed with one test save per kind).
 double dynDetection (double v, ModuleImport&, int, int)
 {
@@ -328,7 +332,7 @@ const std::vector<Rule>& dynamicsRules()
         //  key              act               first count band          set A id               set B id               transform         foreign default                          what
         { kBandActive,      Act::Hook,         0, 4, Band::Same,   nullptr,               nullptr,               nullptr,          byVersion (firstSlotOnly, Conf::Known),  "band present" },
         { kNumBands,        Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          likely (4.0),                            "band count (older files)" },
-        { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,               nullptr,               nullptr,          noDefault(),                             "crossover frequency" },
+        { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,               nullptr,               nullptr,          byVersion (dynCutoffDefault, Conf::Known), "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,               nullptr,               nullptr,          known (0.0),                             "band bypass" },
         { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",         nullptr,               crossoverKind,    likely (2.0),                            "crossover kind" },
         { kDynCompThr,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.thr",     "~.b.b#.comp.thr",     nullptr,          known (-12.0),                           "compressor threshold" },

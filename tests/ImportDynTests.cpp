@@ -262,6 +262,18 @@ TEST_CASE ("import.core. dynamics: detection kinds, release mode, detection filt
                  (double) ps::CrossoverType::Analog));
 }
 
+TEST_CASE ("import.core. dynamics: an absent third crossover takes 10 kHz, stored ones win")
+{
+    const auto plan = importModule ("Squash", "120000", { param ("Present 1", "1"), param ("Present 2", "1"),
+                                                         param ("Present 3", "1"), param ("Edge 1", "132"),
+                                                         param ("Edge 2", "520") });
+    REQUIRE (plan.ok);
+    CHECK (near (value (plan, "dyn.bands"), 4.0));
+    CHECK (near (value (plan, "dyn.xover1"), 132.0));
+    CHECK (near (value (plan, "dyn.xover2"), 520.0));
+    CHECK (near (value (plan, "dyn.xover3"), 10000.0));
+}
+
 TEST_CASE ("import.core. dynamics: gaps closed, band bypass in both sets, limiter switch, stale values ignored")
 {
     // Slots 0, 2 present (slot 1 removed). Band numbers are slot + 1; bypass and present flags count from 0.
