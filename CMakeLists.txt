@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(PureSheen VERSION 0.2.0 LANGUAGES C CXX)
+project(PureSheen VERSION 0.2.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +81,14 @@ juce_add_plugin(PureSheen
     VST3_CATEGORIES Fx Mastering Dynamics EQ
     ${PS_ICON_ARGS}
     COPY_PLUGIN_AFTER_BUILD FALSE)
+
+# JUCE regenerates the Windows version resource only when the icon changes, so a version bump would keep the old
+# file version in the binaries' properties. Make it depend on the info file that carries the version too.
+if(WIN32)
+    get_target_property(PS_JUCE_CODE_DIR PureSheen JUCE_GENERATED_SOURCES_DIRECTORY)
+    get_target_property(PS_JUCE_INFO_FILE PureSheen JUCE_INFO_FILE)
+    add_custom_command(OUTPUT "${PS_JUCE_CODE_DIR}/PureSheen_resources.rc" APPEND DEPENDS "${PS_JUCE_INFO_FILE}")
+endif()
 
 target_sources(PureSheen PRIVATE ${PS_CORE_SOURCES} ${PS_PLUGIN_SOURCES} ${PS_UI_SOURCES})
 target_include_directories(PureSheen PRIVATE src)
