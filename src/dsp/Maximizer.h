@@ -15,8 +15,9 @@
 // signal) and differ in release behaviour / band structure:
 //   LowLatency  : ~1 ms lookahead, program-independent release from Character
 //   Smooth      : release right after each peak, from very fast (Character 0) to slow (10)
-//   Transparent : Smooth + transient preservation (shorter attack window on detected transients)
-//   Aggressive  : longest lookahead, fastest recovery, styles Clipping / Crisp / Balanced / Pumping
+//   Transparent : the Smooth core a little slower at low Character
+//   Aggressive  : longest lookahead, fastest recovery up to Character 1.4; styles Clipping / Crisp / Balanced /
+//                 Pumping (the last two calm sustained bass)
 //   Spectral    : gain applied per critical band group (~24 bands, crossover-free STFT or filterbank), reducing the
 //                 bands that contribute most to each peak first; styles Classic / Modern / Transient
 //   Multiband   : 4 bands (crossovers ~ 120 Hz, 1 kHz, 6 kHz, Hybrid), per-band envelopes, the bands contributing

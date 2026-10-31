@@ -24,14 +24,14 @@
 //   is stamped on every sample when it enters, and each stage limits a sample against its own stamp, so a ceiling or
 //   True Peak change is never violated while it travels through the lookahead: the limiters see it coming and ramp.
 // - Mode stage:
-//     Low Latency : nothing (the Guard alone, character sets its attack 0.02-0.25 ms and release 5-600 ms)
+//     Low Latency : nothing (the Guard alone: attack 0.25 ms, character sets its release 0.05-100 ms)
 //     Smooth      : LimiterCore, 5 ms lookahead, a fast release that lets go right after each peak (0.1 ms at
 //                   character 0 .. 20 ms at 10), attack 0.05 .. 3 ms, no hold; above character 4 a slow stage fades in
 //                   that settles on sustained limiting (fitted values: applySettings)
-//     Transparent : Smooth + transient preservation: on detected transients the core leaves part of the reduction to
-//                   the fast Guard, so a hit is shaved in < 1 ms instead of ducking what comes before it
-//     Aggressive  : 7 ms lookahead, fast recovery; styles Clipping (near-clipping times), Crisp (short, transient
-//                   preserving), Balanced, Pumping (slow stage charges quickly: audible breathing)
+//     Transparent : the Smooth core at a slightly lower character below 5
+//     Aggressive  : 7 ms lookahead, the fastest limiting up to character 1.4, then a slow stage fading in; styles
+//                   Clipping, Crisp (the plain core), Balanced, Pumping (a slow stage that calms sustained bass)
+//   Low Latency, Smooth, Transparent and Aggressive are fitted to renders of the reference (applySettings).
 //     Spectral    : SpectralStage (critical-band groups, water-filling; it does 45 % of the needed reduction in dB,
 //                   30 % in the Transient style) + LimiterCore 2.5 ms for the rest
 //     Multiband   : MultibandStage (4 linear-phase bands, contribution-ordered) + LimiterCore 2.5 ms
@@ -86,6 +86,23 @@ double smoothCurve (const double (&ms)[5], double c) noexcept
         if (c <= at[i])
             return lerpExp (ms[i - 1], ms[i], (c - at[i - 1]) / (at[i] - at[i - 1]));
     return ms[4];
+}
+
+// The default algorithm's core, fitted to renders of the reference at character 0, 1.4, 4, 7 and 10 (music on identical
+// input: sample match 26..30 dB, loudness within 0.15 dB; sustained 60 Hz / 1 kHz tones and kicks at 1.4 and 7). Fast
+// release for transients at every setting; the slow stage that settles on sustained limiting fades in above character
+// 4. No hold (it made tones cleaner than the reference).
+void smoothCore (maxi::CoreSettings& cs, double c) noexcept
+{
+    static constexpr double attackMs[5] { 0.05, 0.37, 1.0, 2.5, 3.0 };
+    static constexpr double fastMs[5] { 0.1, 0.26, 1.0, 5.0, 20.0 };
+    static constexpr double slowReleaseMs[5] { 100.0, 100.0, 100.0, 100.0, 200.0 };
+    cs.attackMs = smoothCurve (attackMs, c);
+    cs.holdMs = 0.0;
+    cs.fastReleaseMs = smoothCurve (fastMs, c);
+    cs.slowReleaseMs = smoothCurve (slowReleaseMs, c);
+    cs.slowChargeMs = c <= 4.0 ? 0.0 : (c >= 7.0 ? 30.0 : 1000.0 * std::pow (0.03, (c - 4.0) / 3.0));
+    cs.lfAdapt = 0.0;
 }
 
 // The largest float that is <= v (so a float sample clamped to it is <= v in double).
@@ -372,86 +389,69 @@ struct Maximizer::Impl
         switch (activeMode)
         {
             case MaximizerMode::LowLatency:
-                guardAttackMs = lerpExp (0.02, 0.25, t);
-                guardReleaseMs = lerpExp (5.0, 600.0, t);
-                break;
-
-            case MaximizerMode::Smooth:
             {
-                // Fitted to renders of the reference default algorithm at character 0, 1.4, 4, 7 and 10 (music on
-                // identical input: sample match 26..30 dB, loudness within 0.15 dB; sustained 60 Hz / 1 kHz tones and
-                // kicks at 1.4 and 7). Fast release for transients at every setting; the slow stage that settles on
-                // sustained limiting fades in above character 4. No hold (it made tones cleaner than the reference).
-                const double c = std::clamp ((double) p.character, 0.0, 10.0);
-                static constexpr double attackMs[5] { 0.05, 0.37, 1.0, 2.5, 3.0 };
-                static constexpr double fastMs[5] { 0.1, 0.26, 1.0, 5.0, 20.0 };
-                static constexpr double slowReleaseMs[5] { 100.0, 100.0, 100.0, 100.0, 200.0 };
-                cs.attackMs = smoothCurve (attackMs, c);
-                cs.holdMs = 0.0;
-                cs.fastReleaseMs = smoothCurve (fastMs, c);
-                cs.slowReleaseMs = smoothCurve (slowReleaseMs, c);
-                cs.slowChargeMs = c <= 4.0 ? 0.0 : (c >= 7.0 ? 30.0 : 1000.0 * std::pow (0.03, (c - 4.0) / 3.0));
-                cs.lfAdapt = 0.0;
+                // Fitted to the reference's low latency algorithm at character 1.4, 5 and 10 (music match 25..28 dB,
+                // loudness within 0.1 dB; tones at 1.4): the longest attack the low latency allows, release from
+                // 0.05 ms to 100 ms.
+                static constexpr double releaseMs[5] { 0.05, 0.1, 1.9, 18.5, 100.0 };
+                guardAttackMs = 0.25;
+                guardReleaseMs = smoothCurve (releaseMs, std::clamp ((double) p.character, 0.0, 10.0));
                 break;
             }
 
-            case MaximizerMode::Transparent:
-                cs.attackMs = lerpExp (0.7, 5.0, t);
-                cs.holdMs = 0.3;
-                cs.fastReleaseMs = lerpExp (5.0, 150.0, t);
-                cs.slowReleaseMs = lerpExp (80.0, 2500.0, t);
-                cs.slowChargeMs = lerpExp (80.0, 900.0, t);
-                cs.lfAdapt = 0.8;
-                cs.transientPreserve = 0.6;
-                guardAttackMs = 0.5;
-                guardReleaseMs = lerpExp (2.0, 20.0, t);
+            case MaximizerMode::Smooth:
+                smoothCore (cs, std::clamp ((double) p.character, 0.0, 10.0));
                 break;
 
+            case MaximizerMode::Transparent:
+            {
+                // The reference's transparent algorithm matches the default one at a slightly lower character below 5
+                // (1.4 ~ 1.0; music match 28..30 dB at 1.4, 5 and 10). Transient preservation made its kicks less
+                // like the reference, so it is not used.
+                const double c = std::clamp ((double) p.character, 0.0, 10.0);
+                smoothCore (cs, c < 5.0 ? c * (1.0 - 0.06 * (5.0 - c)) : c);
+                break;
+            }
+
             case MaximizerMode::Aggressive:
+            {
+                // Fitted to the reference's aggressive algorithm (every style at 1.4, Balanced at 5 and 10; music
+                // match 20..31 dB, loudness within 0.15 dB): the fastest limiting up to character 1.4, then a slow stage
+                // fading in (charge 30 ms at 5, 100 ms at 10). The styles mostly differ on sustained bass there:
+                // Balanced and Pumping add a slow stage that calms it (as far as it costs the mix no more than
+                // ~0.1 / 0.3 dB), Crisp and Clipping none.
+                const double c = std::clamp ((double) p.character, 0.0, 10.0);
+                static constexpr double fastMs[5] { 0.1, 0.1, 0.1, 0.3, 1.0 };
+                cs.attackMs = 0.05;
+                cs.holdMs = 0.0;
+                cs.fastReleaseMs = smoothCurve (fastMs, c);
+                cs.lfAdapt = 0.0;
+                double charge = 0.0, release = 100.0;
+                if (c > 1.4)
+                {
+                    charge = c < 5.0 ? 1000.0 * std::pow (0.03, (c - 1.4) / 3.6) : lerpExp (30.0, 100.0, (c - 5.0) / 5.0);
+                    release = c < 5.0 ? 100.0 : lerpExp (100.0, 300.0, (c - 5.0) / 5.0);
+                }
+                double styleCharge = 0.0;
+                const double styleRelease = lerpExp (100.0, 300.0, c / 10.0);
                 switch (p.aggressiveStyle)
                 {
-                    case AggressiveStyle::Clipping:
-                        cs.attackMs = lerpExp (0.05, 1.0, t);
-                        cs.fastReleaseMs = lerpExp (1.0, 40.0, t);
-                        cs.slowReleaseMs = lerpExp (60.0, 600.0, t);
-                        cs.slowChargeMs = lerpExp (300.0, 2000.0, t);
-                        cs.lfAdapt = 0.3;
-                        guardAttackMs = 0.1;
-                        guardReleaseMs = lerpExp (1.0, 10.0, t);
-                        break;
-                    case AggressiveStyle::Crisp:
-                        cs.attackMs = lerpExp (0.2, 2.0, t);
-                        cs.holdMs = 0.2;
-                        cs.fastReleaseMs = lerpExp (2.0, 60.0, t);
-                        cs.slowReleaseMs = lerpExp (40.0, 600.0, t);
-                        cs.slowChargeMs = lerpExp (400.0, 3000.0, t);
-                        cs.lfAdapt = 0.6;
-                        cs.transientPreserve = 0.4;
-                        guardAttackMs = 0.25;
-                        guardReleaseMs = lerpExp (1.5, 15.0, t);
-                        break;
-                    case AggressiveStyle::Balanced:
-                        cs.attackMs = lerpExp (0.4, 4.0, t);
-                        cs.holdMs = 0.5;
-                        cs.fastReleaseMs = lerpExp (3.0, 90.0, t);
-                        cs.slowReleaseMs = lerpExp (50.0, 800.0, t);
-                        cs.slowChargeMs = lerpExp (300.0, 2500.0, t);
-                        cs.lfAdapt = 1.0;
-                        cs.transientPreserve = 0.2;
-                        guardAttackMs = 0.4;
-                        guardReleaseMs = lerpExp (2.0, 20.0, t);
-                        break;
-                    case AggressiveStyle::Pumping:
-                        cs.attackMs = lerpExp (1.0, 7.0, t);
-                        cs.holdMs = 2.0;
-                        cs.fastReleaseMs = lerpExp (20.0, 250.0, t);
-                        cs.slowReleaseMs = lerpExp (250.0, 1500.0, t);
-                        cs.slowChargeMs = lerpExp (20.0, 150.0, t);
-                        guardAttackMs = 0.5;
-                        guardReleaseMs = 10.0;
-                        break;
+                    case AggressiveStyle::Clipping: guardAttackMs = 0.1;  guardReleaseMs = lerpExp (1.0, 10.0, t); break;
+                    case AggressiveStyle::Crisp:    guardAttackMs = 0.25; guardReleaseMs = lerpExp (1.5, 15.0, t); break;
+                    case AggressiveStyle::Balanced: guardAttackMs = 0.4;  guardReleaseMs = lerpExp (2.0, 20.0, t);
+                                                    styleCharge = 100.0; break;
+                    case AggressiveStyle::Pumping:  guardAttackMs = 0.5;  guardReleaseMs = 10.0;
+                                                    styleCharge = 30.0; break;
                 }
+                if (styleCharge > 0.0 && (charge <= 0.0 || styleCharge < charge))
+                {
+                    charge = styleCharge;
+                    release = std::max (release, styleRelease);
+                }
+                cs.slowChargeMs = charge;
+                cs.slowReleaseMs = release;
                 break;
+            }
 
             case MaximizerMode::Spectral:
             {
