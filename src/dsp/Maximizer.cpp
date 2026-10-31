@@ -31,10 +31,12 @@
 //     Transparent : the Smooth core at a slightly lower character below 5
 //     Aggressive  : 7 ms lookahead, the fastest limiting up to character 1.4, then a slow stage fading in; styles
 //                   Clipping, Crisp (the plain core), Balanced, Pumping (a slow stage that calms sustained bass)
-//   Low Latency, Smooth, Transparent and Aggressive are fitted to renders of the reference (applySettings).
-//     Spectral    : SpectralStage (critical-band groups, water-filling; it does 45 % of the needed reduction in dB,
-//                   30 % in the Transient style) + LimiterCore 2.5 ms for the rest
-//     Multiband   : MultibandStage (4 linear-phase bands, contribution-ordered) + LimiterCore 2.5 ms
+//     Spectral    : SpectralStage (critical-band groups, water-filling) + LimiterCore 2.5 ms with the Smooth core
+//     Multiband   : MultibandStage (4 linear-phase bands, contribution-ordered) + LimiterCore 2.5 ms with the
+//                   Aggressive core
+//   Every mode is fitted to renders of the reference (applySettings). The reference's spectral and multiband
+//   algorithms matched broadband cores on the fitting material, so both band stages currently take no share of the
+//   reduction (they stay in the pipeline: constant latency; a share can come back with more reference material).
 //   With True Peak on, the cores also detect half-sample peaks and aim 0.03 dB under the ceiling.
 // - Guard: true-peak limiter on a 1/8-sample grid containing ps::TruePeakMeter's points (sample peak with True Peak
 //   off), target 0.02 dB under the ceiling with True Peak on; Fine: the same at the exact ceiling with a 4-sample
@@ -92,6 +94,8 @@ double smoothCurve (const double (&ms)[5], double c) noexcept
 // input: sample match 26..30 dB, loudness within 0.15 dB; sustained 60 Hz / 1 kHz tones and kicks at 1.4 and 7). Fast
 // release for transients at every setting; the slow stage that settles on sustained limiting fades in above character
 // 4. No hold (it made tones cleaner than the reference).
+void fastCore (maxi::CoreSettings& cs, double c) noexcept;
+
 void smoothCore (maxi::CoreSettings& cs, double c) noexcept
 {
     static constexpr double attackMs[5] { 0.05, 0.37, 1.0, 2.5, 3.0 };
@@ -103,6 +107,24 @@ void smoothCore (maxi::CoreSettings& cs, double c) noexcept
     cs.slowReleaseMs = smoothCurve (slowReleaseMs, c);
     cs.slowChargeMs = c <= 4.0 ? 0.0 : (c >= 7.0 ? 30.0 : 1000.0 * std::pow (0.03, (c - 4.0) / 3.0));
     cs.lfAdapt = 0.0;
+}
+
+// The aggressive algorithm's core (fitted like smoothCore; the reference's multiband algorithm matches it too): the
+// fastest limiting up to character 1.4, then a slow stage fading in (charge 30 ms at 5, 100 ms at 10).
+void fastCore (maxi::CoreSettings& cs, double c) noexcept
+{
+    static constexpr double fastMs[5] { 0.1, 0.1, 0.1, 0.3, 1.0 };
+    cs.attackMs = 0.05;
+    cs.holdMs = 0.0;
+    cs.fastReleaseMs = smoothCurve (fastMs, c);
+    cs.lfAdapt = 0.0;
+    cs.slowChargeMs = 0.0;
+    cs.slowReleaseMs = 100.0;
+    if (c > 1.4)
+    {
+        cs.slowChargeMs = c < 5.0 ? 1000.0 * std::pow (0.03, (c - 1.4) / 3.6) : lerpExp (30.0, 100.0, (c - 5.0) / 5.0);
+        cs.slowReleaseMs = c < 5.0 ? 100.0 : lerpExp (100.0, 300.0, (c - 5.0) / 5.0);
+    }
 }
 
 // The largest float that is <= v (so a float sample clamped to it is <= v in double).
@@ -421,17 +443,8 @@ struct Maximizer::Impl
                 // Balanced and Pumping add a slow stage that calms it (as far as it costs the mix no more than
                 // ~0.1 / 0.3 dB), Crisp and Clipping none.
                 const double c = std::clamp ((double) p.character, 0.0, 10.0);
-                static constexpr double fastMs[5] { 0.1, 0.1, 0.1, 0.3, 1.0 };
-                cs.attackMs = 0.05;
-                cs.holdMs = 0.0;
-                cs.fastReleaseMs = smoothCurve (fastMs, c);
-                cs.lfAdapt = 0.0;
-                double charge = 0.0, release = 100.0;
-                if (c > 1.4)
-                {
-                    charge = c < 5.0 ? 1000.0 * std::pow (0.03, (c - 1.4) / 3.6) : lerpExp (30.0, 100.0, (c - 5.0) / 5.0);
-                    release = c < 5.0 ? 100.0 : lerpExp (100.0, 300.0, (c - 5.0) / 5.0);
-                }
+                fastCore (cs, c);
+                double charge = cs.slowChargeMs, release = cs.slowReleaseMs;
                 double styleCharge = 0.0;
                 const double styleRelease = lerpExp (100.0, 300.0, c / 10.0);
                 switch (p.aggressiveStyle)
@@ -455,54 +468,33 @@ struct Maximizer::Impl
 
             case MaximizerMode::Spectral:
             {
+                // The reference's spectral algorithm matched a broadband core on the fitting material (every style:
+                // music match 25..31 dB; any share of our band reduction made it quieter than the reference), so the
+                // band stage is kept in the pipeline (constant latency) with no share, and the core follows the
+                // default algorithm (the Transient style 1.4 lower in character).
                 SpectralStage::Settings ss;
                 ss.independence = siS;
-                ss.amount = 0.45;
-                switch (p.spectralStyle)
-                {
-                    case SpectralStyle::Classic:
-                        ss.selectivity = 0.35;
-                        ss.releaseMs = lerpExp (25.0, 500.0, t);
-                        break;
-                    case SpectralStyle::Modern:
-                        ss.selectivity = 1.0;
-                        ss.releaseMs = lerpExp (20.0, 400.0, t);
-                        ss.highReleaseScale = 0.8;
-                        break;
-                    case SpectralStyle::Transient:
-                        ss.selectivity = 1.0;
-                        ss.amount = 0.3;   // onsets are left to the fast core / guard
-                        ss.releaseMs = lerpExp (15.0, 300.0, t);
-                        ss.highReleaseScale = 0.35;
-                        break;
-                }
+                ss.amount = 0.0;
+                ss.selectivity = p.spectralStyle == SpectralStyle::Classic ? 0.35 : 1.0;
+                ss.releaseMs = lerpExp (20.0, 400.0, t);
                 spectral.setSettings (ss);
-                cs.attackMs = lerpExp (0.5, 2.5, t);
-                cs.holdMs = 1.0;
-                cs.fastReleaseMs = lerpExp (5.0, 120.0, t);
-                cs.slowReleaseMs = lerpExp (100.0, 1200.0, t);
-                cs.slowChargeMs = lerpExp (100.0, 800.0, t);
-                cs.lfAdapt = 1.0;
-                cs.transientPreserve = p.spectralStyle == SpectralStyle::Transient ? 0.6 : 0.2;
-                if (p.spectralStyle == SpectralStyle::Transient)
-                    cs.attackMs = lerpExp (0.3, 2.0, t);
+                const double c = std::clamp ((double) p.character, 0.0, 10.0);
+                smoothCore (cs, p.spectralStyle == SpectralStyle::Transient ? std::max (0.0, c - 1.4) : c);
                 break;
             }
 
             case MaximizerMode::Multiband:
             {
+                // The reference's multiband algorithm matched the aggressive core on the fitting material (music match
+                // 17..32 dB; our band split made it 1.5..4 dB quieter), so the band stage stays in the pipeline with
+                // no share.
                 MultibandStage::Settings ms;
                 ms.releaseMs = lerpExp (10.0, 300.0, t);
                 ms.siSus = siS;
                 ms.siTrans = siT;
+                ms.amount = 0.0;
                 multiband.setSettings (ms);
-                cs.attackMs = lerpExp (0.5, 2.5, t);
-                cs.holdMs = 1.0;
-                cs.fastReleaseMs = lerpExp (4.0, 100.0, t);
-                cs.slowReleaseMs = lerpExp (80.0, 1000.0, t);
-                cs.slowChargeMs = lerpExp (150.0, 1000.0, t);
-                cs.lfAdapt = 1.0;
-                cs.transientPreserve = 0.3;
+                fastCore (cs, std::clamp ((double) p.character, 0.0, 10.0));
                 break;
             }
 

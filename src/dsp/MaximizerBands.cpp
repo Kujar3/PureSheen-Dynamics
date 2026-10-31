@@ -534,7 +534,7 @@ void MultibandStage::process (const float* const* in, float* const* out, const d
                 {
                     const int b = order[j];
                     if (contrib[b] > level)
-                        red[b] = std::log (contrib[b] / level);
+                        red[b] = settings.amount * std::log (contrib[b] / level);
                 }
             }
             for (int b = 0; b < kBands; ++b)

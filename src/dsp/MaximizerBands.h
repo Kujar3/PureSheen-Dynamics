@@ -82,6 +82,7 @@ public:
     {
         double releaseMs = 80.0;     // the low band x2, the low mid band x1.3
         double siSus = 0.0, siTrans = 0.0;
+        double amount = 1.0;         // fraction (in dB) of each band's reduction applied (0: the delayed input)
     };
 
     MultibandStage();
