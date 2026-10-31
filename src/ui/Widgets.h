@@ -267,6 +267,9 @@ public:
 
     // (added) Transient hint in the header (EditorServices::showHint lands here); fades after ~3 s.
     void showHeaderHint (const juce::String&);
+    // (added, importer) The result of "Import preset (.xml)..." from this panel's preset menu: on success the preset
+    // chip shows the imported name; the message goes to the header hint.
+    void showImportResult (bool ok, const juce::String& presetName, const juce::String& message);
 
 protected:
     PureSheenProcessor& processor;

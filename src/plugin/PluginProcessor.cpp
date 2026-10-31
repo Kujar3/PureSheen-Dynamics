@@ -274,6 +274,9 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // History. editLock serialises the timer's housekeeping with a state load from a host thread (both are normally
     // on the message thread, so it is uncontended).
     juce::CriticalSection editLock;
+    // A host may synchronously save from a parameter notification while an import is still applying. The recursive
+    // edit lock serialises other threads; this snapshot keeps same-thread saves on the complete previous state.
+    const juce::MemoryBlock* stateBeforeImport = nullptr;
     psplug::UndoHistory history;
     std::atomic<bool> applying { false };      // our own edits: gesture callbacks ignored
     std::atomic<int> activeGestures { 0 };
@@ -675,6 +678,11 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     auto& d = *impl;
     const juce::ScopedLock editSl (d.editLock);   // Match EQ: copy parameters and live spectra from the same transaction
+    if (d.stateBeforeImport != nullptr)
+    {
+        dest = *d.stateBeforeImport;
+        return;
+    }
     juce::ValueTree state (kStateTag);
     state.setProperty (kVersion, kStateVersion, nullptr);
     state.appendChild (d.apvts.copyState(), nullptr);
@@ -1427,5 +1435,106 @@ bool PureSheenProcessor::startMatchReferenceFile (const juce::File& file, int pa
     return impl->matchEq->startFile (file, part, linkedParts);
 }
 void PureSheenProcessor::cancelMatchReferenceFile() { impl->matchEq->cancelFile(); }
+
+//==============================================================================
+// (importer) An imported foreign preset as one undo step (the plan comes from src/plugin/import).
+bool PureSheenProcessor::applyImportedPreset (int scope, const std::vector<float>& values,
+                                              const std::vector<ps::ModuleType>& order, const juce::String& name,
+                                              const ps::MatchSpectrum* matchReference)
+{
+    const auto* messages = juce::MessageManager::getInstanceWithoutCreating();
+    if (messages == nullptr || ! messages->isThisTheMessageThread())
+        return false;
+
+    auto& d = *impl;
+    if (scope < -1 || scope >= ps::kNumModuleTypes || values.size() != d.params.size()
+        || d.stateBeforeImport != nullptr)
+        return false;
+
+    // Validate the complete request before committing pending edits or changing any state. Plans normally arrive
+    // sanitised, but this public entry point must also refuse broken callers without an undo step or partial edit.
+    const auto& specs = ps::paramSpecs();
+    for (size_t i = 0; i < values.size(); ++i)
+        if (! std::isfinite (values[i]) || values[i] < specs[i].minValue || values[i] > specs[i].maxValue)
+            return false;
+    std::array<bool, ps::kNumModuleTypes> seen {};
+    for (const auto type : order)
+    {
+        const int index = (int) type;
+        if (index < 0 || index >= ps::kNumModuleTypes || seen[(size_t) index])
+            return false;
+        seen[(size_t) index] = true;
+    }
+    if (scope >= 0 && std::find (order.begin(), order.end(), (ps::ModuleType) scope) == order.end())
+        return false;
+    if (matchReference != nullptr)
+    {
+        const auto& ref = *matchReference;
+        if ((scope >= 0 && scope != (int) ps::ModuleType::MatchEq) || ! ref.valid
+            || ! std::isfinite (ref.seconds) || ref.seconds < 0.0
+            || ! std::isfinite (ref.sampleRate) || ref.sampleRate < 0.0
+            || std::find (ref.source.begin(), ref.source.end(), '\0') == ref.source.end())
+            return false;
+        for (const char c : ref.source)
+        {
+            if (c == '\0')
+                break;
+            if ((unsigned char) c < 32 || (unsigned char) c >= 127)
+                return false;
+        }
+        for (const auto& channel : ref.psdDb)
+            for (const float db : channel)
+                // Leave ample headroom for power-domain smoothing and weighted sums without overflow.
+                if (! std::isfinite (db) || db < ps::kMatchNoValue || db > 1000.0f)
+                    return false;
+    }
+
+    const juce::ScopedLock editSl (d.editLock);
+    d.matchEqHousekeeping();   // Match EQ: a pending spectrum change stays its own step
+    d.commitGesture (true);
+
+    juce::MemoryBlock previousState;
+    getStateInformation (previousState);
+    const juce::ScopedValueSetter<const juce::MemoryBlock*> saveGuard (d.stateBeforeImport, &previousState);
+
+    const bool wasInChain = scope >= 0 && d.chain.isInChain ((ps::ModuleType) scope);
+    d.applyValues (values, [scope] (int i) { return psplug::isInPresetScope (i, scope); });
+
+    if (scope >= 0 && ! wasInChain)
+    {
+        const int power = ps::paramIndex (psplug::moduleIdPrefix ((ps::ModuleType) scope).toStdString() + ".on");
+        if (power >= 0)
+        {
+            const bool was = d.applying.exchange (true);
+            d.setParam (power, 1.0f);
+            d.applying.store (was);
+        }
+    }
+
+    if (order != d.chain.getOrder())
+        d.setOrder (order);
+
+    const auto description = scope < 0 ? "Imported preset " + name
+                                        : "Imported " + psplug::moduleName ((ps::ModuleType) scope) + " preset " + name;
+
+    // Match EQ: the imported reference (both parts) belongs to the same step, like a preset's stored reference.
+    if (matchReference != nullptr && (scope < 0 || scope == (int) ps::ModuleType::MatchEq))
+    {
+        d.matchEq->beginImportedReference (*matchReference);
+        d.matchEq->applyPendingPreset();
+    }
+    // An accepted import is one explicit operation even when its values and reference equal the current state.
+    if (! d.record (description))
+        d.recordMatchEq (description);
+
+    if (scope < 0)
+    {
+        const juce::ScopedLock sl (d.extrasLock);
+        d.presetName = name.trim().isNotEmpty() ? name.trim() : juce::String ("Imported preset");
+        d.presetForcedModified = true;
+    }
+    sendChangeMessage();
+    return true;
+}
 float PureSheenProcessor::getMatchReferenceFileProgress() const { return impl->matchEq->getFileProgress(); }
 juce::String PureSheenProcessor::getMatchReferenceFileError() const { return impl->matchEq->getFileError(); }

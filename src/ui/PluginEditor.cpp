@@ -293,11 +293,21 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         }
     }
 
+    // A message wider than the module area (e.g. an import result listing skipped modules) wraps onto two lines.
+    bool noticeWraps() const
+    {
+        return ps::ui::textWidth (ps::ui::font (12.5f, 600), notice) + 48.0f > (float) moduleArea.getWidth() - 40.0f;
+    }
+
     juce::Rectangle<float> noticeBounds() const
     {
         const auto f = ps::ui::font (12.5f, 600);
-        const float w = juce::jmin ((float) moduleArea.getWidth() - 40.0f, ps::ui::textWidth (f, notice) + 48.0f);
-        return { (float) moduleArea.getCentreX() - w * 0.5f, (float) moduleArea.getBottom() - 50.0f, w, 34.0f };
+        const float maxW = (float) moduleArea.getWidth() - 40.0f;
+        const float textW = ps::ui::textWidth (f, notice) + 48.0f;
+        const bool wraps = noticeWraps();
+        const float w = wraps ? juce::jmin (maxW, juce::jmax (maxW * 0.7f, textW * 0.55f + 48.0f)) : textW;
+        const float h = wraps ? 52.0f : 34.0f;
+        return { (float) moduleArea.getCentreX() - w * 0.5f, (float) moduleArea.getBottom() - 16.0f - h, w, h };
     }
 
     juce::Rectangle<int> noticeArea() const
@@ -311,18 +321,21 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             return;
 
         const auto pill = noticeBounds();
+        const bool wraps = noticeWraps();
+        const float radius = juce::jmin (17.0f, pill.getHeight() * 0.5f);
         juce::Path shape;
-        shape.addRoundedRectangle (pill, pill.getHeight() * 0.5f);
+        shape.addRoundedRectangle (pill, radius);
         juce::DropShadow (juce::Colours::black.withAlpha (0.5f), 16, { 0, 4 }).drawForPath (g, shape);
         g.setColour (Col::panel.brighter (0.08f));
         g.fillPath (shape);
         g.setColour (Col::accent.withAlpha (0.7f));
-        g.drawRoundedRectangle (pill.reduced (0.5f), pill.getHeight() * 0.5f, 1.0f);
+        g.drawRoundedRectangle (pill.reduced (0.5f), radius, 1.0f);
         g.setColour (Col::accent);
         g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ pill.getX() + 20.0f, pill.getCentreY() }));
         g.setFont (ps::ui::font (12.5f, 600));
         g.setColour (Col::text);
-        g.drawFittedText (notice, pill.withTrimmedLeft (32.0f).withTrimmedRight (16.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+        g.drawFittedText (notice, pill.withTrimmedLeft (32.0f).withTrimmedRight (18.0f).reduced (0.0f, wraps ? 6.0f : 0.0f).toNearestInt(),
+                          juce::Justification::centredLeft, wraps ? 2 : 1, 0.85f);
     }
 
     //==========================================================================
@@ -544,6 +557,11 @@ const ps::ui::UiOptions& PureSheenEditor::getOptions() const { return impl->opti
 ps::ui::SpectrumAnalyser& PureSheenEditor::getModulePreSpectrum() { return impl->modulePre; }
 ps::ui::SpectrumAnalyser& PureSheenEditor::getModulePostSpectrum() { return impl->modulePost; }
 ps::ui::SpectrumAnalyser& PureSheenEditor::getOutputSpectrum() { return impl->output; }
+
+void PureSheenEditor::showNotice (const juce::String& text)
+{
+    impl->notify (text);
+}
 
 void PureSheenEditor::showHint (const juce::String& text)
 {

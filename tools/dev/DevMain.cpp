@@ -14,6 +14,10 @@
 //   PureSheenDev icon <out.png> [size]    -> renders the app / plugin icon (resources/icon/logo_512.png)
 //   PureSheenDev memory <rate> [ts] [editor]
 //                                         -> private memory with all 14 modules prepared at <rate> (Memory.cpp)
+//   PureSheenDev import <file-or-folder> ... [--verbose] [--values] [--no-audio] | import --defaults
+//                                         -> preset importer over .xml files (ImportTool.cpp)
+//   PureSheenDev importkey "<name>" ...  -> the importer's template / key of a ParamID or section name
+//   PureSheenDev importtest              -> importer text-path and processor checks
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
@@ -21,6 +25,9 @@ int runRender (const juce::File& input, const juce::File& output,     // Render.
                const juce::StringArray& options);
 int runIcon (const juce::File& output, int size);                     // Icon.cpp
 int runMemory (const juce::StringArray& args);                        // Memory.cpp
+int runImport (const juce::StringArray& args);                        // ImportTool.cpp
+int runImportKey (const juce::StringArray& args);                     // ImportTool.cpp
+int runImportTests();                                                 // ImportTool.cpp
 
 int main (int argc, char** argv)
 {
@@ -55,9 +62,22 @@ int main (int argc, char** argv)
         return runMemory (args);
     }
 
+    if (command == "import" || command == "importkey")
+    {
+        juce::StringArray args;
+        for (int i = 2; i < argc; ++i)
+            args.add (juce::String::fromUTF8 (argv[i]));
+        return command == "import" ? runImport (args) : runImportKey (args);
+    }
+
+    if (command == "importtest")
+        return runImportTests();
+
     std::cout << "usage: PureSheenDev selftest | snapshot <outDir> | render <in.wav> <out.wav> [--preset <name>]\n"
                  "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [--chain <prefix,...>]\n"
-                 "       [id=value ...]\n"
-                 "       icon <out.png> [size]\n";
+                 "       [--import <file.xml>] [id=value ...]\n"
+                 "       icon <out.png> [size]\n"
+                 "       import <file-or-folder> ... [--verbose] [--values] [--no-audio] | import --defaults\n"
+                 "       importkey \"<ParamID>\" ... | importtest\n";
     return 2;
 }

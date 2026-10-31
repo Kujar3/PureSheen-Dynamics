@@ -1,6 +1,7 @@
 #include "ui/HeaderBar.h"
 
 #include "ui/Controls.h"
+#include "plugin/import/XmlPresetImport.h"
 
 #include <map>
 
@@ -236,6 +237,7 @@ struct HeaderBar::Impl
 
         menu.addSeparator();
         menu.addItem (1, "Save preset...");
+        menu.addItem (2, "Import preset (.xml)...");
 
         presetName.setMenuOpen (true);
         showMenu (menu, presetName, [this, presets] (int result)
@@ -244,6 +246,8 @@ struct HeaderBar::Impl
 
             if (result == 1)
                 savePresetAs();
+            else if (result == 2)
+                importXmlPreset();
             else if (result >= 100 && result - 100 < (int) presets.size())
                 proc.loadPreset (-1, presets[(size_t) (result - 100)]);
 
@@ -280,6 +284,7 @@ struct HeaderBar::Impl
                 currentUser = &p;
 
         menu.addItem (1, "Save preset...");
+        menu.addItem (5, "Import preset (.xml)...");
         menu.addItem (2, "Delete \"" + current + "\"", currentUser != nullptr);
         menu.addSeparator();
         menu.addItem (3, "Reset everything to default");
@@ -294,6 +299,7 @@ struct HeaderBar::Impl
             switch (result)
             {
                 case 1: savePresetAs(); break;
+                case 5: importXmlPreset(); break;
                 case 2:
                     if (proc.deletePreset (userInfo))
                         ctx.notify ("Deleted preset \"" + userInfo.name + "\"");
@@ -312,6 +318,19 @@ struct HeaderBar::Impl
                 default: break;
             }
 
+            update();
+        });
+    }
+
+    // A foreign .xml preset: a whole chain replaces ours, a single-module file goes to its module (one undo step).
+    void importXmlPreset()
+    {
+        importer.launch (proc, -1, [this, safe = juce::Component::SafePointer<HeaderBar> (&owner)]
+                                   (const psplug::XmlImportResult& r)
+        {
+            if (safe == nullptr)
+                return;
+            ctx.notify (r.message);
             update();
         });
     }
@@ -543,6 +562,8 @@ struct HeaderBar::Impl
     std::array<std::unique_ptr<SnapshotButton>, PureSheenProcessor::kNumSnapshots> snapshots;
     IconButton options { "Options", IconButton::Icon::sliders };
     IconButton help { "Help", IconButton::Icon::help };
+
+    psplug::XmlImportChooser importer;   // "Import preset (.xml)..."
 
     juce::Rectangle<int> brandArea;
     std::vector<int> separators;

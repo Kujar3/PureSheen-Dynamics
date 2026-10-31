@@ -8,6 +8,8 @@
 #include "ui/LowEndWidgets.h"      // ui-lowend block
 #include "ui/LowRegionDisplay.h"   // ui-lowend block
 #include "plugin/PluginProcessor.h"
+#include "plugin/import/XmlPresetImport.h"   // importer block
+#include "ui/Controls.h"                      // importer block (MenuChip)
 #include "ui/ChainStrip.h"
 #include "ui/ModulePanel.h"
 #include "ui/PluginEditor.h"
@@ -232,6 +234,89 @@ bool checkNoFocus (juce::Component& root)
     return ok;
 }
 
+// The first component under root with a tooltip starting with `start` (importer block: the preset chips).
+juce::Component* findByTooltip (juce::Component& root, const juce::String& start)
+{
+    if (auto* t = dynamic_cast<juce::SettableTooltipClient*> (&root); t != nullptr && t->getTooltip().startsWith (start))
+        return &root;
+    for (auto* c : root.getChildren())
+        if (auto* found = findByTooltip (*c, start))
+            return found;
+    return nullptr;
+}
+
+// The editor with the open popup menu drawn where it sits on screen (menus are separate desktop windows).
+bool writeWithMenu (juce::Component& editor, const juce::File& file)
+{
+    auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 1.0f);
+    bool menuFound = false;
+    auto& desktop = juce::Desktop::getInstance();
+    for (int i = 0; i < desktop.getNumComponents(); ++i)
+    {
+        auto* c = desktop.getComponent (i);
+        if (c == nullptr || c == &editor || ! c->isVisible() || juce::String (typeid (*c).name()).containsIgnoreCase ("menu") == false)
+            continue;
+        const auto at = c->getScreenPosition() - editor.getScreenPosition();
+        juce::Graphics g (image);
+        g.drawImageAt (c->createComponentSnapshot (c->getLocalBounds(), true, 1.0f), at.x, at.y);
+        menuFound = true;
+    }
+    if (! menuFound)
+        std::cout << "FAILED: no open popup menu for " << file.getFileName() << "\n";
+    return writeImage (image, file) && menuFound;
+}
+
+// A small whole-chain / module file in the importer's format with our own names (aliases), for the note shots.
+const ps::imp::Aliases& snapshotImportAliases()
+{
+    static const ps::imp::Aliases a = []
+    {
+        ps::imp::Aliases m;
+        for (const auto* spec : ps::imp::allModuleSpecs())
+        {
+            const juce::String prefix (ps::moduleInfo (spec->type).idPrefix);
+            m[(prefix + "Sec").toStdString()] = spec->tagKey;
+            m[(prefix + "Chain").toStdString()] = spec->elementKey;
+            if (spec->type == ps::ModuleType::Maximizer)
+                for (const auto& r : *spec->rules)
+                    if (juce::String (r.what) == "output ceiling")
+                        m["Ceiling"] = r.key;
+        }
+        m["Common"] = ps::imp::kGlobalSectionKey;
+        m["Order"] = ps::imp::kChainBlobKey;
+        m["Tape"] = ps::imp::skippedModuleKey ("tape emulation");
+        m["Delimit"] = ps::imp::skippedModuleKey ("de-limiter");
+        m["OldComp"] = ps::imp::skippedModuleKey ("analog-style compressor");
+        m["OldLimit"] = ps::imp::skippedModuleKey ("analog-style limiter");
+        m["Rebal"] = ps::imp::skippedModuleKey ("mix rebalancing");
+        return m;
+    }();
+    return a;
+}
+
+juce::String snapshotChainFile (const juce::StringArray& chain)
+{
+    juce::MemoryOutputStream blob;
+    for (const auto& n : chain)
+    {
+        blob.writeByte (0);
+        blob.writeInt ((int) n.getNumBytesAsUTF8());
+        blob.write (n.toRawUTF8(), n.getNumBytesAsUTF8());
+    }
+    juce::String text = "<Root PresetVer=\"1\" PluginVer=\"120000\">\n  <Common Enabled=\"1\"><ExtraBytes ElementID=\"Order\" Data=\""
+                        + juce::Base64::toBase64 (blob.getData(), blob.getDataSize()) + "\"/></Common>\n";
+    for (const auto& n : chain)
+    {
+        const auto section = n.endsWith ("Chain") ? n.dropLastCharacters (5) + "Sec" : n;
+        text << "  <" << section << " Enabled=\"1\">";
+        if (section == "maxSec")
+            text << "<Param ElementID=\"maxChain\" ParamID=\"Ceiling\" Value=\"-0.3\"/>"
+                    "<Param ElementID=\"maxChain\" ParamID=\"Something New\" Value=\"1\"/>";
+        text << "</" << section << ">\n";
+    }
+    return text + "</Root>\n";
+}
+
 template <typename T>
 T* findChild (juce::Component& root)
 {
@@ -278,6 +363,118 @@ int runSnapshot (const juce::File& outputDir)
 
     // 01: default chain
     ok &= writePng (*editor, file ("01_default_1180x720"));
+
+    // ---- BEGIN importer: "Import preset (.xml)..." in the header preset list and a module's preset menu, and the
+    //      result notes (header notice pill, panel header hint) at 980x600 and 1180x720.
+    // Set PURESHEEN_SNAPSHOT_ONLY=importer to stop after this block.
+    {
+        juce::MemoryBlock stateBefore;   // restored afterwards (the later shots expect the dialled-in state)
+        proc.getStateInformation (stateBefore);
+        ps::imp::ImportOptions importOptions;
+        importOptions.aliases = &snapshotImportAliases();
+        const std::pair<int, int> importSizes[] = { { 980, 600 }, { 1180, 720 } };
+        for (const auto& [w, h] : importSizes)
+        {
+            const auto size = juce::String (w) + "x" + juce::String (h);
+            editor->setSize (w, h);
+            editor->selectModule ((int) ps::ModuleType::Equalizer1);
+            rig.play (*editor, 4);
+
+            // header preset list
+            if (auto* chip = findByTooltip (*editor, "Presets: click"))
+            {
+                const auto pos = chip->getLocalBounds().getCentre().toFloat();
+                const auto now = juce::Time::getCurrentTime();
+                chip->mouseDown (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), pos,
+                                                   juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                                   juce::MouseInputSource::defaultPressure, 0.0f, 0.0f, 0.0f, 0.0f, chip,
+                                                   chip, now, pos, now, 1, false));
+                pumpMessages (150);
+                ok &= writeWithMenu (*editor, file ("50_import_header_menu_" + size));
+                juce::PopupMenu::dismissAllActiveMenus();
+                pumpMessages (100);
+            }
+            else
+            {
+                std::cout << "FAILED: no header preset chip\n";
+                ok = false;
+            }
+
+            // a module's preset menu
+            if (auto* chip = dynamic_cast<ps::ui::MenuChip*> (findByTooltip (*editor, "Presets for this module only")))
+            {
+                chip->onOpenMenu (*chip);
+                pumpMessages (150);
+                ok &= writeWithMenu (*editor, file ("50_import_module_menu_" + size));
+                juce::PopupMenu::dismissAllActiveMenus();
+                pumpMessages (100);
+            }
+            else
+            {
+                std::cout << "FAILED: no module preset chip\n";
+                ok = false;
+            }
+
+            // the result note of a whole-chain import (as the header shows it), short and long
+            const auto chainText = snapshotChainFile ({ "Tape", "eq1Chain", "dynChain", "maxChain" });
+            auto result = psplug::applyImportPlan (proc, psplug::planXmlPresetText (chainText, importOptions), "Warm Master");
+            proc.flushPendingChanges (true);
+            pumpMessages (60);   // the strip and header follow the processor's change message
+            ok &= result.ok;
+            editor->showNotice (result.message);
+            rig.play (*editor, 3);
+            ok &= writePng (*editor, file ("51_import_note_" + size));
+
+            const auto longText = snapshotChainFile ({ "Tape", "eq1Chain", "OldComp", "deqChain", "tbalChain", "dynChain",
+                                                       "Delimit", "Rebal", "imgChain", "excChain", "OldLimit", "maxChain" });
+            result = psplug::applyImportPlan (proc, psplug::planXmlPresetText (longText, importOptions),
+                                              "Festival Club Master Extended Version 2");
+            proc.flushPendingChanges (true);
+            pumpMessages (60);   // the strip and header follow the processor's change message
+            ok &= result.ok;
+            editor->showNotice (result.message);
+            rig.play (*editor, 3);
+            ok &= writePng (*editor, file ("51_import_note_long_" + size));
+
+            // a refused file (module menu scope) and a module import into the selected panel
+            editor->selectModule ((int) ps::ModuleType::Maximizer);
+            rig.play (*editor, 2);
+            const auto moduleText = juce::String ("<Root PresetVer=\"1\" PluginVer=\"120000\"><Common Enabled=\"0\"/>"
+                                                  "<maxSec Enabled=\"1\"><Param ElementID=\"maxChain\" ParamID=\"Ceiling\" "
+                                                  "Value=\"-1\"/></maxSec></Root>");
+            const auto moduleResult = psplug::applyImportPlan (proc, psplug::planXmlPresetText (moduleText, importOptions),
+                                                               "Safe Ceiling", (int) ps::ModuleType::Maximizer);
+            proc.flushPendingChanges (true);
+            pumpMessages (60);
+            ok &= moduleResult.ok;
+            if (auto* panel = editor->getCurrentPanel())
+                panel->showImportResult (moduleResult.ok, moduleResult.name, moduleResult.message);
+            rig.play (*editor, 3);
+            ok &= writePng (*editor, file ("52_import_module_hint_" + size));
+
+            const auto refused = psplug::applyImportPlan (proc, psplug::planXmlPresetText (chainText, importOptions), "x",
+                                                          (int) ps::ModuleType::Maximizer);
+            if (auto* panel = editor->getCurrentPanel())
+                panel->showImportResult (refused.ok, refused.name, refused.message);
+            rig.play (*editor, 3);
+            ok &= ! refused.ok && writePng (*editor, file ("52_import_module_refused_" + size));
+        }
+
+        proc.setStateInformation (stateBefore.getData(), (int) stateBefore.getSize());
+        proc.flushPendingChanges (true);
+        pumpMessages (30);
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule ((int) ps::ModuleType::Equalizer1);
+        rig.play (*editor, 30);
+
+        if (juce::SystemStats::getEnvironmentVariable ("PURESHEEN_SNAPSHOT_ONLY", {}) == "importer")
+        {
+            holder.reset();
+            std::cout << (ok ? "snapshot (importer only): OK\n" : "snapshot (importer only): FAILED\n");
+            return ok ? 0 : 1;
+        }
+    }
+    // ---- END importer ----
 
     // ---- BEGIN ui-spectral: Tone Balance, Definition and Smoother panels (every size with live meters, Tone Balance
     //      Cut / M/S Side / T/S Sustain, Definition region solo and M/S Side, Smoother Trace view, Learn, region solo) ----

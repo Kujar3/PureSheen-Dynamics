@@ -1,6 +1,7 @@
 #include "ui/ModulePanel.h"
 
 #include "ui/Controls.h"
+#include "plugin/import/XmlPresetImport.h"
 
 #include <array>
 #include <functional>
@@ -494,6 +495,7 @@ struct ModulePanel::Impl
 
         menu.addSeparator();
         menu.addItem (1, "Save current settings as preset...");
+        menu.addItem (3, "Import preset (.xml)...");
         menu.addItem (2, "Reset module to defaults");
 
         chip.setMenuOpen (true);
@@ -520,6 +522,16 @@ struct ModulePanel::Impl
             else if (result == 2)
             {
                 processor.resetModule (type);
+            }
+            else if (result == 3)
+            {
+                // A foreign single-module .xml preset for this module (one undo step).
+                importer.launch (processor, (int) type, [safe = juce::Component::SafePointer<ModulePanel> (&owner)]
+                                                        (const psplug::XmlImportResult& r)
+                {
+                    if (safe != nullptr)
+                        safe->showImportResult (r.ok, r.name, r.message);
+                });
             }
             else if (result >= 100 && result - 100 < (int) presets.size())
             {
@@ -696,6 +708,7 @@ struct ModulePanel::Impl
     int shownTapPart = -2;
     std::unique_ptr<TsPopover> tsContent;
     std::unique_ptr<juce::CallOutBox> tsCallout;  // destroyed before its referenced content
+    psplug::XmlImportChooser importer;            // "Import preset (.xml)..."
 };
 
 //==============================================================================
@@ -751,6 +764,16 @@ void ModulePanel::showHeaderHint (const juce::String& text)
     impl->hint = text;
     impl->hintShownMs = juce::Time::getMillisecondCounter();
     repaint (impl->hintArea);
+}
+
+void ModulePanel::showImportResult (bool ok, const juce::String& name, const juce::String& message)
+{
+    if (ok)
+    {
+        impl->presetName = name;
+        impl->presetChip.setText ({}, name);
+    }
+    showHeaderHint (message);
 }
 
 void ModulePanel::paint (juce::Graphics& g)

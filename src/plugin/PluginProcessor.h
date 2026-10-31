@@ -4,6 +4,8 @@
 
 #include "dsp/Chain.h"
 
+namespace ps { struct MatchSpectrum; }
+
 #include <functional>
 #include <memory>
 #include <vector>
@@ -198,6 +200,20 @@ public:
     void cancelMatchReferenceFile();
     float getMatchReferenceFileProgress() const;                     // 0..1 while loading, -1 when idle
     juce::String getMatchReferenceFileError() const;                 // last failure (plain text), empty if none
+
+    //==============================================================================
+    // (importer) Applies an imported foreign preset (src/plugin/import/XmlPresetImport.h builds it) as ONE undo step.
+    //   scope -1: a whole chain. `values` (paramSpecs() order) for every parameter in the global preset scope and
+    //             `order` as the chain; the preset name becomes `name`, shown as modified (unsaved) until saved.
+    //   scope = a module: that module's parameters (module preset scope, power excluded) and `order`, which may insert
+    //             the module (a module that was not in the chain is also switched on). The preset name is kept.
+    // matchReference (optional; whole chain or Match EQ scope): the imported Match EQ reference spectrum, applied to
+    // both parts in the same undo step. Without it the Match EQ spectra are left as they are (like our presets
+    // without spectra). Message thread only; returns false without changing state or history for a bad scope,
+    // malformed values / order / reference, a nested import, or a call from another thread. Host saves during the
+    // operation observe a complete state (a synchronous save from a parameter notification gets the previous state).
+    bool applyImportedPreset (int scope, const std::vector<float>& values, const std::vector<ps::ModuleType>& order,
+                              const juce::String& name, const ps::MatchSpectrum* matchReference = nullptr);
 
 private:
     struct Impl;

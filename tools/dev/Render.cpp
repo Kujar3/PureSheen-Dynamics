@@ -1,6 +1,7 @@
 #include "core/Loudness.h"
 #include "core/TruePeak.h"
 #include "plugin/PluginProcessor.h"
+#include "plugin/import/XmlPresetImport.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -17,6 +18,7 @@
 // its length). Options:
 //   --preset <name>                 global preset (factory or user), case-insensitive
 //   --module-preset <prefix>:<name> module preset, e.g. "max:Loud Modern"
+//   --import <file.xml>             a foreign .xml preset through the preset importer (after the presets)
 //   --chain <prefix,prefix,...>     chain order after the presets, e.g. "--chain deq" or "--chain eq1,lowc,max"
 //   --bits 16|24|32                 output format (default 32 = float)
 //   --block <n>                     host block size (default 512)
@@ -145,7 +147,7 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
 
     // Options
     int bits = 32, block = 512;
-    juce::String globalPreset, modulePreset, chainText;
+    juce::String globalPreset, modulePreset, chainText, importPath;
     bool setChain = false;
     juce::StringArray overrides;
     for (int i = 0; i < options.size(); ++i)
@@ -155,6 +157,8 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
             globalPreset = options[++i];
         else if (o == "--module-preset" && i + 1 < options.size())
             modulePreset = options[++i];
+        else if (o == "--import" && i + 1 < options.size())
+            importPath = options[++i];
         else if (o == "--chain" && i + 1 < options.size())
         {
             chainText = options[++i];
@@ -210,6 +214,14 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
             return 2;
         }
         std::cout << "module preset: " << prefix << " / " << info.name << "\n";
+    }
+
+    if (importPath.isNotEmpty())
+    {
+        const auto result = psplug::importXmlPreset (proc, juce::File::getCurrentWorkingDirectory().getChildFile (importPath));
+        std::cout << "import: " << result.message << "\n";
+        if (! result.ok)
+            return 2;
     }
 
     if (setChain)

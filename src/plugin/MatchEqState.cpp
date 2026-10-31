@@ -564,6 +564,15 @@ void MatchEqState::beginPresetLoad (int scope, bool factory, const juce::String&
             presetHasData = matchSpectraFromTree (juce::ValueTree::fromXml (*child), presetSpectra, false);
 }
 
+void MatchEqState::beginImportedReference (const ps::MatchSpectrum& reference)
+{
+    const juce::ScopedLock sl (lock);
+    presetPending = true;
+    presetHasData = reference.valid;
+    presetSpectra.spectra[0][0] = reference;
+    presetSpectra.spectra[1][0] = reference;
+}
+
 bool MatchEqState::applyPendingPreset()
 {
     const juce::ScopedLock sl (lock);

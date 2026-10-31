@@ -22,7 +22,12 @@ add_subdirectory("${JUCE_PATH}" JUCE EXCLUDE_FROM_ALL)
 file(GLOB PS_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/*.cpp")
-file(GLOB PS_PLUGIN_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/*.cpp")
+file(GLOB PS_PLUGIN_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/import/*.cpp")
+# The preset importer's pure C++ part (src/plugin/import/Import*.cpp: engine + mapping tables, no JUCE) is also unit
+# tested by CoreTests; XmlPresetImport.cpp (juce::XmlDocument, processor, file chooser) is plug-in / dev tool only.
+file(GLOB PS_IMPORT_CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/import/Import*.cpp")
 file(GLOB PS_UI_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/*.cpp")
 file(GLOB PS_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 
@@ -88,7 +93,7 @@ target_link_libraries(PureSheen
 # Pure C++ core + DSP unit tests (no JUCE, compiles in seconds)
 #   CoreTests [substring-filter]
 # ---------------------------------------------------------------------------
-add_executable(CoreTests ${PS_TEST_SOURCES} ${PS_CORE_SOURCES})
+add_executable(CoreTests ${PS_TEST_SOURCES} ${PS_CORE_SOURCES} ${PS_IMPORT_CORE_SOURCES})
 target_include_directories(CoreTests PRIVATE src tests)
 if(MSVC)
     target_compile_options(CoreTests PRIVATE /W4 /permissive-)

@@ -64,6 +64,7 @@ public:
     // Snapshot / test hooks
     ps::ui::ModulePanel* getCurrentPanel() noexcept;
     void updateNow();                                    // one synchronous tick (dev tool: timers do not run)
+    void showNotice (const juce::String&);               // (added) the notice pill (header results, e.g. an import)
 
     static constexpr int kDefaultWidth = 1180, kDefaultHeight = 720;
     static constexpr int kMinWidth = 980, kMinHeight = 600;

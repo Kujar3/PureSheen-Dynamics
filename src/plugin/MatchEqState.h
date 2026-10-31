@@ -81,6 +81,8 @@ public:
     bool appendToPresetFile (const juce::File&, int scope) const;   // global / Match EQ scope only
     void beginPresetLoad (int scope, bool factory, const juce::String& name, const juce::File& file);
     bool applyPendingPreset();                           // true when spectra changed
+    // (importer) An imported preset's reference for both parts, applied by the next applyPendingPreset().
+    void beginImportedReference (const ps::MatchSpectrum& reference);
     void setPresetBaseline();                           // reference spectra of the last global load / save
     bool isPresetModified() const;
 

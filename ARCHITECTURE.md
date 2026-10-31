@@ -18,15 +18,16 @@ accent). The research notes are private.
 Later phases (enums are append-only, so they slot in):
 - Phase 2 (done, see "Phase 2" and "Status (phase 2 integration)" below): Dynamic EQ, Match EQ, Tone Balance,
   Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
-- Next: the preset importer (.xml presets of the reference suite, labelled generically in the UI)
-- Phase 3: Vintage modules, Unlimiter, rule-based Assistant, Track Referencing (from RefMatch), and one plug-in per
-  module ("PureSheen EQ", "PureSheen Maximizer", ...)
+- Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
+- Phase 3: analog-style compressor / EQ / limiter / tape modules, a de-limiter, rule-based Assistant, Track
+  Referencing (from RefMatch), and one plug-in per module ("PureSheen EQ", "PureSheen Maximizer", ...)
 - Phase 4: MCP bridge
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
 
-**Naming rule.** Never use another vendor's product, module or algorithm names in code, comments, UI text or docs.
-The (private) research doc may mention them.
+**Naming rule.** Never use another vendor's product, module or algorithm names in code, comments, UI text, test
+names, file names or docs. The (private) research doc and the git-ignored `out/` notes may mention them. Foreign
+strings the importer must recognise are matched by key, never written (see "Preset importer").
 
 ## Repository layout
 
@@ -60,6 +61,8 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
   LowContrast, BassShaper .h/.cpp   one contract header + implementation per module
 src/plugin/               PluginProcessor.h/.cpp (+ PluginState, UndoHistory, Presets, FactoryPresets, MatchEqState;
                           MatchEqStateTests.cpp is compiled into the dev tool only)
+src/plugin/import/        preset importer: ImportCommon / ImportEngine (pure C++, also in CoreTests), mapping tables
+                          ImportMapEq / ImportMapCore / ImportMapPhase2, XmlPresetImport (JUCE side, file chooser)
 src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, ModulePanel, ModulePanels),
                           PluginEditor, HeaderBar, ChainStrip, IoPanel, DitherPanel, HelpOverlay,
                           EqPanel, DynamicsPanel, ImagerPanel, ExciterPanel, MaximizerPanel, MultibandDisplay
@@ -71,7 +74,8 @@ tests/                    CoreTests (TestFramework.h, namespace pstest; TestSign
                           ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
                           AllocationTracking), snapshot <dir> (editor PNGs), render <in.wav> <out.wav> (--preset,
-                          --module-preset, --chain, id=value), memory <rate> [ts] [editor] (private bytes)
+                          --module-preset, --chain, --import, id=value), memory <rate> [ts] [editor] (private bytes),
+                          import / importkey / importtest (ImportTool.cpp, see "Preset importer")
 tools/audio/              make_test_mix.py, check_clicks.py, render_presets.sh (Core), render_phase2.py (phase 2)
 resources/fonts           Inter 400/600/700 (PureSheenBinary::Inter400_ttf ...)
 third_party/              JUCE 8.0.16, clap-juce-extensions (gitignored; copied from RefMatch)
@@ -340,4 +344,76 @@ Decisions / known limitations (phase 2):
   Low Contrast / Bass Shaper range better.
 - `SpectrumAnalyser::draw` ignores the alpha of the line colour; the spectral panels fade with transparency layers.
 - pluginval's editor tests open the default module, so the phase 2 panels are exercised by the snapshot checks.
-- Not done: listening tests in FL Studio, the preset importer.
+- Not done: listening tests in FL Studio (the preset importer is done, see below).
+
+## Preset importer
+
+"Import preset (.xml)..." (header preset list, header "..." menu, each module's preset menu) reads the .xml presets of
+the reference suite, so users can bring their presets over. Files: `src/plugin/import/` (see Repository layout), the
+hooks `PureSheenProcessor::applyImportedPreset`, `MatchEqState::beginImportedReference`, the HeaderBar / ModulePanel
+menus, and the dev tool's `import` / `importkey` / `importtest` and `render --import`.
+
+**Design.**
+- Pipeline: file (<= 16 MB, valid UTF-8) -> `prescanXmlText` (one root, matched tags, no DOCTYPE / ENTITY, no NUL
+  bytes, nesting <= 16, <= 200k elements, <= 64 attributes per element) -> `juce::XmlDocument` -> neutral `XmlNode`
+  tree -> `buildImportPlan` (pure C++) -> `applyImportPlan` (JUCE side, message thread only). A missing, empty or
+  damaged chain blob refuses a whole-chain file (stale sections would otherwise leak in).
+- Recognition is structural, never by root tag: a root with `PresetVer` / `PluginVer` attributes whose children are
+  module sections holding `<Param ElementID ParamID Value>` and `<ExtraBytes ElementID Data>`. Exactly one enabled
+  module section = a single-module file; otherwise a whole chain in the order of the decoded chain blob (sections not
+  in the chain hold stale settings and are never read). Modules we do not have are skipped and named in our words
+  (analog-style compressor / EQ / limiter, tape emulation, de-limiter, stem-separation EQ, mix rebalancing).
+- One table per module (`ImportMap*.cpp`): a row per foreign control with an action (Map / ChannelMode / Hook / Ignore
+  / Unsupported), numbering, band layout, our set A / set B ids, a transform, the foreign default and a label in our
+  words; optional prepare / finish hooks for cross-parameter rules (multiband layouts with gaps closed, version
+  renames, unit conversions). "Aux: " ParamIDs are channel set B. Every value is clamped / snapped into our range.
+- Apply = ONE undo step. Whole chain: every preset-scope value and the chain (I/O gain, mono, swap and dither reset to
+  our defaults, gain match untouched); the preset is named after the file and shows as modified. Module file: that
+  module's values; a module not in the chain is inserted at our usual position and switched on. A module menu accepts
+  only that module's files (EQ 1 / EQ 2 interchangeable). A Match EQ reference spectrum stored in the file (zlib +
+  JSON records) is decoded on the JUCE side, mapped onto our 540-point grid (`setMatchSpectrumFromBins`) and applied
+  to both parts in the same step (source "import:<name>"). Our Match EQ matches against a captured Current spectrum
+  (the foreign one analyses live), so the note asks the user to capture the track as Current.
+- `applyImportedPreset` validates the whole request (scope, values in range, order, reference) before touching any
+  state, takes the edit lock for the whole transaction, records exactly one step (also for an unchanged import), and
+  a host save re-entered from a parameter notification during the import gets the complete previous state.
+- `XmlImportChooser` (one per menu owner): one dialog at a time, its one-shot completion is dropped when the owner
+  is destroyed (the dialog is closed with it); the last folder is shared by live choosers.
+- The result line goes to the notice pill (two lines when long) or the panel hint: `"<name>": Imported 4 modules,
+  46 settings (1 not imported). Skipped: tape emulation.` Approximation notes stay in the report (dev tool).
+
+**Hash rule.** Foreign tags, ElementIDs, ParamIDs and record member names are never written in the repo. They are
+matched by a 64-bit FNV-1a key (`ps::imp::importKey`, constexpr) of a TEMPLATE: "Aux: " removed, the first run of
+digits replaced by '#' (kept as the number). The source holds the numeric constant plus a comment in our words; keys
+are computed at dev time with `PureSheenDev importkey "<string>"`. Tests use small synthetic trees whose generic names
+map to the keys through `ImportOptions::aliases`. No corpus file or excerpt is ever copied into the repo; corpus-wide
+checks run only through `PureSheenDev import <local folders>`.
+
+**Defaults and confidence.** Files are sparse (only values that differ from the WRITER version's own default are
+stored), so an absent value takes the foreign default of that writer version (`PluginVer` eras), never ours. Each
+row's default is `known` (proven from sparse storage or documented), `likely`, `guess`, `byVersion (fn, conf)` or
+`noDefault()`; that table column is the one place to correct them. `PureSheenDev import --defaults` lists the 96
+uncertain ones (39 likely, 57 guess); they need Reset screenshots or one-change test saves in the real product.
+
+**Limits.**
+- Not imported (counted as such): stem-separation mode, the per-module auto gain of Tone Balance / Definition, the
+  Dynamics linear-phase crossover steepness. Controls the files never carry keep our defaults (Dynamic EQ ratio /
+  knee / sidechain, EQ cut slopes at 12 dB/oct, Punch stereo link / crossover type, T/S split controls).
+- Approximations (with a note in the report): Dynamic EQ automatic timing multipliers on our base times, the older
+  Smoother threshold -> amount, surgical shelves -> analog shelves, Punch sync notes beyond 1/2 dotted, Dynamics set B
+  output gain / module mix folded into the band gains / mixes.
+- Uncertain meanings: EQ shape indices (shelf variants), the chain flag byte (non-zero read as module off), Maximizer
+  mode indices 4 / 5 by version, the Bass Shaper thresholds (1:1 dB), the Exciter drive calibration.
+- Dither and I/O are never stored in the files.
+
+Verification (build-impint, all five targets, 0 warnings in our sources), after an independent review-and-fix (two
+passes; fixes: stricter XML / JSON / base64 / zlib checks, enum and overflow guards in the tables, refusing a damaged
+chain, transaction validation and save consistency, chooser lifetime, chain-flag power, sparse Exciter / Tone Balance
+era defaults, set-B Match EQ references, limiter activation): CoreTests 512 test cases, 0 failed (75 "import."
+cases); `PureSheenDev selftest` 236 passed, 0 failed; `PureSheenDev importtest` all passed (81 checks: text path,
+fuzz, hostile spectrum records, transactions, one undo step, Match EQ reference); corpus run over 706 local files:
+595 imported, 111 not importable (only modules we do not have), 0 failed, 595 / 595 play finite audio, 25 / 25
+stored Match EQ references imported, 15 values not imported (all intended, see Limits); renders of 10 varied
+imported global presets:
+no NaN, peaks within the imported Maximizer ceiling; snapshots of the menus and result notes at 980x600 / 1180x720;
+pluginval strictness 10 with GUI (VST3): SUCCESS.
