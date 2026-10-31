@@ -21,7 +21,10 @@
 //   saves); -value x 100 % is our linear (0) .. minimum phase (100) amount.
 // - Dynamic EQ: the foreign "auto" timing stores multipliers of a frequency-dependent time; our automatic curves are
 //   the same (measured), applied as they are at the reference times 15 / 100 ms, so a multiplier becomes reference x
-//   multiplier. Ratio, knee, sidechain and the static switch have no foreign counterpart and keep our defaults.
+//   multiplier. The foreign band moves by its gain x (peak level - threshold) / 30 dB (measured with single-band tone
+//   tests on writer 120000, in both directions), so each band gets our ratio 1 / (1 - |gain| / 30), knee 0, and a
+//   threshold 3 dB lower (our detector reads a sine's RMS, the foreign one its peak). Sidechain and the static switch
+//   have no foreign counterpart and keep our defaults.
 // - Match EQ: amount, smoothing and the processed region are imported. The stored reference spectrum (a binary child
 //   of the section; the slot flagged in use) is attached to the plan; the JUCE side decodes it into our reference
 //   (XmlPresetImport.cpp), so it arrives in both parts as part of the same undo step.
@@ -234,6 +237,8 @@ constexpr Key kDeqFilterMode = 0x5fe2038288055b22ull;   // 0 = analog, 1 = digit
 // Reference times: the foreign defaults with automatic timing off (read in the real product), and the set times at
 // which our automatic curves (the same as the foreign ones) apply as they are, so a multiplier scales them.
 constexpr double kDeqAutoAttackMs = kDynEqAutoRefAttackMs;
+// A sine's peak is this far above its RMS (the foreign detector reads peaks, ours RMS).
+constexpr double kSinePeakToRmsDb = 3.0103;
 constexpr double kDeqAutoReleaseMs = kDynEqAutoRefReleaseMs;
 
 double scaledTime (double baseMs, double multiplier) noexcept
@@ -348,6 +353,21 @@ void dynamicEqFinish (ModuleImport& m)
     }
     if (scaled)
         m.note ("Dynamic EQ: automatic attack / release multipliers applied to the frequency curves");
+
+    // Gain law: full gain 30 dB (peak) over the threshold, linear in between (see the header comment).
+    for (int set = 0; set < 2; ++set)
+    {
+        const char* ratio = set == 0 ? "~.a.b#.ratio" : "~.b.b#.ratio";
+        const char* knee = set == 0 ? "~.a.b#.knee" : "~.b.b#.knee";
+        const char* thr = set == 0 ? "~.a.b#.thr" : "~.b.b#.thr";
+        for (int n = 1; n <= kDynEqBands; ++n)
+        {
+            const double g = std::abs (m.getOr (kBandGain, n, set, 0.0));
+            m.set (ratio, std::clamp (1.0 / (1.0 - std::min (g, 29.0) / 30.0), 1.0, 20.0), n);
+            m.set (knee, 0.0, n);
+            m.set (thr, m.getOr (kDeqThreshold, n, set, -30.0) - kSinePeakToRmsDb, n);
+        }
+    }
 
     bandVisibleFallback (m, kDynEqBands);
 }

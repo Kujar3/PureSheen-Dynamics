@@ -375,7 +375,7 @@ TEST_CASE ("import.eq. dynamic EQ band on and shape defaults per version")
         CHECK (near (value (newer, band ("deq", 1, n, "q")), n == 1 ? 0.707 : 0.7));
         const D newShape = n == 1 ? D::LowShelfBaxandall : (n == 6 ? D::HighShelfBaxandall : D::Bell);
         CHECK (near (value (newer, band ("deq", 0, n, "shape")), (double) newShape));
-        CHECK (near (value (newer, band ("deq", 0, n, "thr")), -30.0));
+        CHECK (near (value (newer, band ("deq", 0, n, "thr")), -30.0 - 3.0103));   // peak -> our RMS reading
     }
 }
 
@@ -404,7 +404,10 @@ TEST_CASE ("import.eq. dynamic EQ shape index, direction, threshold, offset, fil
     CHECK (near (value (plan, "deq.a.b4.offset"), -0.5));
     CHECK (near (value (plan, "deq.mode"), (double) ps::EqFilterMode::Digital));
     CHECK (near (value (plan, "deq.chMode"), (double) ps::ChannelMode::MidSide));
-    CHECK (near (value (plan, "deq.a.b1.thr"), -30.0));      // absent: the default threshold
+    CHECK (near (value (plan, "deq.a.b1.thr"), -30.0 - 3.0103)); // absent: the default threshold, peak -> RMS
+    // gain law: full gain 30 dB over the threshold -> ratio 1 / (1 - |gain| / 30), no knee
+    CHECK (near (value (plan, "deq.a.b4.ratio"), 1.0 / (1.0 - 4.0 / 30.0), 1.0e-3));
+    CHECK (near (value (plan, "deq.a.b4.knee"), 0.0));
     CHECK (near (value (plan, "deq.a.b1.freq"), 60.0, 0.01)); // absent: the default layout
     CHECK_EQ (plan.report.unmapped, 0);
 }
