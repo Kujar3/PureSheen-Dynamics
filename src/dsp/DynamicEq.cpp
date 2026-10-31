@@ -84,6 +84,38 @@ bool movesTowardGain (const DynamicEqBandParams& b) noexcept
 }
 } // namespace
 
+double dynEqAutoAttackMs (double freqHz) noexcept
+{
+    const double f = std::isfinite (freqHz) ? freqHz : 1000.0;
+    if (f <= 100.0)
+        return 2.0;
+    if (f <= 540.0)
+        return 2.0 + 8.0 * (1.0 / 100.0 - 1.0 / f) / (1.0 / 100.0 - 1.0 / 540.0);
+    if (f <= 2000.0)
+        return 10.0;
+    if (f <= 10000.0)
+        return 10.0 + 10.0 * std::log (f / 2000.0) / std::log (5.0);
+    return 20.0;
+}
+
+double dynEqAutoReleaseMs (double freqHz) noexcept
+{
+    static constexpr double pts[][2] { { 200.0, 14.0 }, { 310.5, 14.5 }, { 387.0, 15.5 }, { 437.5, 16.5 },
+                                       { 477.5, 17.5 }, { 1003.0, 37.0 }, { 2001.0, 67.0 }, { 5020.0, 103.0 },
+                                       { 9887.0, 120.0 } };
+    constexpr int n = (int) (sizeof (pts) / sizeof (pts[0]));
+    const double f = std::isfinite (freqHz) ? freqHz : 1000.0;
+    if (f <= pts[0][0])
+        return pts[0][1];
+    for (int i = 1; i < n; ++i)
+        if (f <= pts[i][0])
+        {
+            const double t = std::log (f / pts[i - 1][0]) / std::log (pts[i][0] / pts[i - 1][0]);
+            return pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1]);
+        }
+    return pts[n - 1][1];
+}
+
 double dynEqRestGainDb (const DynamicEqBandParams& b) noexcept
 {
     if (! b.dynamic)
@@ -752,8 +784,8 @@ struct DynamicEq::Impl
                 b.thresholdDb = (float) sanitise (b.thresholdDb, -130.0, 0.0, -30.0);
                 b.ratio = (float) sanitise (b.ratio, 1.0, 20.0, 2.0);
                 b.kneeDb = (float) sanitise (b.kneeDb, 0.0, 24.0, 6.0);
-                b.attackMs = (float) sanitise (b.attackMs, 0.1, 500.0, 5.0);
-                b.releaseMs = (float) sanitise (b.releaseMs, 1.0, 5000.0, 80.0);
+                b.attackMs = (float) sanitise (b.attackMs, 0.1, 500.0, kDynEqAutoRefAttackMs);
+                b.releaseMs = (float) sanitise (b.releaseMs, 1.0, 5000.0, kDynEqAutoRefReleaseMs);
                 b.offsetDb = (float) sanitise (b.offsetDb, -15.0, 15.0, 0.0);
             }
     }
@@ -970,9 +1002,10 @@ struct DynamicEq::Impl
                 r.dOff = (r.off.s2 - r.cOff) * inv;
 
                 const double f = std::exp2 (r.lf.s2);
-                const double scale = bp.autoScale ? std::clamp (std::sqrt (1000.0 / f), 0.25, 4.0) : 1.0;
-                r.attC = 1.0 - std::exp (-1000.0 / ((double) bp.attackMs * scale * sr));
-                r.relC = 1.0 - std::exp (-1000.0 / ((double) bp.releaseMs * scale * sr));
+                const double attScale = bp.autoScale ? dynEqAutoAttackMs (f) / kDynEqAutoRefAttackMs : 1.0;
+                const double relScale = bp.autoScale ? dynEqAutoReleaseMs (f) / kDynEqAutoRefReleaseMs : 1.0;
+                r.attC = 1.0 - std::exp (-1000.0 / ((double) bp.attackMs * attScale * sr));
+                r.relC = 1.0 - std::exp (-1000.0 / ((double) bp.releaseMs * relScale * sr));
                 r.srcUnit = sourceUnit (s, b);
             }
         // Keep the control history running in Analog too, so a mode switch can use the same past gains.

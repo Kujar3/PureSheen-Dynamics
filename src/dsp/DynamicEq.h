@@ -20,7 +20,8 @@
 //   Up,   G < 0: g = G (1 - t)    (full cut at rest, opens when loud)
 //   band gain = clamp (offset + g, -30, +15) dB;   dynamic == false: offset + G (static, no detector)
 // Ballistics act on the movement in dB (double one-pole: attack while it rises, release while it falls; time = time to
-// 1 - 1/e). Auto Scale: effective time = set time x clamp (sqrt (1000 / f), 0.25, 4).
+// 1 - 1/e). Auto Scale: effective time = set time x autoAttackMs (f) / 15 (attack), x autoReleaseMs (f) / 100
+// (release), so the default 15 / 100 ms follow the frequency curves exactly.
 // Detector (identical in Analog and Digital mode), on the module INPUT (feed-forward, pre-EQ):
 //   Bell / Proportional Q / Band Shelf: 4th-order band-pass (two 2nd-order band-pass sections at freq, Q' = 0.644 Qd,
 //   Qd = the band's Q, Proportional Q: its effective Q at the band's gain, clamped 0.3..8); low shelves: LR4 low-pass at
@@ -69,6 +70,15 @@ struct DynamicEqMeters
 // curve (gainDb = the band's rest gain), the live curve (the meter's bandGainDb) and the trigger range with it.
 std::complex<double> dynEqBandResponse (const DynamicEqBandParams&, double bandGainDb, double freqHz,
                                         double sampleRate) noexcept;
+
+// Auto Scale curves: attack and release in ms at a band frequency, for the reference set times below (measured
+// reference behaviour). Attack: 2 ms up to 100 Hz, linear in the period up to 10 ms at 540 Hz, 10 ms up to 2 kHz, then
+// linear in log frequency up to 20 ms at 10 kHz. Release: 14 ms up to 200 Hz, then linear in log frequency through
+// measured points up to 120 ms at 9.9 kHz. Both stay flat outside.
+inline constexpr double kDynEqAutoRefAttackMs = 15.0;
+inline constexpr double kDynEqAutoRefReleaseMs = 100.0;
+double dynEqAutoAttackMs (double freqHz) noexcept;
+double dynEqAutoReleaseMs (double freqHz) noexcept;
 
 // Rest gain (no trigger) and full-trigger gain of a band in dB, including the offset and the clamp (gain law above).
 double dynEqRestGainDb (const DynamicEqBandParams&) noexcept;

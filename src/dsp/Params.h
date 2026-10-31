@@ -292,9 +292,9 @@ struct DynamicEqBandParams
     float thresholdDb = -30.0f;       // "b<n>.thr"      -130..0 (skew centre -30): detector level where the move starts
     float ratio = 2.0f;               // "b<n>.ratio"    1..20 log, ":1": dB of movement per dB over = 1 - 1/ratio
     float kneeDb = 6.0f;              // "b<n>.knee"     0..24 (centred on the threshold)
-    float attackMs = 5.0f;            // "b<n>.att"      0.1..500 log (Auto Scale on: the time at 1 kHz)
-    float releaseMs = 80.0f;          // "b<n>.rel"      1..5000 log (Auto Scale on: the time at 1 kHz)
-    bool autoScale = true;            // "b<n>.auto"     times scaled by clamp (sqrt (1000 / f), 0.25, 4)
+    float attackMs = 15.0f;           // "b<n>.att"      0.1..500 log (Auto Scale on: scales the frequency curve, 15 = as is)
+    float releaseMs = 100.0f;         // "b<n>.rel"      1..5000 log (Auto Scale on: scales the frequency curve, 100 = as is)
+    bool autoScale = true;            // "b<n>.auto"     times follow dynEqAutoAttackMs / dynEqAutoReleaseMs (DynamicEq.h)
     float offsetDb = 0.0f;            // "b<n>.offset"   -15..+15 static gain added (total clamped to -30..+15)
     bool dynamic = true;              // "b<n>.dyn"      false = static band at gain + offset
     DynEqSidechain sidechain = DynEqSidechain::Own;   // "b<n>.sc"

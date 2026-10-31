@@ -1,5 +1,6 @@
 #include "plugin/import/ImportCommon.h"
 #include "plugin/import/ImportEngine.h"
+#include "dsp/DynamicEq.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,9 +19,9 @@
 //   switch on are inaudible at 0 dB, so these guesses only matter for bands a file enables without storing them.
 // - The foreign band phase (Digital mode) is stored as -(percent / 100) and 0 % is not stored (confirmed with test
 //   saves); -value x 100 % is our linear (0) .. minimum phase (100) amount.
-// - Dynamic EQ: the foreign "auto" timing stores multipliers of a frequency-dependent time; ours scales a 1 kHz base
-//   time by the band frequency, so a multiplier becomes base x multiplier. Ratio, knee, sidechain and the static
-//   switch have no foreign counterpart and keep our defaults.
+// - Dynamic EQ: the foreign "auto" timing stores multipliers of a frequency-dependent time; our automatic curves are
+//   the same (measured), applied as they are at the reference times 15 / 100 ms, so a multiplier becomes reference x
+//   multiplier. Ratio, knee, sidechain and the static switch have no foreign counterpart and keep our defaults.
 // - Match EQ: amount, smoothing and the processed region are imported. The stored reference spectrum (a binary child
 //   of the section; the slot flagged in use) is attached to the plan; the JUCE side decodes it into our reference
 //   (XmlPresetImport.cpp), so it arrives in both parts as part of the same undo step.
@@ -230,9 +231,10 @@ constexpr Key kDeqRelScale   = 0xf71de8ad0a450599ull;   // release multiplier (u
 constexpr Key kDeqOffset     = 0xbcf5254e49344e96ull;   // static gain offset in dB
 constexpr Key kDeqFilterMode = 0x5fe2038288055b22ull;   // 0 = analog, 1 = digital (linear phase)
 
-// Our 1 kHz base times with automatic timing on (Params.h DynamicEqBandParams), which the multipliers scale.
-constexpr double kDeqAutoAttackMs = 5.0;
-constexpr double kDeqAutoReleaseMs = 80.0;
+// Reference times: the foreign defaults with automatic timing off (read in the real product), and the set times at
+// which our automatic curves (the same as the foreign ones) apply as they are, so a multiplier scales them.
+constexpr double kDeqAutoAttackMs = kDynEqAutoRefAttackMs;
+constexpr double kDeqAutoReleaseMs = kDynEqAutoRefReleaseMs;
 
 double scaledTime (double baseMs, double multiplier) noexcept
 {
@@ -260,10 +262,13 @@ double deqEnableDefault (const ModuleImport& m, int n, int)
     return (writer (m) < 110000 && (n == 1 || n == 3 || n == 4 || n == 6)) ? 1.0 : 0.0;
 }
 
-// Default shapes: low shelf on band 1, proportional-Q bells on 2..5, high shelf on band 6.
-double deqShapeDefault (const ModuleImport&, int n, int)
+// Default shapes: low shelf on band 1, high shelf on band 6; bands 2..5 are proportional-Q bells below 110000 and plain
+// bells from 110000 on (writer 120000: the first new band is the low shelf, the next ones bells).
+double deqShapeDefault (const ModuleImport& m, int n, int)
 {
-    return n == 1 ? 3.0 : (n == 6 ? 4.0 : 1.0);
+    if (n == 1 || n == 6)
+        return n == 1 ? 3.0 : 4.0;
+    return writer (m) >= 110000 ? 0.0 : 1.0;
 }
 
 // Default Q: 0.7 on bands 2..6 from 110000 on (a new band, confirmed for writer 120000). Band 1 stores an explicit
@@ -294,8 +299,8 @@ const std::vector<Rule>& dynamicEqRules()
         { kDeqThreshold,    Act::Map,          1, 6, Band::Same, "~.a.b#.thr",     "~.b.b#.thr",     nullptr,        known (-30.0),                             "band threshold" },
         { kDeqDirection,    Act::Map,          1, 6, Band::Same, "~.a.b#.dir",     "~.b.b#.dir",     xf::boolean,    known (0.0),                               "band direction" },
         { kDeqAutoTimes,    Act::Map,          1, 6, Band::Same, "~.a.b#.auto",    "~.b.b#.auto",    xf::boolean,    known (1.0),                               "band automatic timing" },
-        { kDeqAttack,       Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        guess (kDeqAutoAttackMs),                  "band attack" },
-        { kDeqRelease,      Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        guess (kDeqAutoReleaseMs),                 "band release" },
+        { kDeqAttack,       Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        known (kDeqAutoAttackMs),                  "band attack" },
+        { kDeqRelease,      Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        known (kDeqAutoReleaseMs),                 "band release" },
         { kDeqAttScale,     Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        likely (1.0),                              "band attack multiplier" },
         { kDeqRelScale,     Act::Hook,         1, 6, Band::Same, nullptr,          nullptr,          nullptr,        likely (1.0),                              "band release multiplier" },
         { kDeqOffset,       Act::Map,          1, 6, Band::Same, "~.a.b#.offset",  "~.b.b#.offset",  nullptr,        known (0.0),                               "band static offset" },
@@ -311,8 +316,8 @@ const std::vector<Rule>& dynamicEqRules()
     return rules;
 }
 
-// Timing: with automatic timing on, the foreign attack / release controls are multipliers of a frequency-scaled
-// time, which our 1 kHz base time times the multiplier reproduces (the absolute ms values are then inactive state);
+// Timing: with automatic timing on, the foreign attack / release controls are multipliers of a frequency-dependent
+// time, which our reference time times the multiplier reproduces (the absolute ms values are then inactive state);
 // with it off, the ms values are used as they are (and the multipliers are inactive).
 void dynamicEqFinish (ModuleImport& m)
 {
@@ -342,7 +347,7 @@ void dynamicEqFinish (ModuleImport& m)
         }
     }
     if (scaled)
-        m.note ("Dynamic EQ: automatic attack / release multipliers applied to our base times (approximate)");
+        m.note ("Dynamic EQ: automatic attack / release multipliers applied to the frequency curves");
 
     bandVisibleFallback (m, kDynEqBands);
 }

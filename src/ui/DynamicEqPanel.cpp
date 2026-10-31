@@ -392,11 +392,11 @@ struct DynamicEqPanel::Impl
         offset.setTooltip ("Static gain added to the band, whatever the level");
         ratio.setTooltip ("How strongly the band reacts: dB of movement per dB over the threshold = 1 - 1 / ratio");
         knee.setTooltip ("Soft knee width around the threshold: how gradually the band starts to move");
-        attack.setTooltip ("How fast the band moves when the level rises (with Auto scale: the time at 1 kHz)");
-        release.setTooltip ("How fast the band returns when the level falls (with Auto scale: the time at 1 kHz)");
+        attack.setTooltip ("How fast the band moves when the level rises (with Auto scale: scales the frequency curve, 15 ms = as is)");
+        release.setTooltip ("How fast the band returns when the level falls (with Auto scale: scales the frequency curve, 100 ms = as is)");
         threshold.setTooltip ("Detector level where the band starts to move");
         dynamicOn.setTooltip ("Dynamic: the band follows the level. Off: a static band at gain + offset");
-        autoScale.setTooltip ("Auto scale: slower attack / release for low bands, faster for high bands");
+        autoScale.setTooltip ("Auto scale: fast attack / release for low bands, slower for high bands");
         sidechain.setTooltip ("What the band listens to: its own frequency range, the range of another band, or the "
                               "same range on the other channel (Mid / Side, Left / Right)");
         sidechainShort.setTooltip ("Listen to: " + sidechain.getTooltip());

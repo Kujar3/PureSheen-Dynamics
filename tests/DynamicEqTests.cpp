@@ -720,17 +720,30 @@ StepResult measureStep (Rig& rig, double hz, double holdSeconds)
     return res;
 }
 
+TEST_CASE ("deq. Auto Scale curves pass through the measured reference points")
+{
+    // displayed (rounded) values of the reference at the default times
+    const double att[][2] { { 20.0, 2.0 }, { 100.0, 2.0 }, { 112.0, 3.0 }, { 126.0, 4.0 }, { 145.0, 5.0 }, { 170.0, 6.0 },
+                            { 205.0, 7.0 }, { 260.0, 8.0 }, { 360.0, 9.0 }, { 1003.0, 10.0 }, { 2001.0, 10.0 },
+                            { 5020.0, 16.0 }, { 10026.0, 20.0 }, { 20000.0, 20.0 } };
+    for (const auto& a : att)
+        CHECK_EQ (std::lround (dynEqAutoAttackMs (a[0])), (long) a[1]);
+    const double rel[][2] { { 20.0, 14.0 }, { 300.0, 14.0 }, { 350.0, 15.0 }, { 410.0, 16.0 }, { 460.0, 17.0 },
+                            { 1003.0, 37.0 }, { 2001.0, 67.0 }, { 5020.0, 103.0 }, { 10026.0, 120.0 }, { 20000.0, 120.0 } };
+    for (const auto& r : rel)
+        CHECK_EQ (std::lround (dynEqAutoReleaseMs (r[0])), (long) r[1]);
+    CHECK (dynEqAutoAttackMs (std::nan ("")) == 10.0);   // non-finite input: the 1 kHz value
+}
+
 TEST_CASE ("deq. ballistics: attack / release on level steps, Auto Scale by frequency (within 15 %)")
 {
     struct Case
     {
         double hz, att, rel;
         bool autoScale;
-        double scale;
     };
-    const Case cases[] { { 1000.0, 10.0, 100.0, false, 1.0 }, { 1000.0, 3.0, 30.0, false, 1.0 },
-                         { 100.0, 30.0, 200.0, true, std::sqrt (10.0) }, { 16000.0, 20.0, 200.0, true, 0.25 },
-                         { 4000.0, 20.0, 200.0, true, 0.5 } };
+    const Case cases[] { { 1000.0, 10.0, 100.0, false }, { 1000.0, 3.0, 30.0, false }, { 100.0, 300.0, 2000.0, true },
+                         { 16000.0, 15.0, 100.0, true }, { 4000.0, 20.0, 200.0, true }, { 300.0, 60.0, 400.0, true } };
     for (int mode = 0; mode < 2; ++mode)
         for (const auto& c : cases)
         {
@@ -748,9 +761,11 @@ TEST_CASE ("deq. ballistics: attack / release on level steps, Auto Scale by freq
             rig.apply (bd);
             if (mode == 1)
                 REQUIRE (rig.settle());
-            const double hold = std::max (0.6, 8.0 * c.rel * c.scale / 1000.0);
+            const double attScale = c.autoScale ? dynEqAutoAttackMs (c.hz) / kDynEqAutoRefAttackMs : 1.0;
+            const double relScale = c.autoScale ? dynEqAutoReleaseMs (c.hz) / kDynEqAutoRefReleaseMs : 1.0;
+            const double hold = std::max (0.6, 8.0 * c.rel * relScale / 1000.0);
             const auto res = measureStep (rig, c.hz, hold);
-            const double wantA = c.att * c.scale, wantR = c.rel * c.scale;
+            const double wantA = c.att * attScale, wantR = c.rel * relScale;
             say (std::string (mode ? "Digital " : "Analog  ") + fmt (c.hz, 0) + " Hz att " + fmt (c.att, 1) + " rel "
                  + fmt (c.rel, 0) + (c.autoScale ? " auto" : "     ") + ": attack " + fmt (res.attackMs, 2) + " ms (want "
                  + fmt (wantA, 2) + "), release " + fmt (res.releaseMs, 1) + " ms (want " + fmt (wantR, 1) + ")");

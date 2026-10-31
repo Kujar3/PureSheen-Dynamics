@@ -373,6 +373,8 @@ TEST_CASE ("import.eq. dynamic EQ band on and shape defaults per version")
     {
         CHECK (near (value (newer, band ("deq", 0, n, "on")), n == 6 ? 1.0 : 0.0));
         CHECK (near (value (newer, band ("deq", 1, n, "q")), n == 1 ? 0.707 : 0.7));
+        const D newShape = n == 1 ? D::LowShelfBaxandall : (n == 6 ? D::HighShelfBaxandall : D::Bell);
+        CHECK (near (value (newer, band ("deq", 0, n, "shape")), (double) newShape));
         CHECK (near (value (newer, band ("deq", 0, n, "thr")), -30.0));
     }
 }
@@ -415,16 +417,16 @@ TEST_CASE ("import.eq. dynamic EQ timing: multipliers with automatic timing, ms 
         p ("Aux: Node 6 Auto", "0"), p ("Aux: Node 6 Fall", "200") });
     REQUIRE (plan.ok);
     CHECK (near (value (plan, "deq.a.b3.auto"), 1.0));
-    CHECK (near (value (plan, "deq.a.b3.att"), 10.0, 0.01));
-    CHECK (near (value (plan, "deq.a.b3.rel"), 40.0, 0.01));
+    CHECK (near (value (plan, "deq.a.b3.att"), 30.0, 0.01));
+    CHECK (near (value (plan, "deq.a.b3.rel"), 50.0, 0.01));
     CHECK (near (value (plan, "deq.a.b4.auto"), 0.0));
     CHECK (near (value (plan, "deq.a.b4.att"), 20.0, 0.01));
     CHECK (near (value (plan, "deq.a.b4.rel"), 100.0, 0.01));
     CHECK (near (value (plan, "deq.b.b6.auto"), 0.0));
-    CHECK (near (value (plan, "deq.b.b6.att"), 5.0, 0.01));    // absent attack: the default
+    CHECK (near (value (plan, "deq.b.b6.att"), 15.0, 0.01));   // absent attack: the default
     CHECK (near (value (plan, "deq.b.b6.rel"), 200.0, 0.1));
-    CHECK (near (value (plan, "deq.a.b1.att"), 5.0, 0.01));    // untouched bands: our base times
-    CHECK (near (value (plan, "deq.a.b1.rel"), 80.0, 0.01));
+    CHECK (near (value (plan, "deq.a.b1.att"), 15.0, 0.01));   // untouched bands: the reference times
+    CHECK (near (value (plan, "deq.a.b1.rel"), 100.0, 0.01));
     CHECK_EQ (plan.report.mapped, 7);
     CHECK_EQ (plan.report.ignored, 2);    // the inactive ms value and the inactive multiplier
     CHECK_EQ (plan.report.unmapped, 0);
