@@ -156,11 +156,11 @@ double eqShapeDefault (const ModuleImport& m, int n, int)
     return n == 1 ? 1.0 : 2.0;                                         // analog shelves
 }
 
-// Default node frequencies. Bands 1, 3, 5 and 7 (60 Hz, 540 Hz, 2.7 kHz, 10 kHz) were read in the real product; the
-// even bands and band 8 are a plausible layout consistent with every stored value.
+// Default node frequencies. Bands 3, 5 and 7 (540 Hz, 2.7 kHz, 10 kHz) were read in the real product; the
+// other bands are a plausible layout consistent with every stored value.
 double eqFreqDefault (const ModuleImport&, int n, int)
 {
-    static constexpr double hz[8] { 60.0, 100.0, 540.0, 1200.0, 2700.0, 5200.0, 10000.0, 15000.0 };
+    static constexpr double hz[8] { 50.0, 100.0, 540.0, 1200.0, 2700.0, 5200.0, 10000.0, 15000.0 };
     return (n >= 1 && n <= 8) ? hz[n - 1] : kNoValue;
 }
 

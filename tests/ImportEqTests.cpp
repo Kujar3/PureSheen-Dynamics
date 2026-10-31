@@ -269,7 +269,7 @@ TEST_CASE ("import.eq. absent band shape takes the writer's default per band")
 
 TEST_CASE ("import.eq. absent frequency / Q take the foreign layout, stored values win")
 {
-    const double hz[8] { 60.0, 100.0, 540.0, 1200.0, 2700.0, 5200.0, 10000.0, 15000.0 };
+    const double hz[8] { 50.0, 100.0, 540.0, 1200.0, 2700.0, 5200.0, 10000.0, 15000.0 };
     const auto plan = moduleFile ("Tone", "9030", { p ("Node 3 Hz", "212.5"), p ("Node 3 Width", "2.5"),
                                                     p ("Aux: Node 7 Hz", "8000") });
     REQUIRE (plan.ok);
