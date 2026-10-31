@@ -720,7 +720,13 @@ void maximizerFinish (ModuleImport& m)
     {
         drive = -m.get (kMaxThreshold);
     }
-    m.set ("~.gain", drive);
+    // The foreign output level also turns the whole signal down (limit at 0 dBFS, then the level: measured on renders
+    // of the real product, where the most gain any passage gets is gain + level). Ours is only a ceiling, so lowering
+    // the drive by the level gives the same output (our limiter is relative to its ceiling).
+    const double level = std::min (0.0, m.getOr (kMaxCeiling, -1, 0, 0.0));
+    if (drive >= 0.0 && drive + level < 0.0)
+        m.note ("Maximizer: an output level below the gain cannot be matched exactly; quiet passages stay louder");
+    m.set ("~.gain", drive + level);   // below 0: clamped and counted
 
     // Upward compression: its amount only counts while it is on.
     if (m.getOr (kMaxUpwardOn, -1, 0, 0.0) >= 0.5)

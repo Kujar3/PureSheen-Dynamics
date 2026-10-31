@@ -504,7 +504,7 @@ TEST_CASE ("import.core. maximizer: gain from the older threshold or the newer g
 {
     const auto old = importModule ("Wall", "100000", { param ("Push Old", "-4.5"), param ("Roof", "-0.3") });
     REQUIRE (old.ok);
-    CHECK (near (value (old, "max.gain"), 4.5));
+    CHECK (near (value (old, "max.gain"), 4.2));                                 // 4.5 dB drive - 0.3 dB level
     CHECK (near (value (old, "max.ceiling"), -0.3));
     CHECK (near (value (old, "max.mode"), (double) ps::MaximizerMode::Smooth));   // absent = the first algorithm
     CHECK (near (value (old, "max.truePeak"), 0.0));                              // absent = off (ours is on)
