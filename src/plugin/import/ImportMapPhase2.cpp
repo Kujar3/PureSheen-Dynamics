@@ -131,8 +131,8 @@ const std::vector<Rule>& toneBalanceRules()
         { kAmount,        Act::Map,          0, 0, Band::Same, "~.a.amount",     "~.b.amount",     nullptr,      known (0.0),      "amount" },
         { kTbalSpeed,     Act::Map,          0, 0, Band::Same, "~.a.speed",      "~.b.speed",      nullptr,      known (50.0),     "speed" },
         { kTbalSmooth,    Act::Map,          0, 0, Band::Same, "~.a.smooth",     "~.b.smooth",     nullptr,      known (50.0),     "smoothing" },
-        { kTbalCutSpeed,  Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,      guess (50.0),     "cut speed" },
-        { kTbalSens,      Act::Map,          0, 0, Band::Same, "~.a.sens",       "~.b.sens",       nullptr,      guess (50.0),     "cut sensitivity" },
+        { kTbalCutSpeed,  Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,      known (100.0),    "cut speed" },
+        { kTbalSens,      Act::Map,          0, 0, Band::Same, "~.a.sens",       "~.b.sens",       nullptr,      known (30.0),     "cut sensitivity" },
         { kTbalTame,      Act::Map,          0, 0, Band::Same, "~.a.tame",       "~.b.tame",       xf::boolean,  known (0.0),      "tame transients" },
         { kTbalLow,       Act::Map,          0, 0, Band::Same, "~.a.low",        "~.b.low",        nullptr,      known (100.0),    "low amount" },
         { kTbalMid,       Act::Map,          0, 0, Band::Same, "~.a.mid",        "~.b.mid",        nullptr,      known (100.0),    "mid amount" },
@@ -322,13 +322,13 @@ constexpr Key kPnchLearnDone  = 0x51a4def809081cf2ull;   // crossover learn fini
 constexpr Key kPnchMakeUp     = 0x1fc591663dc1b629ull;   // automatic make-up gain on
 constexpr Key kPnchViewBand   = 0xc56e49739be780c3ull;   // selected band in the view
 
-// Four bands by default, at 150 / 1000 / 6000 Hz (writer 120000 Reset; 1 kHz and 6 kHz confirmed, the lowest one read
-// off the screenshot between grid lines, so the rule stays "likely"). No file stores any of them at its own number.
+// Four bands by default, at 160 / 1000 / 6000 Hz (writer 120000 Reset, all three read in the real product). No file
+// stores any of them at its own number.
 double punchCutoffDefault (const ModuleImport&, int number, int)
 {
     switch (number)
     {
-        case 1:  return 150.0;
+        case 1:  return 160.0;
         case 2:  return 1000.0;
         case 3:  return 6000.0;
         default: return kNoValue;
@@ -358,7 +358,7 @@ const std::vector<Rule>& punchRules()
     static const std::vector<Rule> rules {
         //  key              act               first count band          set A id          set B id            transform     foreign default                             what
         { kPnchBandActive,  Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,      known (1.0),                                "band present" },
-        { kPnchCutoff,      Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,            nullptr,      byVersion (punchCutoffDefault, Conf::Likely), "crossover frequency" },
+        { kPnchCutoff,      Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,            nullptr,      byVersion (punchCutoffDefault, Conf::Known), "crossover frequency" },
         { kPnchBandBypass,  Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,      known (0.0),                                "band bypass" },
         { kPnchBandAmount,  Act::Map,          1, 4, Band::Layout, "~.a.b#.amount",  "~.b.b#.amount",    nullptr,      known (0.0),                                "band amount" },
         { kPnchAmount,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,      known (100.0),                              "module amount" },

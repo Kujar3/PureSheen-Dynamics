@@ -210,8 +210,8 @@ TEST_CASE ("import.p2. every module imports its foreign defaults from an empty s
         CHECK (near (value (tbal, p + "amount"), 0.0));
         CHECK (near (value (tbal, p + "speed"), 50.0));
         CHECK (near (value (tbal, p + "smooth"), 50.0));
-        CHECK (near (value (tbal, p + "cutSpeed"), 50.0));
-        CHECK (near (value (tbal, p + "sens"), 50.0));
+        CHECK (near (value (tbal, p + "cutSpeed"), 100.0));
+        CHECK (near (value (tbal, p + "sens"), 30.0));
         CHECK (near (value (tbal, p + "low"), 100.0));
         CHECK (near (value (tbal, p + "mid"), 100.0));
         CHECK (near (value (tbal, p + "high"), 100.0));
@@ -245,7 +245,7 @@ TEST_CASE ("import.p2. every module imports its foreign defaults from an empty s
     const auto pnch = moduleFile (ModuleType::Punch, "120000", {});
     REQUIRE (pnch.ok);
     CHECK (near (value (pnch, "pnch.bands"), 4.0));
-    CHECK (near (value (pnch, "pnch.xover1"), 150.0, 0.1));
+    CHECK (near (value (pnch, "pnch.xover1"), 160.0, 0.1));
     CHECK (near (value (pnch, "pnch.xover2"), 1000.0, 0.5));
     CHECK (near (value (pnch, "pnch.xover3"), 6000.0, 2.0));
     CHECK (near (value (pnch, "pnch.stLink"), 0.0));     // stereo link / band link off (ours, the same as theirs)
@@ -347,11 +347,11 @@ TEST_CASE ("import.p2. tone balance: older writers drive the cut speed with the 
     const auto newer = moduleFile (ModuleType::ToneBalance, "110000", stored);
     REQUIRE (newer.ok);
     CHECK (near (value (newer, "tbal.a.speed"), 70.0));
-    CHECK (near (value (newer, "tbal.a.cutSpeed"), 50.0));   // its own control, at the default
+    CHECK (near (value (newer, "tbal.a.cutSpeed"), 100.0));   // its own control, at the default
 
     const auto own = moduleFile (ModuleType::ToneBalance, "110000", { { "cut speed", "88.8" } });
     CHECK (near (value (own, "tbal.a.cutSpeed"), 88.8));
-    CHECK (near (value (own, "tbal.b.cutSpeed"), 50.0));
+    CHECK (near (value (own, "tbal.b.cutSpeed"), 100.0));
     CHECK_EQ (own.report.mapped, 1);
     CHECK_EQ (own.report.unmapped, 0);
 }
