@@ -142,7 +142,7 @@ struct CoreSettings
     double holdMs = 0.0;
     double fastReleaseMs = 40.0;
     double slowReleaseMs = 600.0;
-    double slowChargeMs = 250.0;
+    double slowChargeMs = 250.0;     // <= 0: no slow stage
     double lfAdapt = 0.0;             // 0..1: on bass-heavy material the fast release slows (x4) and the hold grows
     double transientPreserve = 0.0;   // 0..1: part of a transient's reduction left to the (fast) guard after the core
     double siTrans = 0.0, siSus = 0.0;   // 0..1 stereo independence of the fast / slow stage

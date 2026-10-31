@@ -122,7 +122,7 @@ enum class StereoizeMode : int { ModeI = 0, ModeII };
 enum class MaximizerMode : int
 {
     LowLatency = 0,   // single-band lookahead limiter, ~1 ms lookahead
-    Smooth,           // psychoacoustic: fast release on transients, slow on sustained bass
+    Smooth,           // lets go right after each peak; Character sets how fast
     Transparent,      // Smooth + transient preservation
     Aggressive,       // most loudness, psychoacoustic speed model, styles
     Spectral,         // limits the critical bands that cause the peak

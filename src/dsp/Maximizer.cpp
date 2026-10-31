@@ -25,8 +25,9 @@
 //   True Peak change is never violated while it travels through the lookahead: the limiters see it coming and ramp.
 // - Mode stage:
 //     Low Latency : nothing (the Guard alone, character sets its attack 0.02-0.25 ms and release 5-600 ms)
-//     Smooth      : LimiterCore, 5 ms lookahead, two-stage release (fast stage for transients, slow stage that charges
-//                   on sustained limiting), slower release and extra hold on bass-heavy material
+//     Smooth      : LimiterCore, 5 ms lookahead, a fast release that lets go right after each peak (0.1 ms at
+//                   character 0 .. 20 ms at 10), attack 0.05 .. 3 ms, no hold; above character 4 a slow stage fades in
+//                   that settles on sustained limiting (fitted values: applySettings)
 //     Transparent : Smooth + transient preservation: on detected transients the core leaves part of the reduction to
 //                   the fast Guard, so a hit is shaved in < 1 ms instead of ducking what comes before it
 //     Aggressive  : 7 ms lookahead, fast recovery; styles Clipping (near-clipping times), Crisp (short, transient
@@ -76,6 +77,16 @@ constexpr double kFadeMs = 10.0;
 constexpr double kLearnSeconds = 5.0;
 
 double lerpExp (double a, double b, double t) noexcept { return a * std::pow (b / a, t); }
+
+// A time over character 0..10 from its values at the fitted characters 0, 1.4, 4, 7, 10 (log-linear in between).
+double smoothCurve (const double (&ms)[5], double c) noexcept
+{
+    static constexpr double at[5] { 0.0, 1.4, 4.0, 7.0, 10.0 };
+    for (int i = 1; i < 5; ++i)
+        if (c <= at[i])
+            return lerpExp (ms[i - 1], ms[i], (c - at[i - 1]) / (at[i] - at[i - 1]));
+    return ms[4];
+}
 
 // The largest float that is <= v (so a float sample clamped to it is <= v in double).
 float floatAtMost (double v) noexcept
@@ -366,13 +377,23 @@ struct Maximizer::Impl
                 break;
 
             case MaximizerMode::Smooth:
-                cs.attackMs = lerpExp (0.5, 5.0, t);
-                cs.holdMs = 0.5;
-                cs.fastReleaseMs = lerpExp (4.0, 120.0, t);
-                cs.slowReleaseMs = lerpExp (60.0, 2500.0, t);
-                cs.slowChargeMs = lerpExp (60.0, 800.0, t);
-                cs.lfAdapt = 1.0;
+            {
+                // Fitted to renders of the reference default algorithm at character 0, 1.4, 4, 7 and 10 (music on
+                // identical input: sample match 26..30 dB, loudness within 0.15 dB; sustained 60 Hz / 1 kHz tones and
+                // kicks at 1.4 and 7). Fast release for transients at every setting; the slow stage that settles on
+                // sustained limiting fades in above character 4. No hold (it made tones cleaner than the reference).
+                const double c = std::clamp ((double) p.character, 0.0, 10.0);
+                static constexpr double attackMs[5] { 0.05, 0.37, 1.0, 2.5, 3.0 };
+                static constexpr double fastMs[5] { 0.1, 0.26, 1.0, 5.0, 20.0 };
+                static constexpr double slowReleaseMs[5] { 100.0, 100.0, 100.0, 100.0, 200.0 };
+                cs.attackMs = smoothCurve (attackMs, c);
+                cs.holdMs = 0.0;
+                cs.fastReleaseMs = smoothCurve (fastMs, c);
+                cs.slowReleaseMs = smoothCurve (slowReleaseMs, c);
+                cs.slowChargeMs = c <= 4.0 ? 0.0 : (c >= 7.0 ? 30.0 : 1000.0 * std::pow (0.03, (c - 4.0) / 3.0));
+                cs.lfAdapt = 0.0;
                 break;
+            }
 
             case MaximizerMode::Transparent:
                 cs.attackMs = lerpExp (0.7, 5.0, t);

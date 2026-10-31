@@ -14,7 +14,7 @@
 // Modes (see Types.h): all share a lookahead peak limiter core (SlidingMax + smoothed gain, gain applied to the delayed
 // signal) and differ in release behaviour / band structure:
 //   LowLatency  : ~1 ms lookahead, program-independent release from Character
-//   Smooth      : psychoacoustic release: two-stage (fast for transients, slow for sustained low-frequency energy)
+//   Smooth      : release right after each peak, from very fast (Character 0) to slow (10)
 //   Transparent : Smooth + transient preservation (shorter attack window on detected transients)
 //   Aggressive  : longest lookahead, fastest recovery, styles Clipping / Crisp / Balanced / Pumping
 //   Spectral    : gain applied per critical band group (~24 bands, crossover-free STFT or filterbank), reducing the

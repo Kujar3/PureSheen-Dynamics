@@ -171,7 +171,7 @@ void LimiterCore::setSettings (const CoreSettings& s) noexcept
         return;
     settingsValid = true;
     attackTarget = std::clamp ((int) std::lround (msToSamples (s.attackMs, sr)), 1, lookahead);
-    kSlowCharge = chargeCoeff (msToSamples (s.slowChargeMs, sr));
+    kSlowCharge = s.slowChargeMs > 0.0 ? chargeCoeff (msToSamples (s.slowChargeMs, sr)) : 0.0;   // 0: no slow stage
     kSlowRelease = chargeCoeff (msToSamples (s.slowReleaseMs, sr));
     kFastBase = msToSamples (s.fastReleaseMs, sr);
     updateCoefficients();
