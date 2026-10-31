@@ -527,6 +527,8 @@ public:
         return level;
     }
 
+    void setPeakHold (double timeMs) noexcept { detectors[(int) DetectionMode::Peak].setPeakHold (timeMs); }
+
 private:
     LevelDetector detectors[3];
     Ramp weights[3];
@@ -548,6 +550,18 @@ struct GainState
 {
     DetectorBank detector;
     Ballistics comp, lim;
+
+    // Ballistics and the Peak detector's hold: the hold (30 % of the release of the stage that leads, at most 30 ms)
+    // is taken out of that stage's release, so a step still releases to 1/e in the set time.
+    void setTimes (const DynamicsBandParams& bp, bool adaptive) noexcept
+    {
+        const float leadRelease = bp.comp.on || ! bp.lim.on ? bp.comp.releaseMs : bp.lim.releaseMs;
+        const float hold = std::min (0.3f * leadRelease, (float) LevelDetector::kMaxPeakHoldMs);
+        detector.setPeakHold (hold);
+        auto rest = [hold] (float release) { return std::max (0.1f * release, release - hold); };
+        comp.setTimes (bp.comp.attackMs, rest (bp.comp.releaseMs), adaptive);
+        lim.setTimes (bp.lim.attackMs, rest (bp.lim.releaseMs), adaptive);
+    }
 
     void prepare (double sr) noexcept
     {
@@ -838,8 +852,7 @@ struct Dynamics::Impl
                 {
                     linkedState[b] = linkedState[topologyBand];
                     const auto& linkedParams = p.bands[0][b];
-                    linkedState[b].comp.setTimes (linkedParams.comp.attackMs, linkedParams.comp.releaseMs, p.adaptiveRelease);
-                    linkedState[b].lim.setTimes (linkedParams.lim.attackMs, linkedParams.lim.releaseMs, p.adaptiveRelease);
+                    linkedState[b].setTimes (linkedParams, p.adaptiveRelease);
                     for (int c = 0; c < 2; ++c)
                     {
                         auto& ch = chan[c];
@@ -848,8 +861,7 @@ struct Dynamics::Impl
                         ch[b].comp = ch[topologyBand].comp;
                         ch[b].lim = ch[topologyBand].lim;
                         const auto& bp = p.bands[c][b];
-                        ch[b].comp.setTimes (bp.comp.attackMs, bp.comp.releaseMs, p.adaptiveRelease);
-                        ch[b].lim.setTimes (bp.lim.attackMs, bp.lim.releaseMs, p.adaptiveRelease);
+                        ch[b].setTimes (bp, p.adaptiveRelease);
                         ch[b].audioDelay.startSplit (ch[topologyBand].audioDelay);
                         ch[b].detectorDelay.startSplit (ch[topologyBand].detectorDelay);
                         sets[c][b].snapAll();
@@ -912,8 +924,7 @@ struct Dynamics::Impl
                 auto& s = chan[c][b];
                 const auto& bp = p.bands[c][b];
                 s.detector.setMode (p.detection, snap);
-                s.comp.setTimes (bp.comp.attackMs, bp.comp.releaseMs, p.adaptiveRelease);
-                s.lim.setTimes (bp.lim.attackMs, bp.lim.releaseMs, p.adaptiveRelease);
+                s.setTimes (bp, p.adaptiveRelease);
                 if (snap)
                 {
                     s.audioDelay.snapDelay (lookaheadSamples);
@@ -931,8 +942,7 @@ struct Dynamics::Impl
             auto& s = linkedState[b];
             const auto& bp = p.bands[0][b];
             s.detector.setMode (p.detection, snap);
-            s.comp.setTimes (bp.comp.attackMs, bp.comp.releaseMs, p.adaptiveRelease);
-            s.lim.setTimes (bp.lim.attackMs, bp.lim.releaseMs, p.adaptiveRelease);
+            s.setTimes (bp, p.adaptiveRelease);
         }
 
         for (int set = 0; set < kNumChannelSets; ++set)

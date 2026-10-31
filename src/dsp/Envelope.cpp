@@ -21,6 +21,13 @@ void LevelDetector::prepare (double sampleRate) noexcept
     envAtt = onePoleCoeff (0.1, sr);
     envRel = onePoleCoeff (10.0, sr);
     rmsCoeff = onePoleCoeff (10.0, sr);
+    int size = 1;
+    while (size < (int) std::ceil (kMaxPeakHoldMs * 0.001 * sr) + 2)
+        size <<= 1;
+    holdVal.assign ((size_t) size, 0.0f);
+    holdAt.assign ((size_t) size, 0);
+    holdMask = size - 1;
+    setPeakHold (holdMs);
     reset();
 }
 
@@ -33,7 +40,19 @@ void LevelDetector::setMode (DetectionMode m) noexcept
     }
 }
 
-void LevelDetector::reset() noexcept { env = 0.0f; }
+void LevelDetector::reset() noexcept
+{
+    env = 0.0f;
+    holdHead = holdTail = 0;
+    holdCount = 0;
+}
+
+void LevelDetector::setPeakHold (double timeMs) noexcept
+{
+    holdMs = timeMs;
+    const int maxLen = holdMask > 0 ? holdMask - 1 : 0;
+    holdLen = std::clamp ((int) std::lround (std::clamp (timeMs, 0.0, kMaxPeakHoldMs) * 0.001 * sr), 0, maxLen);
+}
 
 float LevelDetector::processDb (float x) noexcept
 {
@@ -42,7 +61,20 @@ float LevelDetector::processDb (float x) noexcept
     switch (mode)
     {
         case DetectionMode::Peak:
-            return gainToDbF (a);
+        {
+            if (holdLen <= 0)
+                return gainToDbF (a);
+            // sliding maximum over the last holdLen + 1 samples
+            while (holdTail != holdHead && holdVal[(size_t) ((holdTail - 1) & holdMask)] <= a)
+                --holdTail;
+            holdVal[(size_t) (holdTail & holdMask)] = a;
+            holdAt[(size_t) (holdTail & holdMask)] = holdCount;
+            ++holdTail;
+            while (holdAt[(size_t) (holdHead & holdMask)] < holdCount - holdLen)
+                ++holdHead;
+            ++holdCount;
+            return gainToDbF (holdVal[(size_t) (holdHead & holdMask)]);
+        }
 
         case DetectionMode::Envelope:
             env = a > env ? a + envAtt * (env - a) : a + envRel * (env - a);

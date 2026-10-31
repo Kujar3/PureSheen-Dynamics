@@ -3,6 +3,7 @@
 #include "dsp/Types.h"
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 // Small realtime building blocks shared by the dynamics-type modules. Owner: dsp-common (header-mostly; Envelope.cpp).
@@ -16,7 +17,9 @@ float onePoleCoeff (double timeMs, double sampleRate) noexcept;
 
 //==============================================================================
 // Level detector producing a dB level per sample.
-//   Peak     : instantaneous |x| with attack/release ballistics on the gain computer side (detector = |x|)
+//   Peak     : the largest |x| of the last setPeakHold samples (0: instantaneous |x|), attack/release ballistics on
+//              the gain computer side. The hold lets a steady tone get the ratio on its peak level (as on the
+//              reference) instead of a gain that rises and falls within each cycle.
 //   Envelope : |x| through a peak envelope with fixed 0.1 ms attack / 10 ms release (smooth, still fast)
 //   Rms      : mean square over ~10 ms (one-pole), sqrt
 class LevelDetector
@@ -24,13 +27,22 @@ class LevelDetector
 public:
     void prepare (double sampleRate) noexcept;
     void setMode (DetectionMode) noexcept;
+    void setPeakHold (double timeMs) noexcept;   // Peak mode; clamped to kMaxPeakHoldMs
     void reset() noexcept;
     float processDb (float x) noexcept;   // returns level in dB (>= -200)
+
+    static constexpr double kMaxPeakHoldMs = 30.0;
 
 private:
     DetectionMode mode = DetectionMode::Envelope;
     double sr = 48000.0;
     float env = 0.0f, envAtt = 0.0f, envRel = 0.0f, rmsCoeff = 0.0f;
+    // Peak hold: sliding maximum of |x| (monotonic deque in a ring sized in prepare)
+    std::vector<float> holdVal;
+    std::vector<std::int64_t> holdAt;
+    std::int64_t holdCount = 0;
+    int holdLen = 0, holdHead = 0, holdTail = 0, holdMask = 0;
+    double holdMs = 0.0;
 };
 
 //==============================================================================
