@@ -208,7 +208,7 @@ TEST_CASE ("import.core. dynamics: absent band values take the foreign defaults 
     CHECK (near (value (plan, "dyn.adaptRel"), 1.0));              // absent release mode = adaptive
     CHECK (near (value (plan, "dyn.detect"), (double) ps::DetectionMode::Peak));   // absent detection = peak
     CHECK (near (value (plan, "dyn.detSlope"), 1.0));
-    CHECK (near (value (plan, "dyn.xoverType"), (double) ps::CrossoverType::Hybrid));
+    CHECK (near (value (plan, "dyn.xoverType"), (double) ps::CrossoverType::Digital));   // absent kind = linear phase
     CHECK (near (value (plan, "dyn.a.on"), 1.0));
     CHECK (near (value (plan, "dyn.b.on"), 1.0));
     CHECK_EQ (plan.report.mapped, 1);

@@ -259,7 +259,7 @@ TEST_CASE ("import. single-module file: absent values take the foreign defaults"
     CHECK (near (value (plan, "img.bands"), 4.0));
     CHECK (near (value (plan, "img.b2.width"), 30.0));
     CHECK (near (value (plan, "img.b1.width"), 0.0));
-    CHECK (near (value (plan, "img.xoverType"), (double) ps::CrossoverType::Hybrid));   // foreign default kind
+    CHECK (near (value (plan, "img.xoverType"), (double) ps::CrossoverType::Digital));  // foreign default kind
     CHECK (near (value (plan, "img.stz.mode"), 0.0));                                   // 110000: mode I
     CHECK_EQ (plan.report.mapped, 4);
     CHECK_EQ (plan.report.unmapped, 0);

@@ -66,15 +66,17 @@ constexpr Key kVisibleMeter    = 0x8f16c894bd62e272ull;   // which meter the vie
 // Slot 0 exists by default, slots 1..3 do not (one band; only "1" is ever stored for slots 1..3).
 double firstSlotOnly (const ModuleImport&, int number, int) { return number == 0 ? 1.0 : 0.0; }
 
-// Crossover kind: 0 = linear phase, 1 = analog, 2 (default, never stored) = the third kind. Only phase / latency
-// differ; the magnitude is flat for all three, so a wrong reading is not audible as tone.
+// Crossover kind: 0 = linear phase, 1 = analog, 2 (default, never stored) = linear phase too: renders of the real
+// product (writer 120000, Dynamics and Imager at their default kind) have the peaks of our Digital crossover and its
+// latency, not those of an IIR split. The magnitude is flat for every kind, but per-band gain changes (widening,
+// compression) sum back with the crossover's phase, so the kind sets the peak level that reaches the limiter.
 double crossoverKind (double v, ModuleImport&, int, int)
 {
     switch (indexOf (v, 3))
     {
         case 0:  return (double) CrossoverType::Digital;
         case 1:  return (double) CrossoverType::Analog;
-        case 2:  return (double) CrossoverType::Hybrid;
+        case 2:  return (double) CrossoverType::Digital;
         default: return kNoValue;
     }
 }
@@ -157,7 +159,7 @@ const std::vector<Rule>& imagerRules()
         { kNumBands,        Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,             likely (4.0),                            "band count (older files)" },
         { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,            nullptr,             noDefault(),                             "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,             known (0.0),                             "band bypass" },
-        { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,            crossoverKind,       likely (2.0),                            "crossover kind" },
+        { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,            crossoverKind,       known (2.0),                             "crossover kind" },
         { kImgWidth,        Act::Map,          1, 4, Band::Layout, "~.b#.width",     "~.b.b#.width",     nullptr,             known (0.0),                             "band width" },
         { kImgStzOn,        Act::Map,          0, 0, Band::Same,   "~.stz.on",       "~.b.stz.on",       xf::boolean,         known (0.0),                             "stereoize on" },
         { kImgStzMode,      Act::Map,          0, 0, Band::Same,   "~.stz.mode",     "~.b.stz.mode",     xf::roundIndex,      byVersion (imagerStereoizeModeDefault, Conf::Known), "stereoize mode" },
@@ -334,7 +336,7 @@ const std::vector<Rule>& dynamicsRules()
         { kNumBands,        Act::Hook,         0, 0, Band::Same,   nullptr,               nullptr,               nullptr,          likely (4.0),                            "band count (older files)" },
         { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,               nullptr,               nullptr,          byVersion (dynCutoffDefault, Conf::Known), "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,               nullptr,               nullptr,          known (0.0),                             "band bypass" },
-        { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",         nullptr,               crossoverKind,    likely (2.0),                            "crossover kind" },
+        { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",         nullptr,               crossoverKind,    known (2.0),                             "crossover kind" },
         { kDynCompThr,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.thr",     "~.b.b#.comp.thr",     nullptr,          known (-12.0),                           "compressor threshold" },
         { kDynCompRatio,    Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.ratio",   "~.b.b#.comp.ratio",   nullptr,          known (2.0),                             "compressor ratio" },
         { kDynCompAtt,      Act::Map,          1, 4, Band::Layout, "~.a.b#.comp.att",     "~.b.b#.comp.att",     attackMs,         known (20.0),                            "compressor attack" },
