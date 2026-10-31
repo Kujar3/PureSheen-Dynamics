@@ -2,6 +2,7 @@
 #include "core/TruePeak.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/import/XmlPresetImport.h"
+#include "dsp/MatchEq.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -20,6 +21,7 @@
 //   --module-preset <prefix>:<name> module preset, e.g. "max:Loud Modern"
 //   --import <file.xml>             a foreign .xml preset through the preset importer (after the presets)
 //   --chain <prefix,prefix,...>     chain order after the presets, e.g. "--chain deq" or "--chain eq1,lowc,max"
+//   --capture-current               play the input once with Match EQ capturing it as Current (both parts), then render
 //   --bits 16|24|32                 output format (default 32 = float)
 //   --block <n>                     host block size (default 512)
 //   id=value                        parameter override after the presets, plain value; choices also by label
@@ -148,7 +150,7 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
     // Options
     int bits = 32, block = 512;
     juce::String globalPreset, modulePreset, chainText, importPath;
-    bool setChain = false;
+    bool setChain = false, captureCurrent = false;
     juce::StringArray overrides;
     for (int i = 0; i < options.size(); ++i)
     {
@@ -164,6 +166,8 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
             chainText = options[++i];
             setChain = true;
         }
+        else if (o == "--capture-current")
+            captureCurrent = true;
         else if (o == "--bits" && i + 1 < options.size())
             bits = options[++i].getIntValue();
         else if (o == "--block" && i + 1 < options.size())
@@ -259,9 +263,34 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
     }
     proc.flushPendingChanges (true);
 
-    // Play: the input, then zeros until the latency is flushed out.
     juce::AudioBuffer<float> buffer (2, block);
     juce::MidiBuffer midi;
+
+    // Match EQ: learn the input as Current first (as when the track is played with a capture running), then render.
+    if (captureCurrent)
+    {
+        auto matchPart = [&] (int part) -> ps::MatchEq& {
+            return static_cast<ps::MatchEq&> (proc.getChain().getModule (ps::ModuleType::MatchEq, part)); };
+        for (int part = 0; part < 2; ++part)
+            matchPart (part).startCapture (ps::MatchRole::Current);
+        for (int fedCapture = 0; fedCapture < length; fedCapture += block)
+        {
+            for (int c = 0; c < 2; ++c)
+            {
+                auto* dst = buffer.getWritePointer (c);
+                for (int i = 0; i < block; ++i)
+                    dst[i] = fedCapture + i < length ? in.getSample (c, fedCapture + i) : 0.0f;
+            }
+            proc.processBlock (buffer, midi);
+        }
+        for (int part = 0; part < 2; ++part)
+            matchPart (part).stopCapture();
+        proc.flushPendingChanges (true);
+        proc.reset();
+        std::cout << "match eq: captured the input as Current\n";
+    }
+
+    // Play: the input, then zeros until the latency is flushed out.
     std::vector<float> outL, outR;
     outL.reserve ((size_t) length + 65536);
     outR.reserve ((size_t) length + 65536);
