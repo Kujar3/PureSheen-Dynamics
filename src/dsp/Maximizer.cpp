@@ -32,11 +32,11 @@
 //     Aggressive  : 7 ms lookahead, the fastest limiting up to character 1.4, then a slow stage fading in; styles
 //                   Clipping, Crisp (the plain core), Balanced, Pumping (a slow stage that calms sustained bass)
 //     Spectral    : SpectralStage (critical-band groups, water-filling) + LimiterCore 2.5 ms with the Smooth core
-//     Multiband   : MultibandStage (4 linear-phase bands, contribution-ordered) + LimiterCore 2.5 ms with the
-//                   Aggressive core
-//   Every mode is fitted to renders of the reference (applySettings). The reference's spectral and multiband
-//   algorithms matched broadband cores on the fitting material, so both band stages currently take no share of the
-//   reduction (they stay in the pipeline: constant latency; a share can come back with more reference material).
+//     Multiband   : MultibandStage (4 linear-phase bands; on material with sparse highs it takes the peaks out of the
+//                   low / mid bands, sharing by contribution) + LimiterCore 2.5 ms with the Aggressive core
+//   Every mode is fitted to renders of the reference (applySettings). The reference's spectral algorithm matched a
+//   broadband core on the fitting material, so its band stage currently takes no share of the reduction (it stays in
+//   the pipeline: constant latency; a share can come back with more reference material).
 //   With True Peak on, the cores also detect half-sample peaks and aim 0.03 dB under the ceiling.
 // - Guard: true-peak limiter on a 1/8-sample grid containing ps::TruePeakMeter's points (sample peak with True Peak
 //   off), target 0.02 dB under the ceiling with True Peak on; Fine: the same at the exact ceiling with a 4-sample
@@ -485,14 +485,15 @@ struct Maximizer::Impl
 
             case MaximizerMode::Multiband:
             {
-                // The reference's multiband algorithm matched the aggressive core on the fitting material (music match
-                // 17..32 dB; our band split made it 1.5..4 dB quieter), so the band stage stays in the pipeline with
-                // no share.
+                // The band stage takes the peaks the low and mid bands make on material with sparse highs (fitted on
+                // the reference's test-track renders: release 0.5 ms at character 2, scaling like the other modes'
+                // releases); everything else goes to the aggressive core, which the reference matches on dense
+                // material.
                 MultibandStage::Settings ms;
-                ms.releaseMs = lerpExp (10.0, 300.0, t);
+                ms.releaseMs = 0.0254 * lerpExp (10.0, 300.0, t);
                 ms.siSus = siS;
                 ms.siTrans = siT;
-                ms.amount = 0.0;
+                ms.amount = 1.0;
                 multiband.setSettings (ms);
                 fastCore (cs, std::clamp ((double) p.character, 0.0, 10.0));
                 break;

@@ -20,7 +20,7 @@
 //                 Pumping (the last two calm sustained bass)
 //   Spectral    : per critical band group stage (currently no share: the reference matched a broadband core) + the
 //                 Smooth core; styles Classic / Modern / Transient
-//   Multiband   : 4-band stage (currently no share, likewise) + the Aggressive core
+//   Multiband   : 4-band stage (low / mid peaks on material with sparse highs) + the Aggressive core
 // Character 0..10: attack/release scaling (0 = clip-like fastest .. 10 = very slow), in every mode.
 // Stereo Independence: amount of unlinked gain (0 = fully linked) separately for transient and sustained gain
 //   reduction.

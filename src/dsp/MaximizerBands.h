@@ -68,11 +68,14 @@ private:
 
 //==============================================================================
 // Multiband: 4 bands (linear-phase complementary FIR crossovers at 120 Hz, 1 kHz, 6 kHz: transition about 0.8 of the
-// crossover frequency, > 50 dB separation), per-band lookahead envelopes. At each sample over the threshold the excess
-// is taken from the bands whose signed contribution to that sample is largest (water filling on the contributions in
-// the direction of the peak), so the bands that make the peak are attenuated first and bands that oppose it are left
-// alone. Per band: attack 4 / 2 / 1 / 0.5 ms, hold 8 / 5 / 4 / 4 ms (about half a bass period), release, stereo
-// independence (sustain amount for the two low bands, transient amount for the two high bands).
+// crossover frequency, > 50 dB separation), per-band lookahead envelopes. It acts only while the two upper bands
+// (> 1 kHz) make less than 15 % of the recent peak level (20 ms peak envelopes): then, at each sample over the
+// threshold, the excess is shared by the bands that make the peak in proportion to (signed contribution)^1.5, so the
+// reduction comes out of the low and mid bands and the highs keep their level; otherwise everything is left to the
+// broadband core that follows (material with dense highs limits exactly as without the stage). Per band: attack
+// 0.4 / 0.2 / 0.1 / 0.05 ms, hold 0.8 / 0.5 / 0.4 / 0.4 ms, release, stereo independence (sustain amount for the two
+// low bands, transient amount for the two high bands). Measured from the reference's test-track renders
+// (private fitting scripts).
 class MultibandStage
 {
 public:
@@ -116,6 +119,7 @@ private:
     std::array<double, kBands> kRelease {}, independence {};
     std::array<double, kBands> independenceNow {};
     double controlStep = 1.0;
+    double hiPeak[2] {}, allPeak[2] {}, kPeakRelease = 0.0;   // the gate's peak envelopes
     Settings settings;
 };
 

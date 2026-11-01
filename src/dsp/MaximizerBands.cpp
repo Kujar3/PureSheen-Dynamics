@@ -8,6 +8,13 @@ namespace ps::maxi
 {
 namespace
 {
+    // Multiband stage (fitted on the reference's test-track renders): the gate and the sharing law
+    constexpr double kGateShare = 0.15;    // the stage acts while the bands > 1 kHz make < 15 % of the recent peak
+    constexpr double kGatePeakMs = 20.0;   // release of the gate's peak envelopes
+    constexpr double kSharePower = 1.5;    // excess shared in proportion to contribution^1.5
+}
+namespace
+{
 constexpr double kPi = 3.14159265358979323846;
 
 double besselI0 (double x) noexcept
@@ -407,8 +414,9 @@ void MultibandStage::prepare (double sampleRate)
     splitLatency = centre + lowpass[0].getLatencySamples();
 
     lookahead = (int) std::lround (msToSamples (4.0, sr));
-    constexpr double attackMs[kBands] { 4.0, 2.0, 1.0, 0.5 };
-    constexpr double holdMs[kBands] { 8.0, 5.0, 4.0, 4.0 };
+    constexpr double attackMs[kBands] { 0.4, 0.2, 0.1, 0.05 };
+    constexpr double holdMs[kBands] { 0.8, 0.5, 0.4, 0.4 };
+    kPeakRelease = decayCoeff (msToSamples (kGatePeakMs, sr));
     const int ringSize = nextPow2 (lookahead + 4);
     ringMask = ringSize - 1;
     for (int b = 0; b < kBands; ++b)
@@ -460,6 +468,7 @@ void MultibandStage::reset() noexcept
         }
         release[(size_t) b].fill (0.0);
     }
+    hiPeak[0] = hiPeak[1] = allPeak[0] = allPeak[1] = 0.0;
     t = 0;
 }
 
@@ -506,36 +515,27 @@ void MultibandStage::process (const float* const* in, float* const* out, const d
 
             double red[kBands] { 0.0, 0.0, 0.0, 0.0 };
             const double a = std::abs (xd);
-            if (a > th)
+            hiPeak[c] = std::max (std::abs (bands[2] + bands[3]), hiPeak[c] * kPeakRelease);
+            allPeak[c] = std::max (a, allPeak[c] * kPeakRelease);
+            if (a > th && hiPeak[c] < kGateShare * allPeak[c])
             {
-                // take the excess from the largest contributions in the direction of the peak
+                // share the excess among the bands that make the peak, in proportion to contribution^1.5 (no band
+                // gives up more than 90 % of its contribution; the core takes what is left)
                 const double sgn = xd < 0.0 ? -1.0 : 1.0;
-                double contrib[kBands];
-                int order[kBands];
-                int np = 0;
+                double contrib[kBands], w[kBands], wsum = 0.0;
                 for (int b = 0; b < kBands; ++b)
                 {
                     contrib[b] = bands[b] * sgn;
-                    if (contrib[b] > 0.0)
-                        order[np++] = b;
+                    w[b] = contrib[b] > 0.0 ? std::pow (contrib[b], kSharePower) : 0.0;
+                    wsum += w[b];
                 }
-                std::sort (order, order + np, [&] (int x, int y) { return contrib[x] > contrib[y]; });
                 const double excess = a - th;
-                double capped = 0.0, level = 0.0;
-                for (int j = 0; j < np; ++j)
-                {
-                    capped += contrib[order[j]];
-                    level = (capped - excess) / (double) (j + 1);
-                    if (j + 1 == np || level >= contrib[order[j + 1]])
-                        break;
-                }
-                level = std::max (level, 1.0e-4 * a);
-                for (int j = 0; j < np; ++j)
-                {
-                    const int b = order[j];
-                    if (contrib[b] > level)
-                        red[b] = settings.amount * std::log (contrib[b] / level);
-                }
+                for (int b = 0; b < kBands; ++b)
+                    if (w[b] > 0.0)
+                    {
+                        const double share = std::min (0.9 * contrib[b], excess * w[b] / wsum);
+                        red[b] = settings.amount * std::log (contrib[b] / (contrib[b] - share));
+                    }
             }
             for (int b = 0; b < kBands; ++b)
                 redRing[(size_t) b][(size_t) c][(size_t) (idx & ringMask)] = red[b];
