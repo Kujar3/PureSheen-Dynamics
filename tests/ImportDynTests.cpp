@@ -422,7 +422,7 @@ TEST_CASE ("import.core. exciter: every-band model, per-band models, absent = th
     CHECK (near (value (old, "exc.bands"), 4.0));
     for (int b = 1; b <= 4; ++b)
         CHECK (near (value (old, "exc.a.b" + std::to_string (b) + ".mode"), 4.0));
-    CHECK (near (value (old, "exc.a.b3.drive"), 2.5));
+    CHECK (near (value (old, "exc.a.b3.drive"), 2.5 * 100.0 / 15.0));   // amount 0..15 -> drive 0..100 %
 
     // A band model outside the list: not imported, the default model instead.
     const auto bad = importModule ("Glow", "100000", { param ("Model", "7"), param ("Lane 1 Model", "9") });
@@ -445,9 +445,10 @@ TEST_CASE ("import.core. exciter: drive and mix, post filter, channel modes, byp
                                                        param ("After Width", "2") });
     REQUIRE (plan.ok);
     CHECK (near (value (plan, "exc.ts.on"), 1.0));                 // the third mode is T/S
-    CHECK (near (value (plan, "exc.a.b1.drive"), 3.5));
+    CHECK (near (value (plan, "exc.a.b1.drive"), 3.5 * 100.0 / 15.0));
     CHECK (near (value (plan, "exc.a.b2.mix"), 45.0));
-    CHECK (near (value (plan, "exc.b.b2.drive"), 7.0));
+    CHECK (near (value (plan, "exc.b.b2.drive"), 7.0 * 100.0 / 15.0));
+    CHECK (near (value (importModule ("Glow", "110000", { param ("Lane 1 Drive", "20") }), "exc.a.b1.drive"), 100.0));   // clamped
     CHECK (near (value (plan, "exc.a.b2.drive"), 0.0));
     CHECK (near (value (plan, "exc.post.on"), 1.0));
     CHECK (near (value (plan, "exc.post.gain"), -4.0));

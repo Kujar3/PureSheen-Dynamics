@@ -148,79 +148,71 @@ TEST_CASE ("exc. drive 0 is transparent (default settings, any crossover)")
     }
 }
 
-TEST_CASE ("exc. harmonic signature per model (1 kHz sine)")
+TEST_CASE ("exc. every model follows the reference's measured signature (1 kHz sine)")
 {
-    Harmonics hs[(int) ExciterMode::Count];
-    for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
-    {
-        const auto out = processTone ((ExciterMode) mi, 60.0f, 1000.0, -12.0);
-        const auto h = harmonicsOf (out.l, 24000, 48000, 1000.0);
-        hs[mi] = h;
-        const std::string tag = std::string ("exc. ") + kModeNames[mi] + " drive 60, -12 dBFS 1 kHz: ";
-        note (tag + "even harmonics (dBc)", h.evenDb());
-        note (tag + "odd harmonics (dBc)", h.oddDb());
-        note (tag + "H2 (dBc)", pstest::dbOf (h.h[2]));
-        note (tag + "H3 (dBc)", pstest::dbOf (h.h[3]));
-        note (tag + "fundamental level change (dB)", pstest::dbOf (h.fundamental / pstest::dbfsToAmplitude (-12.0)));
-    }
-
+    // The reference's renders (tone test, one band, mix 100 %) at its amounts 3 and 15 = our drive 20 and 100:
+    // fundamental change (dB), H2 and H3 (dBc; -200 = not present) at -10 and -4 dBFS. Tolerances: the static models
+    // 0.6 dB / 2 dB; Tape and the triodes also move their operating point with the level in the reference (see
+    // Exciter.cpp): Triode is checked at -10 dBFS only, Dual Triode at low drive, Tape not at all (reported).
+    struct Row { ExciterMode mode; float drive; double peakDb, fund, h2, h3; bool strict; };
     using M = ExciterMode;
-    // symmetric curves: odd only
-    for (M m : { M::Analog, M::Retro, M::Tape })
+    const Row rows[] {
+        { M::Analog, 20.0f, -10.0, -0.09, -26.2, -51.3, true },  { M::Analog, 20.0f, -4.0, -0.32, -20.9, -38.3, true },
+        { M::Analog, 100.0f, -10.0, -0.08, -19.4, -33.6, true }, { M::Analog, 100.0f, -4.0, -2.41, -20.1, -16.9, true },
+        { M::Retro, 20.0f, -10.0, -2.46, -200, -17.6, true },    { M::Retro, 20.0f, -4.0, -6.11, -200, -14.7, true },
+        { M::Retro, 100.0f, -10.0, -1.86, -200, -12.7, true },   { M::Retro, 100.0f, -4.0, -6.97, -200, -11.3, true },
+        { M::Tube, 20.0f, -10.0, -0.45, -49.8, -31.0, true },    { M::Tube, 20.0f, -4.0, -0.76, -29.5, -42.4, true },
+        { M::Tube, 100.0f, -10.0, -7.02, -64.0, -9.6, true },    { M::Tube, 100.0f, -4.0, -13.00, -65.9, -9.6, true },
+        { M::Warm, 20.0f, -10.0, 0.08, -26.5, -200, true },      { M::Warm, 20.0f, -4.0, 0.08, -22.9, -200, true },
+        { M::Warm, 100.0f, -10.0, -0.96, -10.5, -200, true },    { M::Warm, 100.0f, -4.0, -0.96, -6.9, -200, true },
+        { M::Triode, 20.0f, -10.0, 1.74, -34.3, -36.5, true },   { M::Triode, 20.0f, -4.0, 0.77, -24.0, -29.0, false },
+        { M::DualTriode, 20.0f, -10.0, -1.00, -68.1, -200, true }, { M::DualTriode, 20.0f, -4.0, -0.66, -30.3, -37.4, true },
+        { M::Tape, 20.0f, -10.0, 0.34, -200, -41.0, false },     { M::Tape, 100.0f, -4.0, -11.28, -200, -16.6, false },
+        { M::Triode, 100.0f, -4.0, -5.79, -5.3, -20.7, false },  { M::DualTriode, 100.0f, -4.0, -9.66, -12.3, -12.0, false },
+    };
+    for (const auto& r : rows)
     {
-        CHECK (hs[(int) m].oddDb() > -40.0);
-        CHECK (hs[(int) m].evenDb() < hs[(int) m].oddDb() - 60.0);
+        const auto out = processTone (r.mode, r.drive, 1000.0, r.peakDb);
+        const auto h = harmonicsOf (out.l, 24000, 48000, 1000.0);
+        const double fund = pstest::dbOf (h.fundamental / pstest::dbfsToAmplitude (r.peakDb));
+        const double h2 = std::max (-200.0, pstest::dbOf (h.h[2])), h3 = std::max (-200.0, pstest::dbOf (h.h[3]));
+        const std::string tag = std::string ("exc. ") + kModeNames[(int) r.mode] + " drive " + std::to_string ((int) r.drive)
+                                + " at " + std::to_string ((int) r.peakDb) + " dBFS: ";
+        note (tag + "fundamental change, ours - reference (dB)", fund - r.fund);
+        note (tag + "H2 ours (dBc)", h2);
+        note (tag + "H3 ours (dBc)", h3);
+        if (! r.strict)
+            continue;
+        CHECK (std::abs (fund - r.fund) < 0.6);
+        for (const auto& [got, want] : { std::pair { h2, r.h2 }, std::pair { h3, r.h3 } })
+        {
+            if (want > -60.0)
+                CHECK (std::abs (got - want) < 2.0);
+            else
+                CHECK (got < -45.0);   // absent (or far down) in the reference
+        }
     }
-    // Warm: even only (odd at least 30 dB below even)
-    CHECK (hs[(int) M::Warm].evenDb() > -40.0);
-    CHECK (hs[(int) M::Warm].oddDb() < hs[(int) M::Warm].evenDb() - 30.0);
-    // asymmetric: both
-    for (M m : { M::Tube, M::Triode, M::DualTriode })
-    {
-        CHECK (hs[(int) m].evenDb() > -50.0);
-        CHECK (hs[(int) m].oddDb() > -60.0);
-    }
-    // Dual Triode is stronger and more even than one Triode stage
-    CHECK (hs[(int) M::DualTriode].evenDb() > hs[(int) M::Triode].evenDb() + 3.0);
-    CHECK (hs[(int) M::DualTriode].oddDb() > hs[(int) M::Triode].oddDb());
-    // level compensation: the fundamental stays within a few dB at -12 dBFS
-    for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
-        CHECK (std::abs (pstest::dbOf (hs[mi].fundamental / pstest::dbfsToAmplitude (-12.0))) < 1.5);
 }
 
-TEST_CASE ("exc. Tube emphasises attacks, Retro decays slowly")
+TEST_CASE ("exc. the curves are static (no level memory)")
 {
-    // Tube: even harmonics in the first 10 ms of a burst vs the steady state
-    {
-        const auto burst = pstest::concat (std::vector<float> (24000, 0.0f), pstest::sine (1000.0, -12.0, 1.0, kSr));
-        Exciter m;
-        m.prepare (kSr, 512);
-        Values v;
-        v.band (1, "mode", (float) ExciterMode::Tube);
-        v.band (1, "drive", 50.0f);
-        const auto out = run (m, v, dual (burst), 512);
-        const int lat = m.getLatencySamples();
-        const auto attack = harmonicsOf (out.l, 24000 + (size_t) lat + 96, 480, 1000.0);
-        const auto steady = harmonicsOf (out.l, 24000 + (size_t) lat + 24000, 480, 1000.0);
-        note ("exc. Tube H2 on the attack (dBc)", pstest::dbOf (attack.h[2]));
-        note ("exc. Tube H2 steady (dBc)", pstest::dbOf (steady.h[2]));
-        CHECK (pstest::dbOf (attack.h[2]) > pstest::dbOf (steady.h[2]) + 1.0);
-    }
-    // Retro: after a loud passage drops by 12 dB, the harmonics take a while to fall to the steady quiet level
+    // after a loud passage drops by 12 dB, the harmonics are at once those of the quiet level (the reference's models
+    // that fit a static curve show no memory either)
+    for (ExciterMode mode : { ExciterMode::Retro, ExciterMode::Tube })
     {
         const auto sig = pstest::sineSequence (1000.0, { { -6.0, 1.0 }, { -18.0, 1.5 } }, kSr);
         Exciter m;
         m.prepare (kSr, 512);
         Values v;
-        v.band (1, "mode", (float) ExciterMode::Retro);
+        v.band (1, "mode", (float) mode);
         v.band (1, "drive", 60.0f);
         const auto out = run (m, v, dual (sig), 512);
         const int lat = m.getLatencySamples();
         const auto decay = harmonicsOf (out.l, 48000 + (size_t) lat + 480, 960, 1000.0);
         const auto quiet = harmonicsOf (out.l, 48000 + (size_t) lat + 48000, 960, 1000.0);
-        note ("exc. Retro H3 20..40 ms after the level drop (dBc)", pstest::dbOf (decay.h[3]));
-        note ("exc. Retro H3 steady at the quiet level (dBc)", pstest::dbOf (quiet.h[3]));
-        CHECK (pstest::dbOf (decay.h[3]) > pstest::dbOf (quiet.h[3]) + 3.0);
+        const double d = pstest::dbOf (decay.h[3]) - pstest::dbOf (quiet.h[3]);
+        note (std::string ("exc. ") + kModeNames[(int) mode] + " H3 20..40 ms after the level drop - steady (dB)", d);
+        CHECK (std::abs (d) < 0.5);
     }
 }
 
@@ -310,12 +302,14 @@ TEST_CASE ("exc. oversampling reduces aliasing (7 kHz at 48 kHz, drive 100)")
 
 TEST_CASE ("exc. transferCurve matches the audio path for steady input")
 {
-    // 150 Hz at the -12 dBFS reference level, drive 70: compare H1 (magnitude + phase) and H2..H5 of the processed signal
-    // with the transferCurve applied to the same input sample by sample
+    // 2.9 kHz at -12 dBFS, drive 70: compare H1 (magnitude + phase) and H2..H5 of the processed signal with the
+    // transferCurve applied to the same input sample by sample (the 14.1 Hz wet high pass is negligible up there; at
+    // 48 kHz the aliases of the sample-by-sample prediction do not land on the harmonics of 2.9 kHz, as they would for
+    // a tone dividing 48 kHz)
     for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
     {
         const auto mode = (ExciterMode) mi;
-        const auto x = pstest::sine (150.0, -12.0, 1.5, kSr);
+        const auto x = pstest::sine (2900.0, -12.0, 1.5, kSr);
         Exciter m;
         m.prepare (kSr, 512);
         Values v;
@@ -330,8 +324,8 @@ TEST_CASE ("exc. transferCurve matches the audio path for steady input")
 
         const size_t start = 12000, n = 48000;
         std::vector<float> aligned (out.l.begin() + lat, out.l.end());
-        const auto hm = harmonicsOf (aligned, start, n, 150.0);
-        const auto hp = harmonicsOf (pred, start, n, 150.0);
+        const auto hm = harmonicsOf (aligned, start, n, 2900.0);
+        const auto hp = harmonicsOf (pred, start, n, 2900.0);
         const double gainErr = pstest::dbOf (hm.fundamental / hp.fundamental);
         const double phaseErr = std::abs (std::arg (hm.fundamentalPhasor / hp.fundamentalPhasor)) * 180.0 / kPi;
         double worstHarm = 0.0;
@@ -347,26 +341,25 @@ TEST_CASE ("exc. transferCurve matches the audio path for steady input")
         CHECK (worstHarm < 0.3);
     }
 
-    // below ~100 Hz the Retro / Tube detectors follow the waveform a little (documented): report how far
-    for (ExciterMode mode : { ExciterMode::Retro, ExciterMode::Tube })
+    // at 50 Hz the wet high pass (first order, 14.1 Hz) shows: the fundamental is the curve's, high-passed
     {
         const auto x = pstest::sine (50.0, -12.0, 1.5, kSr);
         Exciter m;
         m.prepare (kSr, 512);
         Values v;
-        v.band (1, "mode", (float) mode);
+        v.band (1, "mode", (float) ExciterMode::Retro);
         v.band (1, "drive", 70.0f);
         const auto out = run (m, v, dual (x), 512);
         std::vector<double> pred (x.size());
         for (size_t i = 0; i < x.size(); ++i)
-            pred[i] = (double) Exciter::transferCurve (mode, x[i], 70.0f);
+            pred[i] = (double) Exciter::transferCurve (ExciterMode::Retro, x[i], 70.0f);
         std::vector<float> aligned (out.l.begin() + m.getLatencySamples(), out.l.end());
         const auto hm = harmonicsOf (aligned, 12000, 48000, 50.0);
         const auto hp = harmonicsOf (pred, 12000, 48000, 50.0);
-        note (std::string ("exc. transferCurve ") + kModeNames[(int) mode] + " at 50 Hz: H1 error (dB)",
-              pstest::dbOf (hm.fundamental / hp.fundamental));
-        note (std::string ("exc. transferCurve ") + kModeNames[(int) mode] + " at 50 Hz: H3 error (dB)",
-              pstest::dbOf (hm.h[3] / hp.h[3]));
+        const double expected = -10.0 * std::log10 (1.0 + (14.1 / 50.0) * (14.1 / 50.0));
+        const double got = pstest::dbOf (hm.fundamental / hp.fundamental);
+        note ("exc. transferCurve Retro at 50 Hz: H1 error (dB, expected from the 14.1 Hz high pass)", got);
+        CHECK (std::abs (got - expected) < 0.05);
     }
 
     // static points
@@ -374,16 +367,15 @@ TEST_CASE ("exc. transferCurve matches the audio path for steady input")
     for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
     {
         CHECK (Exciter::transferCurve ((ExciterMode) mi, 0.0f, 80.0f) == 0.0f);
-        // monotonic over the display range
-        float prev = Exciter::transferCurve ((ExciterMode) mi, -1.0f, 100.0f);
-        bool mono = true;
-        for (int i = 1; i <= 200; ++i)
-        {
-            const float y = Exciter::transferCurve ((ExciterMode) mi, -1.0f + 0.01f * (float) i, 100.0f);
-            mono = mono && y >= prev;   // (float: flat once fully saturated)
-            prev = y;
-        }
-        CHECK (mono);
+        // finite and bounded over the display range (some measured curves fold back: Warm is rectifier-like)
+        bool bounded = true;
+        for (int i = 0; i <= 200; ++i)
+            for (float d : { 10.0f, 35.0f, 75.0f, 100.0f })
+            {
+                const float y = Exciter::transferCurve ((ExciterMode) mi, -1.0f + 0.01f * (float) i, d);
+                bounded = bounded && std::isfinite (y) && std::abs (y) < 2.0f;
+            }
+        CHECK (bounded);
     }
 }
 
@@ -445,7 +437,7 @@ TEST_CASE ("exc. latency is exact and identical for every band")
 
         const size_t len = 16384, at = 4000;
         std::vector<float> imp (len, 0.0f);
-        imp[at] = 0.01f;   // quiet: practically linear (the level compensation scales it a little)
+        imp[at] = 0.01f;   // quiet: practically linear
         const auto out = run (m, v, dual (imp), 512);
         size_t peak = 0;
         for (size_t i = 0; i < len; ++i)
@@ -458,7 +450,8 @@ TEST_CASE ("exc. latency is exact and identical for every band")
         note ("exc. impulse peak offset - latency", (double) ((int) (peak - at) - lat));
         note ("exc. impulse asymmetry around the peak (rel.)", asym / std::abs (out.l[peak]));
         CHECK_EQ ((int) (peak - at), lat);
-        CHECK (asym < 1.0e-3 * std::abs (out.l[peak]));
+        // linear phase apart from the wet path's first-order 14.1 Hz high pass (its tail: 2 pi 14.1 / fs = 1.8e-3)
+        CHECK (asym < 2.5e-3 * std::abs (out.l[peak]));
     }
 }
 
@@ -475,20 +468,22 @@ TEST_CASE ("exc. drive, mix and model changes are click-free")
         return m;
     };
     const std::vector<float> x1 (x.begin(), x.begin() + 24000);
-    double ref = 0.0;
-    for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
-        for (float drive : { 25.0f, 40.0f })
-        {
-            Exciter m;
-            m.prepare (kSr, 64);
-            Values v;
-            v.band (1, "drive", drive);
-            v.band (1, "mode", (float) mi);
-            ref = std::max (ref, maxSecondDiff (run (m, v, dual (x1), 64).l, 4800));
-        }
-
     for (bool os : { true, false })
     {
+        // the worst steady output with the same oversampling (without it the harder curves alias more)
+        double ref = 0.0;
+        for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
+            for (float drive : { 25.0f, 40.0f })
+            {
+                Exciter sm;
+                sm.prepare (kSr, 64);
+                Values sv;
+                sv.set ("exc.os", os ? 1.0f : 0.0f);
+                sv.band (1, "drive", drive);
+                sv.band (1, "mode", (float) mi);
+                ref = std::max (ref, maxSecondDiff (run (sm, sv, dual (x1), 64).l, 4800));
+            }
+
         Exciter m;
         m.prepare (kSr, 64);
         Values v;

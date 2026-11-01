@@ -5,16 +5,15 @@
 #include <memory>
 
 // Multiband harmonic Exciter (reference-suite parity, seven saturation models). Owner: dsp-stereo. Implementation: Exciter.cpp.
-//   - per band: wet = saturate_mode (band * driveGain), level-compensated so drive changes harmonics more than level;
-//     out = dry * (1 - mix) + wet * mix
-//   - models (our own static + dynamic curves):
-//       Analog     odd harmonics, gritty (asymmetric-free tanh-like with hard-ish knee)
-//       Retro      transistor-style odd harmonics with slow decay (level-dependent bias, slow envelope)
-//       Tape       brighter odd harmonics (pre-emphasis -> soft clip -> de-emphasis, mild hysteresis)
-//       Tube       asymmetric (even + odd), emphasises attacks (fast bias envelope)
-//       Warm       even harmonics only (full-wave rectifier-style mix), quick decay
-//       Triode     single triode stage: subtle asymmetric overdrive
-//       DualTriode two stages (push-pull): stronger, warmer, more even harmonics
+//   - per band: wet = HP14 (curve_mode,drive (band)), out = dry * (1 - mix) + wet * mix; no level compensation
+//   - models (static curves measured from the reference at drive 20 / 50 / 100 %, see Exciter.cpp):
+//       Analog     asymmetric soft curve: mostly 2nd harmonic, clips at full drive
+//       Retro      symmetric hard-ish clipper (odd harmonics), the level drops on loud input
+//       Tape       symmetric soft clip (odd harmonics)
+//       Tube       nearly clean at low drive, a hard clip (square-like) at full drive
+//       Warm       even harmonics only (rectifier-like)
+//       Triode     asymmetric, adds level at low drive, clips one half at full drive
+//       DualTriode clean on quiet input, then a strong asymmetric clip
 //   - oversampling: ps::Oversampler 4x around the nonlinear stage (linear phase), latency reported
 //   - post filter: high shelf on the wet signal only (postFilterHz / postFilterGainDb)
 //   - Stereo or M/S (sets A / B)

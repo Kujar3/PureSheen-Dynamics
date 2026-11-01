@@ -56,13 +56,13 @@ juce::String exciterModeName (int mode)
 juce::String exciterModeDescription (int mode)
 {
     static const char* text[] = {
-        "Odd harmonics with a gritty edge.",
-        "Transistor-style odd harmonics that linger.",
-        "Bright odd harmonics with soft tape clipping.",
-        "Even and odd harmonics that liven up attacks.",
-        "Even harmonics only. Smooth and quick.",
-        "One triode stage: subtle, asymmetric warmth.",
-        "Two push-pull stages: stronger and warmer.",
+        "Asymmetric warmth, mostly 2nd harmonic.",
+        "Hard odd-harmonic clipping. Loud parts lose level.",
+        "Soft, symmetric tape-style clipping.",
+        "Nearly clean when gentle, fuzz-like when pushed.",
+        "Even harmonics only. Rectifier-style.",
+        "Asymmetric triode drive. Adds level when gentle.",
+        "Clean on quiet input, then a strong asymmetric clip.",
     };
     return text[juce::jlimit (0, kNumModes - 1, mode)];
 }

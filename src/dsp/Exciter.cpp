@@ -22,34 +22,25 @@
 // Structure (per band b, per channel):
 //   D_b   = OS_down ( f (OS_up (band_b)) - OS_up (band_b) )        harmonics + level change only ("difference" path)
 //   dry_b = band_b delayed by the oversampler latency (so dry and wet are sample aligned)
-//   wet_b = dry_b + D_b                                             (= f (band_b) where the oversampler is flat)
+//   wet_b = HP14 (dry_b + D_b)                                      (= HP14 (f (band_b)) where the oversampler is flat)
 //   out   = sum_b solo_b [ (1 - mix_b) dry_b ] + PostShelf ( sum_b solo_b mix_b wet_b )
 // Computing f(u) - u in the oversampled domain and adding it to the delayed band keeps the dry part bit-exact (drive 0
-// is exactly transparent, nothing above 0.45 fs is lost) and the nonlinearity still runs at 4x. The difference
-// signal is DC-blocked (2nd-order high pass at 5 Hz) before it is mixed in. When a band stops driving, the oversampler
-// is flushed with silence and the DC blocker rings out (no state is cut mid-signal); the detectors always run, so a
-// band that starts processing never sees a fake attack.
+// is exactly transparent, nothing above 0.45 fs is lost) and the nonlinearity still runs at 4x. Each band's wet signal
+// dry + D goes through a first-order high pass at 14.1 Hz (the reference's wet path has exactly this one; it also
+// removes the DC of the asymmetric curves) while the band is processed. When a band stops driving, the oversampler is
+// flushed with silence (no state is cut mid-signal).
 //
-// Curves (our own). Every model is f(x) = comp (drive) * s_k (x) with slope 1 at x = 0, where k = drive gain:
-//   k = (10^(0.012 * drive%) - 1) * modelScale    (drive 100 % = +24 dB into the curve; Triode scale 0.5: subtle)
-//   Analog     s = v / (1 + v^4)^(1/4) / k, v = k x     symmetric, hard-ish knee: odd harmonics, gritty
-//   Retro      s = tanh (k' x) / k',  k' = k (1 + delta_decay)   odd; the drive rises while the level falls after a
-//              loud passage (a 300 ms release follower of a fast two-pole 3 ms power detector): harmonics
-//              decay slowly
-//   Tape       pre-emphasis (1st-order high shelf +6 dB at 4 kHz) -> v / sqrt (1 + v^2) -> exact inverse de-emphasis,
-//              plus a mild direction-dependent offset (hysteresis-like, proportional to tanh of the slope; zero for a
-//              static input): brighter odd harmonics
-//   Tube       s = (tanh (k x + b) - tanh b) / (k (1 - tanh^2 b)), b = 0.35 + 0.5 delta_attack: asymmetric even + odd;
-//              the bias rises on attacks (fast detector above a 60 ms one), so transients get more harmonics
-//   Warm       s = x + 0.5 (sqrt (1 + (k x)^2) - 1) / k: an even (rectifier-like) term only: even harmonics only
-//   Triode     t = tanh (k x), s = (t + 0.2 t^2) / k: one stage, subtle asymmetric overdrive
-//   DualTriode two such stages in series (even term 0.25 each): stronger, and the even terms add up
-//   The dynamic terms (Retro, Tube) use a dead zone, so they are exactly zero for steady signals (steady tones above
-//   ~100 Hz; for lower tones the detector ripple reaches the dead zone and Retro / Tube move a little within each
-//   cycle); Tape's emphasis is unity at DC and its offset needs a moving input. transferCurve() therefore equals the
-//   audio path for static (steady) input.
-// Level compensation: comp (drive) keeps the RMS of a -12 dBFS sine through the curve equal to its input RMS (table per
-// model, 1 % drive steps, interpolated; capped at +-12 dB), so drive changes the harmonics more than the level.
+// Curves: measured from the reference (out/importer/tools/gen_exc.py, tone test, one band, mix 100 %): the static
+// transfer curve of each model at the reference's amounts 3, 7.5 and 15 (its maximum), which are our drive 20 / 50 /
+// 100 %. Each table holds y (x) on kExcCurvePoints points over |x| <= 0.631 (the loudest test sine, -4 dBFS) with
+// y (0) = 0 and continues linearly with its end slope beyond. Between anchors the curves are interpolated linearly in
+// drive (drive 0 = the identity). There is no level compensation: like the reference, more drive saturates louder
+// signals harder and most models lose level (Tube at 100 % is close to a hard clip at -19 dBFS). Measured residual
+// (waveform error re the sine amplitude over the four test levels): Analog / Retro / Tube / Warm, and Triode / Dual
+// Triode at low drive, about 1..4 %; Tape 2..13 % and Triode / Dual Triode at full drive up to 17 %: there the
+// reference also moves its operating point with the level (a bias shift) and has hysteresis, which a static curve
+// cannot follow. Below ~200 Hz the reference filters the harmonics of Warm / Triode / Dual Triode / Tape more than its
+// 14.1 Hz wet high pass (not modelled).
 // Choices (research silent): oversampling 4x linear phase (latency is reported, identical for every band); the post
 // filter is a matched 2nd-order high shelf (Q 0.707) on the summed wet signal (linear, so equal to filtering each
 // band's wet); a band that is off is dry. Neutral settings (every band at mix 0, or at drive 0 with the post filter
@@ -79,174 +70,71 @@ namespace
     constexpr double kModeFadeMs = 20.0;
     constexpr double kSoloRampMs = 10.0;
     constexpr double kShelfRampMs = 10.0;
-    constexpr double kDcHz = 5.0;
     constexpr double kMeterTauMs = 300.0;
 
-    constexpr double kDriveDbPerPercent = 0.24;    // 100 % = +24 dB
-    constexpr double kCompRefPeak = 0.25;          // -12 dBFS
-    constexpr double kCompMax = 3.9810717055349722;   // +12 dB
-    constexpr double kWarmMix = 0.5;
-    constexpr double kTubeBias = 0.35;
-    constexpr double kTubeAttackBias = 0.5;
-    constexpr double kTriodeEven = 0.2;
-    constexpr double kDualTriodeEven = 0.25;
-    constexpr double kRetroDecayDrive = 1.0;
-    constexpr double kTapeEmphasisHz = 4000.0;
-    constexpr double kTapeEmphasisDb = 6.0;
-    constexpr double kTapeHysteresis = 0.04;
-    constexpr double kTapeSlopeRefHz = 4000.0;
-    constexpr double kDeadZone = 0.1;
-    constexpr double kFastMs = 3.0, kSlowReleaseMs = 300.0, kSlowAttackRefMs = 60.0;
-    constexpr double kTiny = 1.0e-12;
+    constexpr double kWetHighPassHz = 14.1;
     constexpr double kTwoPi = 6.283185307179586;
 
-    double modelScale (ExciterMode m) noexcept { return m == ExciterMode::Triode ? 0.5 : 1.0; }
+#include "dsp/ExciterCurves.inc"
 
-    double driveToK (ExciterMode m, double drivePercent) noexcept
+    // Evaluates one measured table at x: linear between points, linear with the end slope beyond the table.
+    inline double tableAt (const float* t, double x) noexcept
     {
+        constexpr double scale = (double) (kExcCurvePoints - 1) / (2.0 * kExcCurveXMax);
+        constexpr int last = kExcCurvePoints - 1;
+        const double pos = (x + kExcCurveXMax) * scale;
+        if (pos <= 0.0)
+            return (double) t[0] + ((double) t[1] - (double) t[0]) * pos;
+        if (pos >= (double) last)
+            return (double) t[last] + ((double) t[last] - (double) t[last - 1]) * (pos - (double) last);
+        const int i = (int) pos;
+        const double f = pos - (double) i;
+        return (double) t[i] + f * ((double) t[i + 1] - (double) t[i]);
+    }
+
+    // The two curves around a drive and the weight between them; lo == nullptr is the identity (drive 0).
+    struct CurvePick
+    {
+        const float* lo = nullptr;
+        const float* hi = nullptr;
+        double w = 0.0;
+    };
+
+    CurvePick pickCurves (ExciterMode m, double drivePercent) noexcept
+    {
+        CurvePick c;
         const double d = std::clamp (drivePercent, 0.0, 100.0);
-        return (std::pow (10.0, d * kDriveDbPerPercent / 20.0) - 1.0) * modelScale (m);
+        if (! (d > 0.0))
+            return c;
+        const int mi = std::clamp ((int) m, 0, kNumModes - 1);
+        double below = 0.0;
+        for (int a = 0; a < 3; ++a)
+        {
+            if (d <= kExcAnchorDrive[a] || a == 2)
+            {
+                c.lo = a > 0 ? kExcCurve[mi][a - 1] : nullptr;
+                c.hi = kExcCurve[mi][a];
+                c.w = std::clamp ((d - below) / (kExcAnchorDrive[a] - below), 0.0, 1.0);
+                return c;
+            }
+            below = kExcAnchorDrive[a];
+        }
+        return c;
     }
 
-    // The static curve without compensation (k > 0). retroBoost / tubeBias: the dynamic terms (0 for static input).
-    inline double rawCurve (ExciterMode m, double x, double k, double retroBoost, double tubeBias) noexcept
+    inline double curveSample (const CurvePick& c, double x) noexcept
     {
-        switch (m)
-        {
-            case ExciterMode::Analog:
-            {
-                const double v = k * x;
-                const double v2 = v * v;
-                return v / std::sqrt (std::sqrt (1.0 + v2 * v2)) / k;
-            }
-            case ExciterMode::Retro:
-            {
-                const double kk = k * (1.0 + retroBoost);
-                return std::tanh (kk * x) / kk;
-            }
-            case ExciterMode::Tape:
-            {
-                const double v = k * x;
-                return v / std::sqrt (1.0 + v * v) / k;
-            }
-            case ExciterMode::Tube:
-            {
-                const double b = kTubeBias + tubeBias;
-                const double tb = std::tanh (b);
-                return (std::tanh (k * x + b) - tb) / (k * (1.0 - tb * tb));
-            }
-            case ExciterMode::Warm:
-            {
-                const double v = k * x;
-                return x + kWarmMix * (std::sqrt (1.0 + v * v) - 1.0) / k;
-            }
-            case ExciterMode::Triode:
-            {
-                const double t = std::tanh (k * x);
-                return (t + kTriodeEven * t * t) / k;
-            }
-            case ExciterMode::DualTriode:
-            case ExciterMode::Count:
-            default:
-            {
-                const double t1 = std::tanh (k * x);
-                const double y1 = t1 + kDualTriodeEven * t1 * t1;
-                const double t2 = std::tanh (y1);
-                return (t2 + kDualTriodeEven * t2 * t2) / k;
-            }
-        }
+        if (c.hi == nullptr)
+            return x;
+        const double a = c.lo != nullptr ? tableAt (c.lo, x) : x;
+        return a + c.w * (tableAt (c.hi, x) - a);
     }
-
-    // Level compensation table: comp[m][d] for drive d = 0..100 %.
-    struct CompTable
-    {
-        float comp[kNumModes][101] {};
-
-        CompTable()
-        {
-            constexpr int kPoints = 512;
-            for (int m = 0; m < kNumModes; ++m)
-            {
-                comp[m][0] = 1.0f;
-                for (int d = 1; d <= 100; ++d)
-                {
-                    const double k = driveToK ((ExciterMode) m, (double) d);
-                    double sumIn = 0.0, sumOut = 0.0, sumOut2 = 0.0;
-                    for (int i = 0; i < kPoints; ++i)
-                    {
-                        const double x = kCompRefPeak * std::sin (kTwoPi * ((double) i + 0.5) / (double) kPoints);
-                        const double y = rawCurve ((ExciterMode) m, x, k, 0.0, 0.0);
-                        sumIn += x * x;
-                        sumOut += y;
-                        sumOut2 += y * y;
-                    }
-                    const double mean = sumOut / kPoints;
-                    const double acPower = std::max (1.0e-30, sumOut2 / kPoints - mean * mean);
-                    const double c = std::sqrt ((sumIn / kPoints) / acPower);
-                    comp[m][d] = (float) std::clamp (c, 1.0 / kCompMax, kCompMax);
-                }
-            }
-        }
-    };
-
-    const CompTable& compTable() noexcept
-    {
-        static const CompTable table;
-        return table;
-    }
-
-    double compFor (ExciterMode m, double drivePercent) noexcept
-    {
-        const double d = std::clamp (drivePercent, 0.0, 100.0);
-        const int i = std::min (99, (int) d);
-        const double f = d - (double) i;
-        const auto& row = compTable().comp[std::clamp ((int) m, 0, kNumModes - 1)];
-        return (double) row[i] + f * ((double) row[i + 1] - (double) row[i]);
-    }
-
-    double poleFor (double ms, double sr) noexcept
-    {
-        const double samples = ms * 0.001 * sr;
-        return samples > 0.0 ? 1.0 - std::exp (-1.0 / samples) : 1.0;
-    }
-
-    // one-pole section (first-order biquad) in double
-    struct FirstOrder
-    {
-        double b0 = 1.0, b1 = 0.0, a1 = 0.0, z = 0.0;
-        void set (const BiquadCoeffs& c) noexcept { b0 = c.b0; b1 = c.b1; a1 = c.a1; }
-        void setInverseOf (const BiquadCoeffs& c) noexcept
-        {
-            b0 = 1.0 / c.b0;
-            b1 = c.a1 / c.b0;
-            a1 = c.b1 / c.b0;
-        }
-        inline double process (double x) noexcept
-        {
-            const double y = b0 * x + z;
-            z = b1 * x - a1 * y;
-            return y;
-        }
-        void reset() noexcept { z = 0.0; }
-    };
-
-    struct TapeState
-    {
-        FirstOrder pre, de;
-        double prevV = 0.0;
-        void reset() noexcept
-        {
-            pre.reset();
-            de.reset();
-            prevV = 0.0;
-        }
-    };
 
     // Per-sample settings of one model.
     struct ModelRun
     {
         ExciterMode mode = ExciterMode::Warm;
-        double k = 0.0, comp = 1.0;
+        CurvePick curve;
     };
 
     struct ChanState
@@ -257,20 +145,9 @@ namespace
         LinearSmoother fade;
         bool fading = false;
 
-        double envFast = 0.0, envFast2 = 0.0, envSlowRel = 0.0, envSlowAtt = 0.0;
-        TapeState tape[2];   // [0] = current model, [1] = model fading in
-        Biquad dc;
-        bool dcLive = false;
+        Biquad dc;   // the wet high pass (on dry + D)
         bool nlRunning = false;
         double meterPower = 0.0;
-
-        void resetEnvelopes() noexcept { envFast = envFast2 = envSlowRel = envSlowAtt = 0.0; }
-
-        void resetTape() noexcept
-        {
-            tape[0].reset();
-            tape[1].reset();
-        }
     };
 
     struct BandState
@@ -308,7 +185,6 @@ struct ExciterEngine
     float* bandChans[kMaxBands][2] {};
     float* const* bandPtrs[kMaxBands] {};
     std::vector<float> diffBuf[2];
-    std::vector<float> retroBuf[2], tubeBuf[2];
     std::vector<double> dryAcc[2], wetAcc[2];
     std::vector<float> neutralBuf[2];
     DelayLine neutralDelay[2];
@@ -319,9 +195,6 @@ struct ExciterEngine
     bool lastPostOn = false;
     float lastPostHz = -1.0f, lastPostDb = -100.0f;
 
-    BiquadCoeffs tapePreBase, tapePreOs;
-    double aFast = 0, aSlowRel = 0, aSlowRef = 0;
-    double slopeScaleBase = 1.0, slopeScaleOs = 1.0;
     double meterTau = 1.0;
 
     ExciterMeters meters;
@@ -329,8 +202,6 @@ struct ExciterEngine
     //==========================================================================
     void prepare (double sampleRate, int maxBlockSize)
     {
-        (void) compTable();   // build the static table here, not on the audio thread
-
         sr = sampleRate > 0.0 ? sampleRate : 48000.0;
         maxBlock = std::max (1, maxBlockSize);
         xover.prepare (sr, maxBlock);
@@ -349,12 +220,6 @@ struct ExciterEngine
         b0.os.prepare (kOsLog2, Oversampler::Quality::LinearPhase, maxBlock, 2);
         osLatency = b0.os.getLatencySamples();
 
-        const double osRate = sr * (double) (1 << kOsLog2);
-        tapePreBase = design::highShelf1 (sr, std::min (kTapeEmphasisHz, 0.3 * sr), kTapeEmphasisDb);
-        tapePreOs = design::highShelf1 (osRate, kTapeEmphasisHz, kTapeEmphasisDb);
-        slopeScaleBase = sr / (kTwoPi * kTapeSlopeRefHz);
-        slopeScaleOs = osRate / (kTwoPi * kTapeSlopeRefHz);
-
         for (auto& band : bands)
         {
             if (&band != &b0)
@@ -366,7 +231,7 @@ struct ExciterEngine
                 cs.drive.prepare (sr, kRampMs);
                 cs.mix.prepare (sr, kRampMs);
                 cs.fade.prepare (sr, kModeFadeMs);
-                cs.dc.setCoeffs (design::highPass (sr, kDcHz, 0.7071067811865476));
+                cs.dc.setCoeffs (design::highPass1 (sr, kWetHighPassHz));
             }
             band.solo.prepare (sr, kSoloRampMs);
         }
@@ -374,8 +239,6 @@ struct ExciterEngine
         for (int c = 0; c < 2; ++c)
         {
             diffBuf[c].assign ((size_t) maxBlock, 0.0f);
-            retroBuf[c].assign ((size_t) maxBlock, 0.0f);
-            tubeBuf[c].assign ((size_t) maxBlock, 0.0f);
             dryAcc[c].assign ((size_t) maxBlock, 0.0);
             wetAcc[c].assign ((size_t) maxBlock, 0.0);
             neutralBuf[c].assign ((size_t) maxBlock, 0.0f);
@@ -384,27 +247,10 @@ struct ExciterEngine
         }
         active.prepare (sr, kNeutralFadeMs);
 
-        aFast = poleFor (kFastMs, sr);
-        aSlowRel = poleFor (kSlowReleaseMs, sr);
-        aSlowRef = poleFor (kSlowAttackRefMs, sr);
         meterTau = kMeterTauMs * 0.001 * sr;
 
-        applyTapeCoeffs();
         prepared = true;
         reset();
-    }
-
-    void applyTapeCoeffs() noexcept
-    {
-        const auto& pre = osOn ? tapePreOs : tapePreBase;
-        for (auto& band : bands)
-            for (auto& cs : band.ch)
-                for (auto& t : cs.tape)
-                {
-                    t.pre.set (pre);
-                    t.de.setInverseOf (pre);
-                    t.reset();
-                }
     }
 
     void reset() noexcept
@@ -421,10 +267,7 @@ struct ExciterEngine
             for (int c = 0; c < 2; ++c)
             {
                 band.dryDelay[c].reset();
-                band.ch[c].resetEnvelopes();
-                band.ch[c].resetTape();
                 band.ch[c].dc.reset();
-                band.ch[c].dcLive = false;
                 band.ch[c].nlRunning = false;
                 band.ch[c].meterPower = 0.0;
             }
@@ -461,10 +304,7 @@ struct ExciterEngine
             {
                 band.dryDelay[c].reset();
                 auto& cs = band.ch[c];
-                cs.resetEnvelopes();
-                cs.resetTape();
                 cs.dc.reset();
-                cs.dcLive = false;
                 cs.nlRunning = false;
                 cs.meterPower = 0.0;
             }
@@ -481,7 +321,6 @@ struct ExciterEngine
                 band.osFresh = true;
                 band.osFlush = 0;
             }
-            applyTapeCoeffs();
         }
 
         const int osLat = osOn ? osLatency : 0;
@@ -602,104 +441,22 @@ struct ExciterEngine
         if (cs.fading && ! cs.fade.isSmoothing() && cs.fade.getCurrent() >= 1.0f)
         {
             cs.curMode = cs.nextMode;
-            std::swap (cs.tape[0], cs.tape[1]);
             cs.fading = false;
             cs.fade.snap (0.0f);
         }
         if (! cs.fading && cs.wantedMode != cs.curMode)
         {
             cs.nextMode = cs.wantedMode;
-            cs.tape[1].reset();
             cs.fading = true;
             cs.fade.snap (0.0f);
             cs.fade.setTarget (1.0f);
         }
     }
 
-    // Envelope detectors (linked in Stereo: both channels see max (L^2, R^2)). Writes the dynamic terms per sample.
-    void runDetectors (int b, int n, bool dual, bool needRetro, bool needTube) noexcept
-    {
-        auto& band = bands[b];
-        const int numDet = dual ? 2 : 1;
-        for (int c = 0; c < numDet; ++c)
-        {
-            auto& cs = band.ch[c];
-            float* retro = retroBuf[c].data();
-            float* tube = tubeBuf[c].data();
-            const float* x0 = bandChans[b][0];
-            const float* x1 = bandChans[b][1];
-            for (int i = 0; i < n; ++i)
-            {
-                double p;
-                if (dual)
-                {
-                    const double v = (double) (c == 0 ? x0[i] : x1[i]);
-                    p = v * v;
-                }
-                else
-                {
-                    p = std::max ((double) x0[i] * (double) x0[i], (double) x1[i] * (double) x1[i]);
-                }
-                p += kTiny;
-                cs.envFast2 += aFast * (p - cs.envFast2);
-                cs.envFast += aFast * (cs.envFast2 - cs.envFast);   // two poles: little ripple on steady tones
-                const double f = cs.envFast;
-                cs.envSlowRel = f > cs.envSlowRel ? f : cs.envSlowRel + aSlowRel * (f - cs.envSlowRel);
-                cs.envSlowAtt += aSlowRef * (f - cs.envSlowAtt);
-
-                double dr = 0.0, da = 0.0;
-                if (needRetro)
-                {
-                    const double r = 1.0 - std::sqrt (cs.envFast / cs.envSlowRel);
-                    dr = std::clamp ((r - kDeadZone) / (1.0 - kDeadZone), 0.0, 1.0);
-                }
-                if (needTube)
-                {
-                    const double a = 1.0 - std::sqrt (cs.envSlowAtt / cs.envFast);
-                    da = std::clamp ((a - kDeadZone) / (1.0 - kDeadZone), 0.0, 1.0);
-                }
-                retro[i] = (float) dr;
-                tube[i] = (float) da;
-            }
-        }
-        if (! dual)
-        {
-            // Preserve the linked detector history for a later Stereo -> Left/Right switch.
-            // Otherwise set B starts from silence and invents a Tube attack / Retro decay.
-            band.ch[1].envFast = band.ch[0].envFast;
-            band.ch[1].envFast2 = band.ch[0].envFast2;
-            band.ch[1].envSlowRel = band.ch[0].envSlowRel;
-            band.ch[1].envSlowAtt = band.ch[0].envSlowAtt;
-            std::copy (retroBuf[0].begin(), retroBuf[0].begin() + n, retroBuf[1].begin());
-            std::copy (tubeBuf[0].begin(), tubeBuf[0].begin() + n, tubeBuf[1].begin());
-        }
-    }
-
-    // One model's output for input u (at the processing rate).
-    inline double modelSample (const ModelRun& r, TapeState& tape, double u, double retroBoost, double tubeBias,
-                               double slopeScale) const noexcept
-    {
-        if (r.mode == ExciterMode::Tape)
-        {
-            const double pre = tape.pre.process (u);
-            const double v = r.k * pre;
-            const double hAmt = kTapeHysteresis * (r.k * r.k) / (1.0 + r.k * r.k);
-            const double h = hAmt * std::tanh ((v - tape.prevV) * slopeScale);
-            tape.prevV = v;
-            const double vv = v + h;
-            const double y = vv / std::sqrt (1.0 + vv * vv) / r.k;
-            return r.comp * tape.de.process (y);
-        }
-        return r.comp * rawCurve (r.mode, u, r.k, kRetroDecayDrive * retroBoost, kTubeAttackBias * tubeBias);
-    }
-
     // Writes D = f(u) - u for channel c of band b into data (n * factor samples at the processing rate).
     void shapeChannel (int b, int c, float* data, int n, int factor) noexcept
     {
         auto& cs = bands[b].ch[c];
-        const float* retro = retroBuf[c].data();
-        const float* tube = tubeBuf[c].data();
-        const double slopeScale = factor > 1 ? slopeScaleOs : slopeScaleBase;
 
         ModelRun cur, next;
         cur.mode = cs.curMode;
@@ -713,31 +470,26 @@ struct ExciterEngine
             if (drive != lastDrive)
             {
                 lastDrive = drive;
-                cur.k = driveToK (cur.mode, (double) drive);
-                cur.comp = compFor (cur.mode, (double) drive);
+                cur.curve = pickCurves (cur.mode, (double) drive);
                 if (cs.fading)
-                {
-                    next.k = driveToK (next.mode, (double) drive);
-                    next.comp = compFor (next.mode, (double) drive);
-                }
+                    next.curve = pickCurves (next.mode, (double) drive);
             }
 
             float* d = data + (size_t) i * (size_t) factor;
-            if (cur.k <= 1.0e-9 && next.k <= 1.0e-9)
+            if (cur.curve.hi == nullptr && next.curve.hi == nullptr)
             {
                 for (int j = 0; j < factor; ++j)
                     d[j] = 0.0f;
                 continue;
             }
 
-            const double dr = (double) retro[i], da = (double) tube[i];
             for (int j = 0; j < factor; ++j)
             {
                 const double u = (double) d[j];
-                double y = cur.k > 1.0e-9 ? modelSample (cur, cs.tape[0], u, dr, da, slopeScale) : u;
+                double y = curveSample (cur.curve, u);
                 if (cs.fading)
                 {
-                    const double y2 = next.k > 1.0e-9 ? modelSample (next, cs.tape[1], u, dr, da, slopeScale) : u;
+                    const double y2 = curveSample (next.curve, u);
                     y += fade * (y2 - y);
                 }
                 d[j] = (float) (y - u);
@@ -751,21 +503,14 @@ struct ExciterEngine
 
         // which channels need the nonlinear path
         bool need[2] {};
-        bool any = false, needRetro = false, needTube = false;
+        bool any = false;
         for (int c = 0; c < 2; ++c)
         {
             auto& cs = band.ch[c];
             updateModeFade (cs);
             need[c] = ! driveIdleZero (cs) && ! mixIdleZero (cs);
-            if (need[c] && ! cs.nlRunning)
-                cs.resetTape();
             cs.nlRunning = need[c];
             any = any || need[c];
-            for (ExciterMode m : { cs.curMode, cs.nextMode })
-            {
-                needRetro = needRetro || m == ExciterMode::Retro;
-                needTube = needTube || m == ExciterMode::Tube;
-            }
         }
 
         // dry, aligned with the oversampled path
@@ -776,15 +521,8 @@ struct ExciterEngine
         const bool flushing = ! any && osOn && band.osFlush > 0;
         const bool runOs = osOn && (any || flushing);
 
-        // the detectors always run (a band that starts processing must not see a fake attack)
-        runDetectors (b, n, dual, any && needRetro, any && needTube);
         if (any)
-        {
-            if (! band.nlRunning)
-                for (auto& cs : band.ch)
-                    cs.resetTape();
             band.nlRunning = true;
-        }
 
         if (runOs)
         {
@@ -827,7 +565,7 @@ struct ExciterEngine
             band.osFlush = 0;
         }
 
-        bool live = runOs;
+        bool live = runOs;   // the meters read D (the harmonics and level change, before the wet high pass)
         for (int c = 0; c < 2; ++c)
         {
             auto& cs = band.ch[c];
@@ -842,25 +580,7 @@ struct ExciterEngine
                     std::fill (diffBuf[c].begin(), diffBuf[c].begin() + n, 0.0f);
             }
 
-            if (need[c] || runOs)
-            {
-                cs.dc.process (diffBuf[c].data(), n);
-                cs.dcLive = true;
-                live = true;
-            }
-            else if (cs.dcLive)
-            {
-                cs.dc.process (diffBuf[c].data(), n);
-                live = true;
-                float peak = 0.0f;
-                for (int i = 0; i < n; ++i)
-                    peak = std::max (peak, std::abs (diffBuf[c][(size_t) i]));
-                if (peak < 1.0e-9f)
-                {
-                    cs.dc.reset();
-                    cs.dcLive = false;
-                }
-            }
+            live = live || need[c];
         }
 
         for (int c = 0; c < 2; ++c)
@@ -891,6 +611,20 @@ struct ExciterEngine
             meters.harmonicsDb[1][b].store (-120.0f);
         }
 
+        // the wet path's high pass (14.1 Hz, first order) acts on the whole wet signal dry + D, as in the reference;
+        // it runs for as long as the band is processed (the module's neutral fade covers switching it in and out)
+        for (int c = 0; c < 2; ++c)
+        {
+            auto& hp = band.ch[c].dc;
+            float* d = diffBuf[c].data();
+            const float* x = dry[c];
+            for (int i = 0; i < n; ++i)
+            {
+                const double xd = (double) x[i];
+                d[i] = (float) (hp.processSample (xd + (double) d[i]) - xd);
+            }
+        }
+
         // mix
         auto& c0 = band.ch[0];
         auto& c1 = band.ch[1];
@@ -909,7 +643,7 @@ struct ExciterEngine
 
     void idleBand (int b, int n, bool dual) noexcept
     {
-        runDetectors (b, n, dual, false, false);
+        (void) dual;
         auto& band = bands[b];
         band.nlRunning = false;
         band.osFresh = true;
@@ -923,7 +657,6 @@ struct ExciterEngine
             finishFade (cs);
             cs.meterPower = 0.0;
             cs.dc.reset();
-            cs.dcLive = false;
             cs.nlRunning = false;
         }
         band.solo.snap (band.solo.getCurrent());
@@ -1209,9 +942,6 @@ float Exciter::transferCurve (ExciterMode mode, float x, float drivePercent) noe
     if (! std::isfinite (x))
         return 0.0f;
     const double d = std::clamp (std::isfinite (drivePercent) ? (double) drivePercent : 0.0, 0.0, 100.0);
-    const double k = driveToK (mode, d);
-    if (k <= 1.0e-9)
-        return x;
-    return (float) (compFor (mode, d) * rawCurve (mode, (double) x, k, 0.0, 0.0));
+    return (float) curveSample (pickCurves (mode, d), (double) x);
 }
 } // namespace ps

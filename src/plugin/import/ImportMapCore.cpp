@@ -512,7 +512,7 @@ void dynamicsFinish (ModuleImport& m)
 // Exciter
 constexpr Key kExcSection      = 0x3c9082b8a86da743ull;   // exciter section (tag and chain name are the same)
 constexpr Key kExcBandMode     = 0x62fadd95a6120f52ull;   // band saturation model, numbered from 1, per set
-constexpr Key kExcAmount       = 0xc7739cff132acf75ull;   // band drive in %, numbered from 1, per set
+constexpr Key kExcAmount       = 0xc7739cff132acf75ull;   // band amount 0..15, numbered from 1, per set
 constexpr Key kExcModeAll      = 0x37cbecaec58e2192ull;   // model of every band, per set (7 = chosen per band)
 constexpr Key kExcOversample   = 0x5aa9799c6087e41dull;   // oversampling switch (ours stays on: quality only)
 constexpr Key kExcPostFreq     = 0x77bf02674a3b29f6ull;   // post filter frequency in Hz, per set
@@ -521,6 +521,9 @@ constexpr Key kExcPostQ        = 0xe03a22c5262affdbull;   // post filter width (
 
 // The models are stored in our order (0 analog .. 6 dual triode); 7 in the every-band control = "per band".
 constexpr int kExcPerBand = 7;
+
+// The foreign amount runs 0..15 (its knob's maximum); our drive 100 % is that maximum (the curves are fitted to it).
+double exciterDrive (double v, ModuleImport&, int, int) { return std::clamp (v * (100.0 / 15.0), 0.0, 100.0); }
 
 //------------------------------------------------------------------------------------------------------------------
 // EXCITER TABLE. The "def" column is the foreign default of each control (the one place to correct them).
@@ -535,7 +538,7 @@ const std::vector<Rule>& exciterRules()
         { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,          crossoverKind,   likely (2.0),                            "crossover kind" },
         { kExcBandMode,     Act::Hook,         1, 4, Band::Same,   nullptr,          nullptr,          nullptr,         known (5.0),                             "band model" },
         { kExcModeAll,      Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         known (5.0),                             "model of every band" },
-        { kExcAmount,       Act::Map,          1, 4, Band::Layout, "~.a.b#.drive",   "~.b.b#.drive",   nullptr,         known (0.0),                             "band drive" },
+        { kExcAmount,       Act::Map,          1, 4, Band::Layout, "~.a.b#.drive",   "~.b.b#.drive",   exciterDrive,    known (0.0),                             "band drive" },
         { kBandMix,         Act::Map,          1, 4, Band::Layout, "~.a.b#.mix",     "~.b.b#.mix",     nullptr,         known (100.0),                           "band mix" },
         { kExcPostFreq,     Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         noDefault(),                             "post filter frequency" },
         { kExcPostGain,     Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,          nullptr,         likely (0.0),                            "post filter gain" },
