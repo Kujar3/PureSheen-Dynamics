@@ -18,7 +18,7 @@
 // - Tone Balance: older writers (< 110000) have one speed control for both modes, so their speed also drives our
 //   cut speed.
 // - Smoother: older writers (< 110000) store an absolute threshold instead of an amount; it is converted to our
-//   relative amount by a heuristic (approximate, noted).
+//   amount by the measured threshold law (approximate, noted).
 // - Punch, Low Contrast: controls the foreign module keeps per channel set but ours shares (envelope, sync, amount,
 //   region) take set A; a differing set B value is reported as not imported (with a note).
 // - Bass Shaper: every section follows its power switch (on by default, confirmed); at the confirmed defaults
@@ -230,14 +230,15 @@ constexpr Key kSmthResidual   = 0xd0a68959515c4d42ull;   // listen to the remove
 // Reduction style: 0 light, 1 medium, 2 heavy -> our Gentle / Medium / Strong.
 double smootherMode (double v, ModuleImport&, int, int) { return indexUpTo (v, 2); }
 
-// Older writers: an absolute threshold (lower = more reduction) instead of our relative amount. Heuristic: -3 dB ->
-// 13.6 %, -20 dB -> 34 %, -45 dB -> 64 % (capped at 70 %); a threshold at full scale (above -1 dB, which is also the
-// assumed default) never acts: 0 %.
+// Older writers: an absolute threshold (lower = more reduction) instead of an amount. Our Smoother's threshold is the
+// reference's measured law, T = -65.1 + (100 - amount) dB, so amount = 34.9 - threshold (assuming the older writers'
+// threshold is on that scale: -20 dB -> 54.9 %); a threshold at full scale (above -1 dB, which is also the assumed
+// default) never acts: 0 %.
 double smootherThresholdToAmount (double thresholdDb)
 {
     if (thresholdDb > -1.0)
         return 0.0;
-    return std::clamp (10.0 - 1.2 * thresholdDb, 0.0, 70.0);
+    return std::clamp (34.9 - thresholdDb, 0.0, 100.0);
 }
 
 //------------------------------------------------------------------------------------------------------------------

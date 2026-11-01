@@ -11,28 +11,21 @@
  #define PS_SMTH_HAS_SSE_CSR 1
 #endif
 
-// Smoother (dsp-smth): a cut-only, 32-band adaptive tamer of harsh, narrow peaks on ps::SpectralEngine (base N 1024,
-// hop N / 4, latency N). The algorithm is the ten steps of Smoother.h; this file adds the choices the header leaves
-// open, made as a mastering engineer would expect:
+// Smoother (dsp-smth): a cut-only, 32-band spectral compressor on ps::SpectralEngine (base N 1024, hop N / 4,
+// latency N), measured from the reference (see the gain computer below). The algorithm is the steps of Smoother.h;
+// this file adds the choices the header leaves open:
 //   - Detector of a lane: Stereo / T/S = the mean of both channels' bin powers (a power-sum detector scaled so a mono
 //     signal reads its per-channel level); M/S = each channel alone. X (b) is in dB re a full-scale sine per octave.
-//   - Tone weights the excess, not the reference: R (b) is the power mean of the UNtilted X over the neighbourhood and
-//     E = X' - R - margin. (With a tilted reference the tilt cancels in X' - R over a symmetric +-1 octave
-//     neighbourhood and Tone would do almost nothing.) + Tone = higher threshold in the highs = brighter.
 //   - Detector integration: X uses the band power integrated with tau = clamp (4 / bandwidth, 5 ms, 40 ms) (a
-//     time x bandwidth product of 4), so the narrow low bands do not flicker on noise. The reference uses this
-//     hop's raw band powers instead, so it always rises with a broadband hit before X can.
-//   - Reference ballistics: the 250 ms one-pole acts on a falling reference only; a rising reference is taken at
-//     once. So a broadband hit (all bands up together) never stands out from its neighbourhood and transients pass;
-//     right after a loud hit the reference decays at 250 ms (the module is conservative there, never aggressive).
+//     time x bandwidth product of 4), so the narrow low bands do not flicker on noise.
 //   - Amount ramps linearly over 50 ms (per hop); Tone and the region limits glide with a 30 ms one-pole per hop; a
 //     mode change runs the final curve through an extra 80 ms one-pole for 300 ms. The pole is eased away over
 //     the last 80 ms, so changing material cannot keep the extra smoothing active indefinitely.
 //   - The gate uses X (unweighted). A band whose reduction released to within 1e-6 dB of 0 is set to exactly 0, so
 //     the module returns to an exact null (idle skip) once every band has released.
-//   - Region solo: per bin gain = the raised-cosine region mask at the bin's frequency (floored at -100 dB), so the
-//     output is the input inside the region; the detector, ballistics, meters and learn keep running meanwhile.
-//   - Learn: E_full = X' - R with A = 1 and no region; gated bands and bands with an empty neighbourhood score 0.
+//   - Region solo (a monitor): per bin gain = 1 inside the region, a raised cosine to 0 over 1/6 octave outside
+//     (floored at -100 dB); the detector, ballistics, meters and learn keep running meanwhile.
+//   - Learn (our own): scores what stands more than 3 dB above the frame's mean band level (gated bands score 0).
 //     reset() keeps the scores (only a new learnRegion start clears them).
 //   - Frames the engine flags silent hold every state, publish the band levels at -150 dB and return unity.
 namespace ps
@@ -69,21 +62,32 @@ struct ScopedFlushDenormals
 struct ScopedFlushDenormals {};
 #endif
 
+// The gain computer, measured from the reference (out/importer/tools/spsfit.py, spsfit2.py: pink noise in level steps,
+// Amount 60..100, the three styles, tilt -100 / +50 / +100; fit rms 0.3..0.6 dB):
+//   e  = X + 6.98 - 3.44 log2 (f / 1 kHz) - 0.173 tone log2 (f / f_c) - T,  T = -65.1 + (100 - amount) dB
+//        (X: octave density re a full-scale sine per octave, so X + 6.98 is the level of pink noise of that density;
+//        the detector reads per-Hz level, 3.44 dB / octave below the octave density; f_c = the region's centre)
+//   GR = -mask M tanh (r softknee (e, K) / M): a compressor (slope r) that saturates at M
 struct ModeShape
 {
-    double ratio, knee, maxGr;
+    double slope, knee, maxGr;
 };
 
 ModeShape modeShape (SmootherMode m) noexcept
 {
     switch (m)
     {
-        case SmootherMode::Gentle: return { 1.6, 6.0, 6.0 };
-        case SmootherMode::Strong: return { 5.0, 4.0, 18.0 };
+        case SmootherMode::Gentle: return { 0.534, 2.5, 18.1 };
+        case SmootherMode::Strong: return { 1.0, 2.9, 19.8 };
         case SmootherMode::Medium:
-        default:                   return { 2.5, 6.0, 12.0 };
+        default:                   return { 0.772, 6.0, 17.6 };
     }
 }
+
+constexpr double kPinkOffsetDb = 6.98, kDetectorSlopeDb = 3.44, kToneSlopeDb = 0.173;
+constexpr double kThresholdAt100 = -65.1, kThresholdPerPercent = 1.0;
+constexpr double kMaskWidthOct = 1.3;
+constexpr double kLearnMarginDb = 3.0;  // Learn scores what stands this far above the frame's mean band level   // the region edges: raised cosine this wide, centred on each limit
 
 double softKnee (double e, double w) noexcept
 {
@@ -97,8 +101,16 @@ double softKnee (double e, double w) noexcept
 
 double dbToPower (double db) noexcept { return std::pow (10.0, 0.1 * db); }
 
-// Raised-cosine region mask: 1 inside [lo, hi] (log2 Hz), 0 beyond 1/6 octave outside.
+// Region mask (measured: the reference's reduction is half at each limit): raised-cosine edges kMaskWidthOct wide,
+// centred on the limits (log2 Hz); 1 well inside, 0 well outside.
 double regionMask (double l2, double lo, double hi) noexcept
+{
+    auto edge = [] (double x) { const double t = std::clamp (x / kMaskWidthOct + 0.5, 0.0, 1.0); return 0.5 - 0.5 * std::cos (kPi * t); };
+    return edge (l2 - lo) * edge (hi - l2);
+}
+
+// Region solo (a monitor): 1 inside [lo, hi], raised cosine to 0 over 1/6 octave outside.
+double soloMask (double l2, double lo, double hi) noexcept
 {
     const double d = std::max (lo - l2, l2 - hi);
     if (d <= 0.0)
@@ -317,14 +329,12 @@ struct Smoother::Impl final : SpectralEngine::Client
         l.mode = modeIndex;
 
         const ModeShape shape = modeShape (sp.mode);
-        const double slope = 1.0 - 1.0 / shape.ratio;
         const double a = l.amount;
-        const double margin = 12.0 * (1.0 - a);
-        const double tilt = 3.0 * l.tone * 0.01;
+        const double threshold = kThresholdAt100 + (1.0 - a) * 100.0 * kThresholdPerPercent;
+        const double tilt = kToneSlopeDb * l.tone;
+        const double centreL2 = 0.5 * (l.lowL2 + l.highL2);
 
-        // 1. band levels (integrated detector), and this frame's raw densities for the reference (which therefore
-        //    rises with a hit at once, before the integrated X can: transients never read as excess)
-        double q[kB];
+        // 1. band levels (integrated detector)
         double maxX = kFloorDb;
         for (int b = 0; b < kB; ++b)
         {
@@ -332,47 +342,38 @@ struct Smoother::Impl final : SpectralEngine::Client
             const double d = l.det[b] * invWidthOct[b];
             const double xdb = d > 1.0e-15 ? 10.0 * std::log10 (d) : kFloorDb;
             l.x[b] = xdb;
-            q[b] = p[b] * invWidthOct[b];
             maxX = std::max (maxX, xdb);
         }
-        const double gateDb = std::max (-80.0, maxX - 50.0);
-
-        // 3. reference (rises at once, falls with 250 ms)
-        double rnow[kB];
-        for (int b = 0; b < kB; ++b)
-        {
-            if (refCount[b] <= 0)
-            {
-                rnow[b] = l.x[b];
-                continue;
-            }
-            double s = 0.0;
-            for (int c = refLo[b]; c <= refHi[b]; ++c)
-                if (std::abs (c - b) > 1)
-                    s += q[c];
-            s /= (double) refCount[b];
-            rnow[b] = s > 1.0e-15 ? 10.0 * std::log10 (s) : kFloorDb;
-        }
-        for (int b = 0; b < kB; ++b)
-        {
-            if (! l.refInit || rnow[b] >= l.ref[b])
-                l.ref[b] = rnow[b];
-            else
-                l.ref[b] += (rnow[b] - l.ref[b]) * kRefFall;
-        }
         l.refInit = true;
+        const double gateDb = std::max (-80.0, maxX - 50.0);
+        double meanX = 0.0;
+        {
+            int count = 0;
+            for (int b = 0; b < kB; ++b)
+                if (l.x[b] >= gateDb)
+                {
+                    meanX += l.x[b];
+                    ++count;
+                }
+            meanX = count > 0 ? meanX / count : kFloorDb;
+        }
 
-        // 2, 4 - 7. tone weighting, excess, gain computer, gate, region mask (+ learn)
+        // 2, 4 - 7. detector level vs the threshold, gain computer, gate, region mask (+ learn)
         double regionPeak = kFloorDb, bestMask = 0.0, bestMaskLevel = kFloorDb;
         for (int b = 0; b < kB; ++b)
         {
-            const bool valid = refCount[b] > 0 && l.x[b] >= gateDb;
-            const double eFull = (l.x[b] - tilt * toneOct[b]) - l.ref[b];
+            const bool valid = l.x[b] >= gateDb;
+            const double level = l.x[b] + kPinkOffsetDb - kDetectorSlopeDb * toneOct[b] - tilt * (bandLog2[b] - centreL2);
+            const double e = level - threshold;
             if (learnRegion)
-                l.learn[b] += valid && eFull > 0.0 ? eFull : 0.0;
+            {
+                // Learn (our own): where the detector level stands out from the frame's mean level (a harsh region)
+                const double eLearn = l.x[b] - meanX - kLearnMarginDb;
+                l.learn[b] += valid && eLearn > 0.0 ? eLearn : 0.0;
+            }
 
             const double m = regionMask (bandLog2[b], l.lowL2, l.highL2);
-            if (m >= 1.0)
+            if (bandLog2[b] >= l.lowL2 && bandLog2[b] <= l.highL2)
                 regionPeak = std::max (regionPeak, l.x[b]);
             if (m > bestMask || (m == bestMask && m > 0.0 && l.x[b] > bestMaskLevel))
             {
@@ -382,7 +383,7 @@ struct Smoother::Impl final : SpectralEngine::Client
 
             double t = 0.0;
             if (valid && m > 0.0 && a > 0.0)
-                t = -a * std::min (shape.maxGr, slope * softKnee (eFull - margin, shape.knee)) * m;
+                t = -m * shape.maxGr * std::tanh (shape.slope * softKnee (e, shape.knee) / shape.maxGr);
             l.target[b] = std::min (0.0, t);
         }
         l.regionPeak = regionPeak > kFloorDb ? regionPeak : bestMaskLevel;
@@ -465,7 +466,7 @@ struct Smoother::Impl final : SpectralEngine::Client
     void fillSoloGains (const Lane& l, float* gain) const noexcept
     {
         for (int k = 0; k < numBins; ++k)
-            gain[k] = (float) std::max (kSoloFloor, regionMask (binLog2[(size_t) k], l.lowL2, l.highL2));
+            gain[k] = (float) std::max (kSoloFloor, soloMask (binLog2[(size_t) k], l.lowL2, l.highL2));
     }
 
     void publish (int set, const Lane& l) noexcept

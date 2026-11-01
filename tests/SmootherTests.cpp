@@ -175,6 +175,24 @@ void learnedRegion (const SmootherMeters& m, int set, double& lowHz, double& hig
 }
 
 double meanGr (const std::vector<double>& v) { double s = 0.0; for (double x : v) s += x; return v.empty() ? 0.0 : s / (double) v.size(); }
+
+// The gain computer's detector level (Smoother.cpp) of a band for this material: the band meter X, averaged after the
+// first second, + 6.98 - 3.44 log2 (f / 1 kHz). The threshold is -65.1 + (100 - Amount) dB, so amountFor (level - m)
+// puts the threshold m dB under that level (e = m).
+double detectorLevel (const std::vector<float>& l, const std::vector<float>& r, double hz)
+{
+    Smoother s;
+    prepare (s);
+    const auto v = harshValues (1.0f, SmootherMode::Medium, 20.0f, 20000.0f);   // threshold +34 dB: measures only
+    s.setParams (v.data());
+    Stereo x { l, r };
+    const int b = bandNear (hz);
+    std::vector<double> xs;
+    run (s, x, kHop, {}, [&] (size_t bi) { if ((double) bi * kHop > kSr) xs.push_back (s.getMeters().bandLevelDb[0][b].load()); });
+    return meanGr (xs) + 6.98 - 3.44 * std::log2 (smootherBandHz (b, kSr) / 1000.0);
+}
+
+float amountFor (double thresholdDb) { return (float) std::clamp (100.0 - (thresholdDb + 65.1), 0.0, 100.0); }
 } // namespace
 
 //==============================================================================
@@ -268,7 +286,7 @@ TEST_CASE ("smth. amount 0 is a bit-exact delay by N (every mode, channel mode, 
     CHECK_EQ (worstMismatch, 0);
 }
 
-TEST_CASE ("smth. tames a +9 dB resonance at 3 kHz, an octave away moves < 0.5 dB")
+TEST_CASE ("smth. a +9 dB resonance at 3 kHz over the threshold is cut, its neighbours under it are not")
 {
     const size_t period = 1u << 17;
     const auto base = shapedNoise (period, 21u, -20.0, [] (double f) { return bandDb (f, 3000.0, 9.0); });
@@ -280,7 +298,8 @@ TEST_CASE ("smth. tames a +9 dB resonance at 3 kHz, an octave away moves < 0.5 d
     {
         Smoother s;
         prepare (s);
-        const auto v = harshValues (100.0f, mode);
+        // the threshold 2 dB above the highest-reading neighbour (the detector reads lower bands higher)
+        const auto v = harshValues (amountFor (detectorLevel (inL, inR, 1500.0) + 2.0), mode);
         s.setParams (v.data());
         Stereo x { inL, inR };
         const int b3k = bandNear (3000.0), b500 = bandNear (500.0), b15 = bandNear (1500.0), b6 = bandNear (6000.0);
@@ -313,7 +332,7 @@ TEST_CASE ("smth. tames a +9 dB resonance at 3 kHz, an octave away moves < 0.5 d
         note (tag + ": measured change at that band's centre (dB)", probe);
         note (tag + ": mean meter GR 1.5 kHz (dB)", meanGr (gr15));
         note (tag + ": mean meter GR 6 kHz (dB)", meanGr (gr6));
-        CHECK (c3 <= (mode == SmootherMode::Medium ? -3.0 : -4.0));
+        CHECK (c3 <= (mode == SmootherMode::Medium ? -1.5 : -1.8));   // the resonance only partly fills its Mel band
         CHECK (std::abs (c15) < 0.5);
         CHECK (std::abs (c6) < 0.5);
         CHECK (std::abs (c500) < 0.05);
@@ -322,20 +341,21 @@ TEST_CASE ("smth. tames a +9 dB resonance at 3 kHz, an octave away moves < 0.5 d
     }
 }
 
-TEST_CASE ("smth. leaves plain pink noise alone")
+TEST_CASE ("smth. pink noise under the threshold is untouched, over it the region is cut")
 {
-    // Amount 100 puts the threshold at the neighbourhood level, so flat material sits at the centre of the soft knee
-    // (a small broadband background, Smoother.h); Amount 50 (6 dB margin) leaves it untouched.
-    for (float amount : { 100.0f, 50.0f })
-        for (auto mode : { SmootherMode::Gentle, SmootherMode::Medium, SmootherMode::Strong })
+    // the reference's law: an absolute threshold that Amount moves (Smoother.h)
+    const Stereo pink { pstest::pinkNoise (0.5, 6.0, kSr, 31u), pstest::pinkNoise (0.5, 6.0, kSr, 32u) };
+    const double top = detectorLevel (pink.l, pink.r, 2000.0);   // the highest-reading band of the region
+    for (auto mode : { SmootherMode::Gentle, SmootherMode::Medium, SmootherMode::Strong })
+        for (double margin : { -4.0, 10.0 })   // threshold 4 dB above / 10 dB under the region's top level
         {
             Smoother s;
             prepare (s);
-            const auto v = harshValues (amount, mode, 20.0f, 20000.0f);
+            const auto v = harshValues (amountFor (top - margin), mode, 2000.0f, 8000.0f);
             s.setParams (v.data());
-            Stereo x { pstest::pinkNoise (0.5, 6.0, kSr, 31u), pstest::pinkNoise (0.5, 6.0, kSr, 32u) };
-            double maxGr = 0.0, sum = 0.0;
-            int count = 0;
+            Stereo x = pink;
+            double maxGr = 0.0, sumIn = 0.0, outside = 0.0;
+            int countIn = 0;
             run (s, x, kHop, {}, [&] (size_t bi)
             {
                 if ((double) bi * kHop < 1.0 * kSr)
@@ -343,24 +363,27 @@ TEST_CASE ("smth. leaves plain pink noise alone")
                 const auto& m = s.getMeters();
                 for (int band = 0; band < kSmootherBands; ++band)
                 {
-                    maxGr = std::min (maxGr, (double) m.grDb[0][band].load());
-                    sum += m.grDb[0][band].load();
-                    ++count;
+                    const double g = m.grDb[0][band].load(), hz = smootherBandHz (band, kSr);
+                    maxGr = std::min (maxGr, g);
+                    if (hz >= 2800.0 && hz <= 5700.0)
+                    {
+                        sumIn += g;
+                        ++countIn;
+                    }
+                    if (hz < 500.0)
+                        outside = std::min (outside, g);
                 }
             });
-            const double mean = sum / std::max (1, count);
             const std::string tag = std::string (mode == SmootherMode::Gentle ? "Gentle" : (mode == SmootherMode::Medium ? "Medium" : "Strong"))
-                                    + " Amount " + std::to_string ((int) amount);
-            note (tag + ": deepest band GR on plain pink (dB)", maxGr);
-            note (tag + ": mean band GR (dB)", mean);
-            if (amount > 99.0f)
-            {
-                CHECK (maxGr >= (mode == SmootherMode::Strong ? -1.25 : -1.0));
-                CHECK (mean > -0.4);
-            }
+                                    + (margin < 0.0 ? ", threshold above the material" : ", threshold 10 dB under it");
+            note (tag + ": deepest band GR (dB)", maxGr);
+            note (tag + ": mean GR inside the region (dB)", sumIn / std::max (1, countIn));
+            if (margin < 0.0)
+                CHECK (maxGr > -0.05);
             else
             {
-                CHECK (maxGr > -0.05);
+                CHECK (sumIn / std::max (1, countIn) < -3.0);
+                CHECK_EQ (outside, 0.0);
             }
         }
 }
@@ -442,7 +465,7 @@ TEST_CASE ("smth. mode glide ends on a continuously changing spectrum")
     Smoother changed, settled;
     prepare (changed);
     prepare (settled);
-    auto v = harshValues (100.0f, SmootherMode::Strong);
+    auto v = harshValues (amountFor (detectorLevel (in, in, 3000.0)), SmootherMode::Strong);
     v.both ("att", 1.0f).both ("rel", 2.0f);
     settled.setParams (v.data());
     Stereo a { in, in }, b { in, in };
@@ -483,6 +506,8 @@ TEST_CASE ("smth. mode glide ends on a continuously changing spectrum")
 
 TEST_CASE ("smth. same behaviour at 44.1 and 96 kHz")
 {
+    double tones[2] {};
+    int rate = 0;
     for (double sr : { 44100.0, 96000.0 })
     {
         const size_t n = (size_t) (5.0 * sr);
@@ -501,7 +526,8 @@ TEST_CASE ("smth. same behaviour at 44.1 and 96 kHz")
         note ("sample rate " + std::to_string ((int) sr) + ": latency", lat);
         note ("sample rate " + std::to_string ((int) sr) + ": change of a harsh 3 kHz tone (dB)", tone);
         CHECK_EQ (lat, sr > 50000.0 ? 2048 : 1024);
-        CHECK (tone < -3.0 && tone > -12.0 - 1.0e-3);
+        CHECK (tone < -3.0);
+        tones[rate++] = tone;
         // Amount 0 at this rate: exact delay
         Smoother z;
         prepare (z, sr);
@@ -514,6 +540,8 @@ TEST_CASE ("smth. same behaviour at 44.1 and 96 kHz")
             exact = exact && y.l[i] == l[i - (size_t) lat];
         CHECK (exact);
     }
+    note ("change of the harsh tone, 96 kHz - 44.1 kHz (dB)", tones[1] - tones[0]);
+    CHECK (std::abs (tones[1] - tones[0]) < 0.5);
 }
 
 TEST_CASE ("smth. only cuts: every band gain <= 0 dB and no band gets louder under random sweeps")
@@ -627,14 +655,14 @@ TEST_CASE ("smth. modes are ordered and respect their maximum cut")
             });
             const double tone = 20.0 * std::log10 (std::abs (pstest::toneOf (x.l, (size_t) (2.0 * kSr), (size_t) (2.0 * kSr), 3200.0, kSr))
                                                     / std::abs (pstest::toneOf (in, (size_t) (2.0 * kSr) - kN, (size_t) (2.0 * kSr), 3200.0, kSr)));
-            const double cap = mode == 0 ? 6.0 : (mode == 1 ? 12.0 : 18.0);
+            const double cap = mode == 0 ? 18.1 : (mode == 1 ? 17.6 : 19.8);   // M of each style (Smoother.h)
             const std::string tag = mode == 0 ? "Gentle" : (mode == 1 ? "Medium" : "Strong");
             note (tag + ": extreme sine, change of the tone (dB)", tone);
             note (tag + ": deepest reduction on the meters (dB)", deepest);
             note (tag + ": mean meter GR at the tone's band (dB)", meanGr (g));
             CHECK (deepest >= -cap - 1.0e-4);
             CHECK (tone >= -cap - 0.1);
-            CHECK (meanGr (g) < -0.75 * cap);   // a one-band resonance: 0.8 x cap after the [0.2 0.6 0.2] smoothing
+            CHECK (meanGr (g) < -0.75 * cap);   // a tone this far over the threshold sits near the cap
         }
     }
 }
@@ -652,7 +680,7 @@ TEST_CASE ("smth. tone: + less reduction of the highs, - more")
     {
         Smoother s;
         prepare (s);
-        auto v = harshValues (100.0f, SmootherMode::Medium, 3000.0f, 16000.0f);
+        auto v = harshValues (amountFor (detectorLevel (inL, inR, 8000.0) - 6.0), SmootherMode::Medium, 3000.0f, 16000.0f);
         v.both ("tone", tones[i]);
         s.setParams (v.data());
         Stereo x { inL, inR };
@@ -662,8 +690,8 @@ TEST_CASE ("smth. tone: + less reduction of the highs, - more")
     note ("change at 8 kHz, Tone -100 (dB)", g[0]);
     note ("change at 8 kHz, Tone 0 (dB)", g[1]);
     note ("change at 8 kHz, Tone +100 (dB)", g[2]);
-    CHECK (g[2] - g[1] >= 2.0);
-    CHECK (g[1] - g[0] >= 2.0);
+    CHECK (g[2] - g[1] >= 1.5);
+    CHECK (g[1] - g[0] >= 1.5);
 }
 
 TEST_CASE ("smth. attack and release timing")
@@ -680,13 +708,15 @@ TEST_CASE ("smth. attack and release timing")
     for (size_t i = 0; i < total; ++i)
         in[i] = bed[i % period] + (i >= onset && i < offset ? burstGain * burst[i % period] : 0.0f);
     const int b = bandNear (3200.0);
+    const std::vector<float> steadyBurst (in.begin() + (std::ptrdiff_t) onset, in.begin() + (std::ptrdiff_t) offset);
+    const float amount = amountFor (detectorLevel (steadyBurst, steadyBurst, 3200.0) - 6.0);
 
     // per-hop trace of the band's GR for given attack / release
     auto trace = [&] (float att, float rel)
     {
         Smoother s;
         prepare (s);
-        auto v = harshValues (100.0f, SmootherMode::Medium);
+        auto v = harshValues (amount, SmootherMode::Medium);
         v.both ("att", att).both ("rel", rel);
         s.setParams (v.data());
         Stereo x { in, in };
@@ -735,14 +765,14 @@ TEST_CASE ("smth. attack and release timing")
     }
 }
 
-TEST_CASE ("smth. transients pass")
+TEST_CASE ("smth. hits under the threshold pass; the attack decides how much of a short hit is caught")
 {
     const size_t period = 1u << 17;
     const auto bed = shapedNoise (period, 81u, -26.0, [] (double) { return 0.0; });
     const auto hit = shapedNoise (period, 83u, -26.0, [] (double) { return 0.0; });
     const size_t total = (size_t) (6.0 * kSr);
 
-    // 1. broadband hits (+15 dB, 30 ms, every 500 ms): nothing stands out from its neighbourhood
+    // 1. broadband hits (+15 dB, 30 ms, every 500 ms) with the threshold above them: untouched
     {
         std::vector<float> in (total);
         for (size_t i = 0; i < total; ++i)
@@ -753,7 +783,8 @@ TEST_CASE ("smth. transients pass")
         }
         Smoother s;
         prepare (s);
-        const auto v = harshValues (100.0f, SmootherMode::Medium, 20.0f, 20000.0f);
+        // the region covers everything: the threshold 20 dB above the highest-reading band (the lowest)
+        const auto v = harshValues (amountFor (detectorLevel (bed, bed, 100.0) + 20.0), SmootherMode::Medium, 20.0f, 20000.0f);
         s.setParams (v.data());
         Stereo x { in, in };
         double deepest = 0.0;
@@ -784,11 +815,15 @@ TEST_CASE ("smth. transients pass")
         }
         double peakGr[2] {};
         const float atts[2] { 1.0f, 50.0f };
+        std::vector<float> steadyHit ((size_t) (2.0 * kSr));
+        for (size_t i = 0; i < steadyHit.size(); ++i)
+            steadyHit[i] = bed[i % period] + (float) g * ring[i % period];
+        const float amount = amountFor (detectorLevel (steadyHit, steadyHit, 3200.0) - 8.0);
         for (int i = 0; i < 2; ++i)
         {
             Smoother s;
             prepare (s);
-            auto v = harshValues (100.0f, SmootherMode::Medium);
+            auto v = harshValues (amount, SmootherMode::Medium);
             v.both ("att", atts[i]).both ("rel", 30.0f);
             s.setParams (v.data());
             Stereo x { in, in };

@@ -427,14 +427,14 @@ TEST_CASE ("import.p2. smoother: amount, the older threshold heuristic and the s
                                                                     { "region start", "2500" },
                                                                     { "region end", "20000" } });
     REQUIRE (older.ok);
-    CHECK (near (value (older, "smth.a.amount"), 34.0));
+    CHECK (near (value (older, "smth.a.amount"), 54.9));   // T = -65.1 + (100 - amount)
     CHECK (near (value (older, "smth.b.amount"), 0.0));
     CHECK (near (value (older, "smth.a.low"), 2500.0));
     CHECK (near (value (older, "smth.a.high"), 20000.0));
     CHECK (hasNoteContaining (older, "threshold converted"));
     CHECK_EQ (older.report.unmapped, 0);
 
-    const double cases[][2] { { -3.0, 13.6 }, { -45.0, 64.0 }, { -80.0, 70.0 }, { -0.5, 0.0 }, { 6.0, 0.0 } };
+    const double cases[][2] { { -3.0, 37.9 }, { -45.0, 79.9 }, { -80.0, 100.0 }, { -0.5, 0.0 }, { 6.0, 0.0 } };
     for (const auto& c : cases)
     {
         const auto q = moduleFile (ModuleType::Smoother, "100000",
@@ -467,7 +467,7 @@ TEST_CASE ("import.p2. smoother: amount, the older threshold heuristic and the s
     // Without writer metadata, the stored control remains the only available era evidence.
     const auto unknownWriter = moduleFile (ModuleType::Smoother, "0",
                                            { { "threshold (older files)", "-20", -1, true } });
-    CHECK (near (value (unknownWriter, "smth.b.amount"), 34.0));
+    CHECK (near (value (unknownWriter, "smth.b.amount"), 54.9));
 
     // Reduction style: light / medium / heavy -> Gentle / Medium / Strong; 3 is not imported.
     for (int i = 0; i <= 2; ++i)
