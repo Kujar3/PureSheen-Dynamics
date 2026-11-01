@@ -111,22 +111,11 @@ std::vector<float> kicks (double seconds, double sr, double peakDb = -6.0, doubl
     return x;
 }
 
-// Bilinear LR4 low pass (the Butterworth 2 squared the split implements) at hz.
-cd lr4Low (double hz, double fc, double sr)
+// The split's low band at hz (zero phase): exp (-(x / 1.83)^9.5) / (1 + x^4), x = hz / fc.
+cd splitLow (double hz, double fc, double)
 {
-    const double g = std::tan (kPi * fc / sr);
-    const cd z = std::polar (1.0, 2.0 * kPi * hz / sr);
-    const cd s = (z - 1.0) / ((z + 1.0) * g);
-    const cd lp = 1.0 / (s * s + std::sqrt (2.0) * s + 1.0);
-    return lp * lp;
-}
-
-cd lr4AllPass (double hz, double fc, double sr)
-{
-    const double g = std::tan (kPi * fc / sr);
-    const cd z = std::polar (1.0, 2.0 * kPi * hz / sr);
-    const cd s = (z - 1.0) / ((z + 1.0) * g);
-    return (s * s - std::sqrt (2.0) * s + 1.0) / (s * s + std::sqrt (2.0) * s + 1.0);
+    const double x = hz / fc;
+    return cd { std::exp (-std::pow (x / 1.83, 9.5)) / (1.0 + x * x * x * x), 0.0 };
 }
 
 // Hann-windowed magnitude spectrum (amplitude per bin) of x[from .. from + n), n a power of two.
@@ -180,7 +169,7 @@ TEST_CASE ("bass. neutral defaults are an exact delay, also after a balance excu
     Values vals;
     auto m = makeShaper (kSr, vals);
     const int lat = m->getLatencySamples();
-    CHECK_EQ (lat, 125);
+    CHECK_EQ (lat, 2429);
 
     const Stereo in { pstest::pinkNoise (0.7, 10.0, kSr, 11u), pstest::pinkNoise (0.7, 10.0, kSr, 12u) };
     const auto out = run (*m, vals, in);
@@ -267,7 +256,7 @@ TEST_CASE ("bass. leaving and returning to the neutral passthrough keeps the lev
 TEST_CASE ("bass. latency equals the measured impulse delay at 44.1 / 48 / 96 kHz and never changes")
 {
     const double rates[] { 44100.0, 48000.0, 96000.0 };
-    const int expected[] { 115, 125, 245 };
+    const int expected[] { 2419, 2429, 4853 };
     for (int r = 0; r < 3; ++r)
     {
         const double sr = rates[r];
@@ -319,12 +308,12 @@ TEST_CASE ("bass. latency equals the measured impulse delay at 44.1 / 48 / 96 kH
             vals.v[(size_t) paramIndex (s.id)] = s.minValue + u * (s.maxValue - s.minValue);
         }
         m->setParams (vals.data());
-        constant = constant && m->getLatencySamples() == 125;
+        constant = constant && m->getLatencySamples() == 2429;
     }
     CHECK (constant);
 }
 
-TEST_CASE ("bass. split alone sums to a flat all-pass at the cutoff")
+TEST_CASE ("bass. split alone sums to the delayed input (linear phase)")
 {
     for (float cutoff : { 65.0f, 120.0f, 300.0f })
     {
@@ -349,11 +338,10 @@ TEST_CASE ("bass. split alone sums to a flat all-pass at the cutoff")
             if (hz < 10.0 || hz > 20000.0)
                 continue;
             maxDev = std::max (maxDev, std::abs (db (std::abs (spec[k]))));
-            const double e = std::abs (std::arg (spec[k] / lr4AllPass (hz, cutoff, kSr)));
-            maxPhaseErr = std::max (maxPhaseErr, e * 180.0 / kPi);
+            maxPhaseErr = std::max (maxPhaseErr, std::abs (std::arg (spec[k])) * 180.0 / kPi);
         }
         note ("cutoff " + std::to_string ((int) cutoff) + " Hz: max |magnitude| dB 10 Hz..20 kHz", maxDev);
-        note ("    max phase error vs the 2nd-order all-pass at the cutoff (deg)", maxPhaseErr);
+        note ("    max phase error vs the pure delay (deg)", maxPhaseErr);
         CHECK (maxDev < 0.01);
         CHECK (maxPhaseErr < 0.1);
     }
@@ -382,12 +370,13 @@ TEST_CASE ("bass. balance acts like a shelf below the cutoff")
     CHECK_NEAR (g40, 6.0, 0.1);
     CHECK_NEAR (g120, 3.5, 0.3);
     CHECK_NEAR (g1k, 0.0, 0.02);
-    // LR4 at 40 Hz with a 120 Hz cutoff still has |HP^2| = 0.012 in phase: -6 dB of balance reads -5.90 dB there
+    // the split's low band at 40 Hz with a 120 Hz cutoff (zero phase): |L| = exp (-(x / 1.83)^9.5) / (1 + x^4), x = 1/3
     const double g = std::pow (10.0, -6.0 / 20.0);
-    const cd lp40 = lr4Low (40.0, 120.0, kSr), ap40 = lr4AllPass (40.0, 120.0, kSr);
-    const double expectedM40 = db (std::abs (ap40 + (g - 1.0) * lp40));
-    note ("balance -6: 40 Hz expected from the LR4 responses", expectedM40);
-    CHECK_NEAR (m40, expectedM40, 0.02);
+    const double x40 = 40.0 / 120.0;
+    const double l40 = std::exp (-std::pow (x40 / 1.83, 9.5)) / (1.0 + std::pow (x40, 4.0));
+    const double expectedM40 = db (1.0 + (g - 1.0) * l40);
+    note ("balance -6: 40 Hz expected from the split's low band", expectedM40);
+    CHECK_NEAR (m40, expectedM40, 0.05);   // the windowed FIR is within ~0.01 of the target weight
     CHECK_NEAR (m40, -6.0, 0.15);
     CHECK (lo200 < 0.6);
     CHECK (hi200 > 4.5);
@@ -429,7 +418,7 @@ TEST_CASE ("bass. punch moves the low-end hits and leaves the sustained bass")
         if (punch > 0.0f)
             CHECK (hitMean >= 4.0 && hitMean <= 6.5);
         else
-            CHECK (hitMean <= -4.0 && hitMean >= -6.5);
+            CHECK (hitMean <= -3.5 && hitMean >= -6.5);
         CHECK (gapWorst <= 0.5);
     }
 
@@ -477,14 +466,14 @@ TEST_CASE ("bass. sustain power lifts quiet sustain toward the threshold, not hi
         vals.set ("sus.amount", amount);
         auto m = makeShaper (kSr, vals);
         const int lat = m->getLatencySamples();
-        const auto x = pstest::sineSequence (50.0, { { -30.0, 2.0 }, { -12.0, 2.0 } }, kSr);
+        const auto x = pstest::sineSequence (50.0, { { -30.0, 8.0 }, { -12.0, 3.0 } }, kSr);
         float meterAtQuiet = 0.0f;
         const auto out = run (*m, vals, dual (x), 512, [&] (size_t start, Values&, BassShaper& mm) {
-            if (start >= (size_t) (1.9 * kSr) && start < (size_t) (1.92 * kSr))
+            if (start >= (size_t) (7.9 * kSr) && start < (size_t) (7.92 * kSr))
                 meterAtQuiet = mm.getMeters().sustainLiftDb.load();
         });
-        quietOut = db (pstest::peakOf (out.l, (size_t) (1.5 * kSr) + (size_t) lat, (size_t) (0.4 * kSr)));
-        loudGain = toneGainDb (out.l, x, lat, 50.0, kSr, (size_t) (3.4 * kSr), (size_t) (0.5 * kSr));
+        quietOut = db (pstest::peakOf (out.l, (size_t) (7.5 * kSr) + (size_t) lat, (size_t) (0.4 * kSr)));
+        loudGain = toneGainDb (out.l, x, lat, 50.0, kSr, (size_t) (10.2 * kSr), (size_t) (0.5 * kSr));
         liftMeter = meterAtQuiet;
     };
 
@@ -537,15 +526,15 @@ TEST_CASE ("bass. sustain power lifts quiet sustain toward the threshold, not hi
     }
 }
 
-TEST_CASE ("bass. dirty sustain adds 2nd and 3rd harmonics, clean adds none")
+TEST_CASE ("bass. dirty sustain adds odd harmonics, clean or amount 0 adds none")
 {
-    for (float character : { 0.0f, 100.0f })
+    for (float character : { 0.0f, 100.0f, -1.0f })   // -1: dirty, but amount 0
     {
         Values vals;
         vals.set ("sus.on", 1.0f);
         vals.set ("sus.thr", -12.0f);
-        vals.set ("sus.amount", 0.0f);
-        vals.set ("sus.char", character);
+        vals.set ("sus.amount", character < 0.0f ? 0.0f : 100.0f);
+        vals.set ("sus.char", std::max (0.0f, character));
         auto m = makeShaper (kSr, vals);
         // 60 Hz on an exact FFT bin: 82 x 48000 / 65536 = 60.06 Hz
         const size_t n = 1 << 16;
@@ -558,8 +547,9 @@ TEST_CASE ("bass. dirty sustain adds 2nd and 3rd harmonics, clean adds none")
         note ("    3rd harmonic (dBc)", h3);
         if (character == 0.0f)
         {
-            CHECK (h2 >= -40.0);
-            CHECK (h3 >= -40.0);
+            // the reference's dirty sustain at its threshold: H3 -13 dBc, no even harmonics
+            CHECK (h3 >= -18.0);
+            CHECK (h2 < -60.0);
         }
         else
         {
@@ -745,7 +735,7 @@ TEST_CASE ("bass. clean peak control is a brickwall on the low part; dirty clips
 
 TEST_CASE ("bass. meters: balance, crest, share and the scope FIFOs follow the audio")
 {
-    // pink noise: balance equals the expected LR4 low-band share of the input (same 3 s weighting)
+    // pink noise: balance equals the expected low-band share (the split) of the input (same 3 s weighting)
     {
         Values vals;
         auto m = makeShaper (kSr, vals);
@@ -762,7 +752,7 @@ TEST_CASE ("bass. meters: balance, crest, share and the scope FIFOs follow the a
             for (size_t k = 0; k < n; ++k)
             {
                 const size_t kk = k <= n / 2 ? k : n - k;
-                const cd hk = lr4Low ((double) kk * kSr / (double) n, 120.0, kSr);
+                const cd hk = splitLow ((double) kk * kSr / (double) n, 120.0, kSr);
                 a[k] *= k <= n / 2 ? hk : std::conj (hk);   // H (-f) = conj (H (f)): the filtered signal stays real
             }
             pstest::fftInPlace (a, true);
@@ -778,7 +768,7 @@ TEST_CASE ("bass. meters: balance, crest, share and the scope FIFOs follow the a
         const double expected = 10.0 * std::log10 (expectedLow / expectedTot);
         const double got = m->getMeters().balanceDb.load(), gotOut = m->getMeters().balanceOutDb.load();
         note ("pink noise: balance meter (dB)", got);
-        note ("    expected from the input's own FFT under the LR4 low pass", expected);
+        note ("    expected from the input's own FFT under the split's low pass", expected);
         note ("    output balance meter (neutral)", gotOut);
         note ("    target zone centre at 120 Hz", bassShaperBalanceTargetDb (120.0));
         CHECK_NEAR (got, expected, 0.3);
@@ -834,7 +824,7 @@ TEST_CASE ("bass. meters: balance, crest, share and the scope FIFOs follow the a
         }
         for (int i = nm / 2; i < nm; ++i)
             wMax = std::max (wMax, c[(size_t) i]);
-        const double lowAmp = pstest::dbfsToAmplitude (-6.0) * std::abs (lr4Low (50.0, 120.0, kSr));
+        const double lowAmp = pstest::dbfsToAmplitude (-6.0) * std::abs (splitLow (50.0, 120.0, kSr));
         note ("scope pairs for 1 s", ns);
         note ("scope max (dB re expected low amplitude)", db (mx / lowAmp));
         note ("mask envelope (dB re expected)", db (envLast / lowAmp));

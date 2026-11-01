@@ -1,11 +1,14 @@
 #include "dsp/BassShaper.h"
 
+#include "core/Fft.h"
+#include "dsp/Convolver.h"
 #include "dsp/Envelope.h"
 #include "dsp/Oversampler.h"
 #include "dsp/Quadrature.h"
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <vector>
 
 #if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__SSE__)
@@ -15,23 +18,19 @@
 
 // Bass Shaper (dsp-bass). Contract and signal flow: BassShaper.h. Choices made here (the header leaves them open):
 //
-// - Split: a private 2-band Linkwitz-Riley 24 dB/oct split (two trapezoidal state-variable Butterworth sections per
-//   band, double precision; LP^2 + HP^2 = the 2nd-order all-pass at the cutoff, exactly, so low + high is flat and the
-//   bands are in phase). It behaves exactly like ps::Crossover's Analog mode with 2 bands, but without the two unused
-//   splits ps::Crossover always runs (their all-passes at 1 and 6 kHz would rotate the phase of the mids and highs of
-//   a module that only works below 300 Hz) and at a third of its cost. The cutoff glides in the log domain (20 ms time
-//   constant, coefficients per sample; the SVF stays transient-free under modulation).
+// - Split (measured: the reference's split is linear phase and sums to the delayed input): low = FIR (x), a
+//   zero-phase low pass delayed by its half-length D, high = x (n - D - P) - low (so low + high is exactly the delayed
+//   input). Its magnitude is the LR4 low pass times a steep taper, |L (f)| = exp (-(x / 1.83)^9.5) / (1 + x^4) with
+//   x = f / cutoff (the reference's balance render: 0.83 / 0.68 / 0.49 / 0.30 / 0.14 / 0.03 at 0.68 / 0.83 / 1 / 1.23 /
+//   1.5 / 1.84 x the cutoff; the shape is assumed to scale with the cutoff). Designed by frequency sampling, Kaiser
+//   (beta 8) over 2 D + 1 taps, D = 2048 x the rate family (46 ms at 44.1 kHz; max error 0.02 at a 65 Hz cutoff),
+//   normalised to unity at DC; ps::Convolver (partition P = 256 x family) runs it. A moving cutoff redesigns the kernel
+//   (on the audio thread, allocation-free, about once per partition while it glides); the convolver crossfades the
+//   kernels over one partition.
 // - Neutral switch: the whole processing always runs (warm states, meters work while every section is off). At
-//   neutral settings the processed signal is the split's all-pass of the input, which is -180 degrees at the cutoff,
-//   so a plain crossfade with the exact delay (what ps::Crossover does for 1 <-> N bands) would null a tone at the
-//   cutoff halfway through (and dip 2.75 dB an octave either side). Instead the transition is phase-continuous:
-//   x_D fades (10 ms) into d = AP (x_D), a 2nd-order all-pass parked at 8 Hz (the fade dips at most 0.2 dB at 40 Hz,
-//   1.6 dB at 20 Hz, for a few ms); d's all-pass then glides to the cutoff at a speed proportional to its frequency
-//   (0.25 ln-units per second per Hz, i.e. ~0.11 e-folds per own group delay; constant below 25 Hz), where it equals
-//   the split's sum; then d fades (20 ms) into the processed signal. A time-varying all-pass is not exactly
-//   magnitude-flat: tones stay within +-0.65 dB during the glide (measured). Engaging takes 0.3-0.36 s before the new
-//   settings are fully heard; returning starts once the controls have been neutral and every smoother has settled
-//   for 250 ms (automation that only passes through 0 does not toggle it) and runs the steps backwards.
+//   neutral settings the processed signal equals the delayed input (the split is complementary), so engaging and
+//   returning are a plain 20 ms raised-cosine crossfade; returning starts once the controls have been neutral and
+//   every smoother has settled for 250 ms (automation that only passes through 0 does not toggle it).
 // - Dirty sustain: the header's normalisation u = v / A would let u^3 explode for a sustain far above the threshold
 //   (thr -40 dB, a -6 dBFS bass: u = 50). We normalise by A_eff = max (A, hold), hold = a peak hold of the lifted
 //   sustain (max over both channels, held 30 ms - re-armed by any peak within 0.01 dB of it - then released with a
@@ -45,8 +44,8 @@
 //   sustain lift would raise it). m^2 never exceeds the squared envelope of a steady tone (no ripple is added), but
 //   it reaches the envelope within a quarter cycle of an onset. The slow envelope Ps keeps the quadrature power alone
 //   (its lag only delays its 80 ms rise, which keeps the first ~20 ms of a hit fully transient). Both quadrature
-//   detectors run at 24..48 kHz (every 2nd sample at 44.1 / 48 kHz, 4th at 88.2 / 96 kHz, 8th above): the LR4 low band
-//   has no content up there to alias (< -100 dB above 6 kHz).
+//   detectors run at 24..48 kHz (every 2nd sample at 44.1 / 48 kHz, 4th at 88.2 / 96 kHz, 8th above): the low band
+//   has no content up there to alias (the split's stopband is below -80 dB).
 // - Sustain / peak sections fade on and off (section enable); thresholds, amount, characters, the mix, balance and
 //   punch are smoothed by a critically damped two-stage one-pole (6 ms per stage: 90 % after ~23 ms), which has no kink
 //   (a linear 20 ms ramp of a 24 dB balance jump puts a corner into the waveform). The sustain threshold moves both
@@ -75,12 +74,15 @@ namespace
     constexpr double kSmoothStageMs = 6.0;   // per stage of Smooth2: 90 % of a step after ~23 ms, settled < 60 ms
     constexpr double kLn10Over20 = 0.11512925464970229;   // ln (10) / 20
     constexpr double kTenOverLn10 = 4.3429448190325175;   // 10 / ln (10)
-    constexpr double kParkHz = 8.0;           // d's all-pass when parked
-    constexpr double kGlideKappa = 0.25;      // glide speed: ln-units per second per Hz of the all-pass
-    constexpr double kGlideFloorHz = 25.0;    // below this, the speed of a kGlideFloorHz all-pass
+    constexpr int kSplitHalfBase = 2048;      // split FIR half-length at 44.1 / 48 kHz (x the rate family)
+    constexpr int kSplitPartitionBase = 256;
+    constexpr double kSplitTaperX = 1.83, kSplitTaperPow = 9.5, kSplitKaiserBeta = 8.0;
     constexpr double kHoldRefresh = 0.9988;                // -0.01 dB
     constexpr double kRatioOnset = 1.4125375446227544;    // 10^(1.5 / 10): mask starts
     constexpr double kRatioFull = 5.6234132519034912;     // 10^(7.5 / 10): mask fully transient
+    // sustain level release and lift rise (measured: the reference's kicks under sustain power; 150 / 150 ms lifted
+    // them ~4 dB too much between hits)
+    constexpr double kSusReleaseMs = 600.0, kLiftRiseMs = 1000.0;
 
     inline double poleFor (double ms, double sr) noexcept
     {
@@ -89,6 +91,16 @@ namespace
     }
 
     inline float finiteOr (float v, float fallback) noexcept { return std::isfinite (v) ? v : fallback; }
+
+    // Dirty sustain curve (measured: the reference's dirty sustain on a sine at its threshold, H3 / H5 / H7 = -13.3 /
+    // -22.4 / -29.9 dBc): s (u) = k u / (1 + |k u|^p)^(1/p), k = 2.85, p = 1.85, scaled so that s (1) = 1.
+    constexpr double kDirtyK = 2.85, kDirtyP = 1.85;
+    inline double dirtyCurve (double u) noexcept
+    {
+        static const double norm = std::pow (1.0 + std::pow (kDirtyK, kDirtyP), 1.0 / kDirtyP) / kDirtyK;
+        const double v = kDirtyK * u;
+        return norm * v / std::pow (1.0 + std::pow (std::abs (v), kDirtyP), 1.0 / kDirtyP);
+    }
 
     inline void flushTiny (double& v) noexcept
     {
@@ -311,10 +323,16 @@ struct BassShaper::Impl
     BassShaperParams params;
     bool haveParams = false, paramsNeutral = true;
 
-    // split
+    // split (linear-phase FIR low band, complementary high band)
     double curLog = std::log (120.0), tgtLog = std::log (120.0), glide = 0.0;
-    SvfCoeffs xo;
-    SvfState xs[2][4];
+    double designedLog = -1.0;
+    int splitHalf = 2048, splitLatency = 2304;
+    Convolver split;
+    std::unique_ptr<Fft> designFft;
+    std::vector<std::complex<float>> designBuf;
+    std::vector<float> kernel, kaiser;
+    DelayLine splitDelay[2];
+    float bufLow[2][kChunk] {};
 
     // harmonic band limiting (HP 20 Hz, LP 8 x cutoff)
     SvfCoeffs hpCo, lpCo;
@@ -356,17 +374,9 @@ struct BassShaper::Impl
     bool osRunning = true;      // idle (not run) while the dirty clipper cannot be heard
     int osWarmLeft = 0, osWarmSamples = 240;
 
-    // neutral passthrough crossfade
-    // Engaging: x_D -> d (10 ms fade), d's all-pass glides from 8 Hz to the cutoff, d -> processed (20 ms).
-    // d = AP (x_D), a 2nd-order all-pass equal to the split's sum once it sits at the cutoff. Disengaging runs the
-    // same steps backwards (see the notes at the top).
+    // neutral passthrough crossfade (x_D -> processed, 20 ms raised cosine; see the notes at the top)
     double wetTarget = 0.0;
-    double fadeC = 0.0, fadeA = 0.0;      // x_D -> d, d -> processed
-    double stepC = 0.001, stepA = 0.001;
-    double parkLog = std::log (kParkHz), apLog = std::log (kParkHz);   // d's all-pass frequency (log Hz)
-    double glideRate = 0.0, glideFloorRate = 0.0;    // per sample: ln-units x Hz, ln-units
-    SvfCoeffs parkCo, glideCo;
-    SvfState apState[2];
+    double fadeA = 0.0, stepA = 0.001;
     long long neutralSamples = 0, neutralHold = 12000;
 
     // auto gain
@@ -386,7 +396,7 @@ struct BassShaper::Impl
     float bufX[2][kChunk] {}, bufHigh[2][kChunk] {}, bufClean[2][kChunk] {}, bufDry[2][kChunk] {},
           bufDirty[2][kChunk] {};
     float ctlChar[kChunk] {}, ctlMix[kChunk] {}, ctlAp[kChunk] {}, ctlW[kChunk] {};
-    double bufAllPass[2][kChunk] {}, ctlFadeA[kChunk] {}, ctlFadeC[kChunk] {};
+    double ctlFadeA[kChunk] {};
     float fifoA[kChunk / kScopeDecim + 2] {}, fifoB[kChunk / kScopeDecim + 2] {},
           fifoC[kChunk / kScopeDecim + 2] {}, fifoD[kChunk / kScopeDecim + 2] {};
 
@@ -400,14 +410,49 @@ struct BassShaper::Impl
         os.prepare (2, Oversampler::Quality::MinimumPhase, kChunk, 2);
         osWarmSamples = std::max (kChunk, (int) std::lround (0.005 * sr));
         osLatency = os.getLatencySamples();
-        latency = l1 + l2 + osLatency;
+
+        const int family = sr <= 50000.0 ? 1 : (sr <= 100000.0 ? 2 : (sr <= 200000.0 ? 4 : 8));
+        splitHalf = kSplitHalfBase * family;
+        const int taps = 2 * splitHalf + 1;
+        split.prepare (taps, kSplitPartitionBase * family, 2);
+        splitLatency = splitHalf + split.getLatencySamples();
+        int order = 1;
+        while ((1 << order) < 8 * splitHalf)
+            ++order;
+        designFft = std::make_unique<Fft> (order);
+        designBuf.assign ((size_t) designFft->size(), {});
+        kernel.assign ((size_t) taps, 0.0f);
+        kaiser.assign ((size_t) taps, 0.0f);
+        {
+            auto besselI0 = [] (double x)
+            {
+                double sum = 1.0, term = 1.0;
+                for (int k = 1; k < 64; ++k)
+                {
+                    term *= (0.5 * x / k) * (0.5 * x / k);
+                    sum += term;
+                    if (term < 1.0e-12 * sum)
+                        break;
+                }
+                return sum;
+            };
+            const double i0b = besselI0 (kSplitKaiserBeta);
+            for (int t = 0; t < taps; ++t)
+            {
+                const double u = (double) (t - splitHalf) / (double) splitHalf;
+                kaiser[(size_t) t] = (float) (besselI0 (kSplitKaiserBeta * std::sqrt (std::max (0.0, 1.0 - u * u))) / i0b);
+            }
+        }
+        latency = splitLatency + l1 + l2 + osLatency;
 
         for (int c = 0; c < 2; ++c)
         {
             dryDelay[c].prepare (latency);
             dryDelay[c].setDelay (latency);
             highDelay[c].prepare (latency);
-            highDelay[c].setDelay (latency);
+            highDelay[c].setDelay (l1 + l2 + osLatency);
+            splitDelay[c].prepare (splitLatency);
+            splitDelay[c].setDelay (splitLatency);
             l1Delay[c].prepare (l1);
             l1Delay[c].setDelay (l1);
             l2Delay[c].prepare (l2);
@@ -437,9 +482,9 @@ struct BassShaper::Impl
         cWAtt = poleFor (0.5, sr);
         cWRel = poleFor (30.0, sr);
         cSusAtt = poleFor (10.0, sr);
-        cSusRel = poleFor (150.0, sr);
+        cSusRel = poleFor (kSusReleaseMs, sr);
         cLiftFall = poleFor (10.0, sr);
-        cLiftRise = poleFor (150.0, sr);
+        cLiftRise = poleFor (kLiftRiseMs, sr);
         cHoldRel = poleFor (300.0, sr);
         holdSamples = std::max (1, (int) std::lround (0.030 * sr));
         cLimRel = poleFor (50.0, sr);
@@ -449,11 +494,7 @@ struct BassShaper::Impl
         cShare = poleFor (300.0, sr);
         envBlocks = std::max (1, (int) std::ceil (0.030 * sr / kScopeDecim));
         envMax.prepare (envBlocks + 2);
-        stepC = 1.0 / (0.010 * sr);
-        glideRate = kGlideKappa / sr;
-        glideFloorRate = kGlideKappa * kGlideFloorHz / sr;
         stepA = 1.0 / (0.020 * sr);
-        parkCo.set (std::tan (kPi * kParkHz / sr), kSqrt2);
         neutralHold = (long long) std::lround (0.250 * sr);
 
         for (auto* s : { &balSm, &punchSm, &susEnSm, &susThrSm, &susAmountSm, &susCharSm, &peakEnSm, &peakThrSm,
@@ -473,20 +514,49 @@ struct BassShaper::Impl
     void designSplit() noexcept
     {
         const double hz = std::exp (curLog);
-        xo.set (std::tan (kPi * std::min (hz, 0.45 * sr) / sr), kSqrt2);
         lpCo.set (std::tan (kPi * std::min (8.0 * hz, 0.45 * sr) / sr), kSqrt2);
+    }
+
+    // The split's low-pass kernel for the cutoff exp (logHz) (see the notes at the top); false while the convolver
+    // still installs the previous one.
+    bool designKernel (double logHz) noexcept
+    {
+        if (split.isKernelPending (0) || split.isKernelPending (1))
+            return false;
+        const double fc = std::exp (logHz);
+        const int m = designFft->size();
+        for (int k = 0; k <= m / 2; ++k)
+        {
+            const double x = (double) k * sr / ((double) m * fc);
+            const double x2 = x * x;
+            const double mag = std::exp (-std::pow (x / kSplitTaperX, kSplitTaperPow)) / (1.0 + x2 * x2);
+            designBuf[(size_t) k] = { (float) mag, 0.0f };
+            if (k > 0 && k < m / 2)
+                designBuf[(size_t) (m - k)] = { (float) mag, 0.0f };
+        }
+        designFft->inverse (designBuf.data());
+        double sum = 0.0;
+        for (int t = -splitHalf; t <= splitHalf; ++t)
+        {
+            const double h = (double) designBuf[(size_t) ((t + m) % m)].real() * (double) kaiser[(size_t) (t + splitHalf)];
+            kernel[(size_t) (t + splitHalf)] = (float) h;
+            sum += h;
+        }
+        const float scale = sum != 0.0 ? (float) (1.0 / sum) : 1.0f;
+        for (auto& h : kernel)
+            h *= scale;
+        split.setKernel (0, kernel.data(), (int) kernel.size());
+        split.setKernel (1, kernel.data(), (int) kernel.size());
+        designedLog = logHz;
+        return true;
     }
 
     void reset() noexcept
     {
-        for (auto& ch : xs)
-            for (auto& s : ch)
-                s = SvfState {};
         for (auto& ch : hs)
             for (auto& s : ch)
                 s = SvfState {};
         harmonicsSilent = true;
-        apState[0] = apState[1] = SvfState {};
 
         for (int c = 0; c < 2; ++c)
         {
@@ -496,6 +566,7 @@ struct BassShaper::Impl
             l2Delay[c].reset();
             osCleanDelay[c].reset();
             osDryDelay[c].reset();
+            splitDelay[c].reset();
         }
         wDelay.reset();
 
@@ -542,6 +613,9 @@ struct BassShaper::Impl
         meters.lowPeakDb.store (-200.0f);
 
         applyParams (true);
+        split.reset();                  // installs a pending kernel at once
+        if (designedLog != curLog && designKernel (curLog))
+            split.reset();
     }
 
     //==========================================================================
@@ -591,8 +665,7 @@ struct BassShaper::Impl
             gsLiftDb = 0.0;
             gsGain = 1.0;
             wetTarget = paramsNeutral ? 0.0 : 1.0;
-            fadeC = fadeA = wetTarget;
-            apLog = paramsNeutral ? parkLog : curLog;
+            fadeA = wetTarget;
             neutralSamples = paramsNeutral ? neutralHold : 0;
             agDb = 0.0;
         }
@@ -631,14 +704,9 @@ struct BassShaper::Impl
         }
 
         // flush the long-lived double states (only reachable after very long silences; FTZ covers the rest)
-        for (auto& ch : xs)
-            for (auto& s : ch)
-                s.flush();
         for (auto& ch : hs)
             for (auto& s : ch)
                 s.flush();
-        apState[0].flush();
-        apState[1].flush();
         flushTiny (pf);
         flushTiny (ps);
         flushTiny (w);
@@ -704,6 +772,16 @@ struct BassShaper::Impl
         const auto& p = params;
         const double eps = 1.0e-10;
 
+        // the split's low band (the kernel follows the gliding cutoff, about once per partition)
+        if (curLog != designedLog)
+            designKernel (curLog);
+        for (int c = 0; c < 2; ++c)
+            std::copy (io[c], io[c] + n, bufLow[c]);
+        {
+            float* lowPtr[2] { bufLow[0], bufLow[1] };
+            split.process (lowPtr, n);
+        }
+
         //----------------------------------------------------------------------
         // pass 1 (base rate): split, balance, mask, punch, sustain power, harmonics, clean limiter
         for (int i = 0; i < n; ++i)
@@ -717,14 +795,13 @@ struct BassShaper::Impl
                 designSplit();
             }
 
-            const double x[2] { (double) io[0][i], (double) io[1][i] };
-            double low[2], high[2];
+            double x[2], low[2];
             for (int c = 0; c < 2; ++c)
             {
-                low[c] = svfLow (xo, xs[c][1], svfLow (xo, xs[c][0], x[c]));
-                high[c] = svfHigh (xo, xs[c][3], svfHigh (xo, xs[c][2], x[c]));
+                x[c] = (double) splitDelay[c].process (io[c][i]);
+                low[c] = (double) bufLow[c][i];
                 bufX[c][i] = dryDelay[c].process (io[c][i]);
-                bufHigh[c][i] = highDelay[c].process ((float) high[c]);
+                bufHigh[c][i] = highDelay[c].process ((float) (x[c] - low[c]));
             }
             inMeters.add (low[0], low[1], x[0], x[1]);
 
@@ -806,8 +883,10 @@ struct BassShaper::Impl
 
             double v[2] { s[0] * gs, s[1] * gs };
 
-            // dirty sustain harmonics (order-3 polynomial of the lifted sustain, band-limited)
-            const double dirt = (1.0 - susCharSm.next()) * eS;
+            // dirty sustain harmonics (odd, compressive curve of the lifted sustain, band-limited); the weight grows with
+            // the amount and the dirt: none at amount 0 or fully clean (as in the reference)
+            const double clean = susCharSm.next();
+            const double dirt = (1.0 - clean) * (1.0 - clean) * susAmount * eS;
             double h[2] { 0.0, 0.0 };
             if (dirt > 0.0 || ! harmonicsSilent)
             {
@@ -826,10 +905,18 @@ struct BassShaper::Impl
 
                 const double aEff = std::max (susThrAmp, hold);
                 const double invA = 1.0 / aEff;
+                // above the threshold the harmonics fade (measured: 0 / -1.4 / -5.9 / -11.1 dB at 0 / 2 / 4 / 6 dB over
+                // it): -0.31 dB x (level over the threshold in dB)^2
+                double fade = 1.0;
+                if (psus > susThrPow)
+                {
+                    const double over = kTenOverLn10 * std::log (psus / susThrPow);
+                    fade = std::exp (-0.31 * over * over * kLn10Over20);
+                }
                 for (int c = 0; c < 2; ++c)
                 {
                     const double u = v[c] * invA;
-                    double hc = dirt > 0.0 ? aEff * dirt * u * u * (0.30 + 0.12 * u) : 0.0;
+                    double hc = dirt > 0.0 ? aEff * dirt * fade * (dirtyCurve (u) - u) : 0.0;
                     hc = svfHigh (hpCo, hs[c][0], hc);
                     hc = svfLow (lpCo, hs[c][1], hc);
                     h[c] = hc;
@@ -893,8 +980,6 @@ struct BassShaper::Impl
             ctlChar[i] = (float) cNow;
             ctlMix[i] = (float) (peakMixSm.next() * eNow);
 
-            // Keep the transition filter and its fade clock on this sample's cutoff. Advancing it in pass 3
-            // would reuse the chunk's FINAL coefficients for every sample and staircase cutoff automation.
             processNeutralTransition (i);
         }
 
@@ -966,7 +1051,7 @@ struct BassShaper::Impl
             }
 
             float out[2];
-            if (ctlFadeC[i] <= 0.0)
+            if (ctlFadeA[i] <= 0.0)
             {
                 out[0] = bufX[0][i];
                 out[1] = bufX[1][i];
@@ -979,12 +1064,8 @@ struct BassShaper::Impl
             else
             {
                 const double a = 0.5 - 0.5 * std::cos (kPi * ctlFadeA[i]);
-                const double c2 = 0.5 - 0.5 * std::cos (kPi * ctlFadeC[i]);
                 for (int ch = 0; ch < 2; ++ch)
-                {
-                    const double inner = (1.0 - a) * bufAllPass[ch][i] + a * y[ch];
-                    out[ch] = (float) ((1.0 - c2) * (double) bufX[ch][i] + c2 * inner);
-                }
+                    out[ch] = (float) ((1.0 - a) * (double) bufX[ch][i] + a * y[ch]);
             }
 
             // auto gain (input delayed by D vs output)
@@ -1038,58 +1119,8 @@ struct BassShaper::Impl
 
     void processNeutralTransition (int i) noexcept
     {
-        if (wetTarget > 0.0)
-        {
-            if (fadeC < 1.0)
-                fadeC = std::min (1.0, fadeC + stepC);
-            else if (apLog != curLog && fadeA <= 0.0)
-                glideAllPass (curLog);
-            else
-            {
-                apLog = curLog;
-                fadeA = std::min (1.0, fadeA + stepA);
-            }
-        }
-        else
-        {
-            if (fadeA > 0.0)
-            {
-                apLog = curLog;
-                fadeA = std::max (0.0, fadeA - stepA);
-            }
-            else if (apLog != parkLog)
-                glideAllPass (parkLog);
-            else if (fadeC > 0.0)
-                fadeC = std::max (0.0, fadeC - stepC);
-        }
-
-        const SvfCoeffs* apCo = &glideCo;
-        if (apLog == curLog)
-            apCo = &xo;
-        else if (apLog == parkLog)
-            apCo = &parkCo;
-        else
-            glideCo.set (std::tan (kPi * std::min (std::exp (apLog), 0.45 * sr) / sr), kSqrt2);
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            double lpv;
-            const double bp = svfTick (*apCo, apState[ch], (double) bufX[ch][i], lpv);
-            bufAllPass[ch][i] = (double) bufX[ch][i] - 2.0 * apCo->k * bp;
-        }
+        fadeA = wetTarget > 0.0 ? std::min (1.0, fadeA + stepA) : std::max (0.0, fadeA - stepA);
         ctlFadeA[i] = fadeA;
-        ctlFadeC[i] = fadeC;
-    }
-
-    // Moves d's all-pass toward `target` (log Hz) at a speed proportional to its frequency (a fixed fraction of its
-    // own group delay per step, so the sweep stays slow where the all-pass is slow), never below the floor speed.
-    void glideAllPass (double target) noexcept
-    {
-        const double hz = std::exp (apLog);
-        const double step = std::max (glideRate * hz, glideFloorRate);
-        if (std::abs (target - apLog) <= step)
-            apLog = target;
-        else
-            apLog += target > apLog ? step : -step;
     }
 
     void pushScope (float mn, float mx, float wv, float env) noexcept
