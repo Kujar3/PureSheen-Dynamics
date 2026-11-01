@@ -30,7 +30,9 @@
 //                   narrow bands do not reach the full gain (the two shelves overlap).
 //   Shelf Analog    2nd-order matched shelf, shelf Q = Q clamped to 0.1..1 (0.707 = steepest without overshoot, up to
 //                   1 a slight analog-style overshoot)
-//   Shelf Baxandall 1st-order matched shelf (6 dB/oct, very wide transition, half the gain at f); Q not used
+//   Shelf Baxandall 1st-order matched shelves measured from the reference (design::baxandallLow / High in
+//                   Filters.cpp): the high shelf reaches the set gain far above f (lower corner ~0.8 f); the low shelf
+//                   starts near f and keeps falling / rising far below it (depth ~2x the gain); Q not used
 //   Shelf Vintage   passive-program-EQ style: 2nd-order shelf (Q 0.6) plus a resonant counter-band 1.6 octave beyond
 //                   the corner (at 3 f for the low shelf, f / 3 for the high shelf) with -0.35 x the gain and
 //                   Q 0.9 * sqrt (Q / 0.707) (0.3..3): a boost gets the classic dip above the corner, a cut a bump

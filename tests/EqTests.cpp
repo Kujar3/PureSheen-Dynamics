@@ -335,12 +335,19 @@ TEST_CASE ("eq. analog: shapes do what they say (spot measurements of eqBandResp
     CHECK (std::abs (resp (EqShape::BandShelf, 1000, 6, 0.3, 1000) - 6.0) < 0.3);
     CHECK (std::abs (resp (EqShape::BandShelf, 1000, 6, 0.3, 1400) - 6.0) < 0.5);
     // shelves: full gain far away, half at the corner
-    for (EqShape s : { EqShape::LowShelfAnalog, EqShape::LowShelfBaxandall, EqShape::LowShelfResonant })
+    for (EqShape s : { EqShape::LowShelfAnalog, EqShape::LowShelfResonant })
     {
         CHECK (std::abs (resp (s, 200, 8, 0.707, 15) - 8.0) < 0.3);
         CHECK (std::abs (resp (s, 200, 8, 0.707, 200) - 4.0) < 0.3);
         CHECK (std::abs (resp (s, 200, 8, 0.707, 18000)) < 0.1);
     }
+    // Baxandall shelves follow the reference's measured responses (its renders at 500 Hz / 5 kHz)
+    CHECK (std::abs (resp (EqShape::LowShelfBaxandall, 500, -6, 0.707, 500) - (-0.08)) < 0.1);
+    CHECK (std::abs (resp (EqShape::LowShelfBaxandall, 500, -6, 0.707, 100) - (-1.97)) < 0.2);
+    CHECK (std::abs (resp (EqShape::LowShelfBaxandall, 500, -6, 0.707, 20) - (-10.97)) < 0.3);
+    CHECK (std::abs (resp (EqShape::HighShelfBaxandall, 5000, 6, 0.707, 5000) - 2.59) < 0.1);
+    CHECK (std::abs (resp (EqShape::HighShelfBaxandall, 5000, -12, 0.707, 5000) - (-3.17)) < 0.1);
+    CHECK (std::abs (resp (EqShape::HighShelfBaxandall, 1000, 6, 0.707, 20)) < 0.05);
     // Baxandall is gentler than the analog shelf one octave above the corner
     CHECK (resp (EqShape::HighShelfBaxandall, 4000, 8, 0.707, 2000) > resp (EqShape::HighShelfAnalog, 4000, 8, 0.707, 2000));
     // vintage: boost below, dip above the corner

@@ -32,6 +32,10 @@ namespace design
     BiquadCoeffs allPass1 (double sr, double hz) noexcept;
     BiquadCoeffs lowShelf1 (double sr, double hz, double gainDb) noexcept;               // 1st order shelf
     BiquadCoeffs highShelf1 (double sr, double hz, double gainDb) noexcept;
+    // Baxandall shelves, first order, measured from the reference (Filters.cpp): the low shelf's corners and depth
+    // and the high shelf's lower corner follow the gain; Q is not used.
+    BiquadCoeffs baxandallLow (double sr, double hz, double gainDb) noexcept;
+    BiquadCoeffs baxandallHigh (double sr, double hz, double gainDb) noexcept;
 
     // Q of section k (0-based) of an N-th order Butterworth cascade (N even: N/2 biquads; N odd: one 1st-order
     // section first, then (N-1)/2 biquads with these Q values).

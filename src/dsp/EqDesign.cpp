@@ -340,10 +340,10 @@ void designAnalog (EqShape shape, EqSlope slope, double sr, double hz, double g,
             addSection (d, design::highShelf (sr, hz, std::clamp (q, 0.1, 1.0), g));
             break;
         case EqShape::LowShelfBaxandall:
-            addSection (d, design::lowShelf1 (sr, hz, g));
+            addSection (d, design::baxandallLow (sr, hz, g));
             break;
         case EqShape::HighShelfBaxandall:
-            addSection (d, design::highShelf1 (sr, hz, g));
+            addSection (d, design::baxandallHigh (sr, hz, g));
             break;
         case EqShape::LowShelfVintage:
             addSection (d, design::lowShelf (sr, hz, 0.6, g));

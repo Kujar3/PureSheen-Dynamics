@@ -625,6 +625,39 @@ namespace design
         return matchedFirstOrder (sG, sG * sG, sG, w0, sr);    // G (s + 1/sqrt(G)) = G s + sqrt(G)
     }
 
+    // Baxandall high shelf (measured: the reference's renders at 1 and 5 kHz, gains +-3 / 6 / 12 dB, fit rms <= 0.01 dB):
+    // an unwarped analog first-order shelf whose far gain is exactly the set gain; its lower corner (the zero of a
+    // boost, the pole of a cut) sits at r f with r = 0.7659 + 0.00456 |g| + 0.000493 g^2 (0.784 / 0.811 / 0.892 at
+    // 3 / 6 / 12 dB), the other corner at G times that; a cut is the exact inverse of the boost.
+    BiquadCoeffs baxandallHigh (double sr, double hz, double gainDb) noexcept
+    {
+        const double g = std::abs (gainDb);
+        const double r = 0.7659 + 0.00456 * g + 0.000493 * g * g;
+        const double G = std::pow (10.0, gainDb / 20.0);
+        const double lower = r * hz;
+        const double w0 = 2.0 * kPi * clampFreq (sr, gainDb >= 0.0 ? lower * G : lower) / sr;
+        return matchedFirstOrder (1.0, G, 1.0, w0, sr);   // (G s + 1) / (s + 1) at w0: DC 1, far gain G
+    }
+
+    // Baxandall low shelf (measured: the reference's renders at 500 Hz, -3 / -6 / +6 dB, and at 100 Hz, -6 dB):
+    // H = (s + wz) / (s + wp) with the depth at DC D (g) and the pole fp (g) x f / 500 Hz taken from the fitted
+    // anchors (g, D, fp) = (-6, -16.66, 77.79), (-3, -6.27, 53.0), (0, 0, 65.1), (+6, +12.11, 98.86), linear in g between
+    // them (fp in log) and extrapolated beyond. The reference's curve has a little second-order overshoot (a -0.5 dB
+    // dip at 4 f for +6) that this first-order form leaves out (max error 0.75 dB); its -12 dB setting (only reachable by
+    // typing it in) is not a shelf at all any more (a -15.6 dB dip near f / 9 that returns toward 0 dB below).
+    BiquadCoeffs baxandallLow (double sr, double hz, double gainDb) noexcept
+    {
+        static constexpr double gs[4] { -6.0, -3.0, 0.0, 6.0 };
+        static constexpr double ds[4] { -16.66, -6.27, 0.0, 12.11 };
+        static constexpr double fps[4] { 77.79, 53.0, 65.1, 98.86 };
+        const int i = gainDb < -3.0 ? 0 : (gainDb < 0.0 ? 1 : 2);
+        const double t = (gainDb - gs[i]) / (gs[i + 1] - gs[i]);
+        const double depthDb = ds[i] + t * (ds[i + 1] - ds[i]);
+        const double fp = std::exp (std::log (fps[i]) + t * (std::log (fps[i + 1]) - std::log (fps[i]))) * hz / 500.0;
+        const double w0 = 2.0 * kPi * clampFreq (sr, fp) / sr;
+        return matchedFirstOrder (std::pow (10.0, depthDb / 20.0), 1.0, 1.0, w0, sr);   // (s + D) / (s + 1) at the pole
+    }
+
     double butterworthQ (int order, int sectionIndex) noexcept
     {
         order = std::max (order, 1);
