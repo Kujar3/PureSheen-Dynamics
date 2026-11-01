@@ -83,6 +83,9 @@ namespace
     // sustain level release and lift rise (measured: the reference's kicks under sustain power; 150 / 150 ms lifted
     // them ~4 dB too much between hits)
     constexpr double kSusReleaseMs = 600.0, kLiftRiseMs = 1000.0;
+    // the most sustain lift, at amount 100 (measured: the reference on quiet acoustic music with amount 62.8 lifts ~7.5
+    // dB, not 12: the cap scales with the amount)
+    constexpr double kMaxLiftDb = 12.0;
 
     inline double poleFor (double ms, double sr) noexcept
     {
@@ -866,7 +869,7 @@ struct BassShaper::Impl
             if (eS > 0.0 && psus < susThrPow)   // at or above the threshold the lift is 0 (no log needed)
             {
                 const double ls = psus > 1.0e-30 ? kTenOverLn10 * std::log (psus) : -300.0;
-                liftTarget = std::clamp ((thrSus - ls) * susAmount, 0.0, 12.0);
+                liftTarget = std::clamp ((thrSus - ls) * susAmount, 0.0, kMaxLiftDb * susAmount);   // the cap scales with the amount
                 liftTarget *= std::clamp ((ls - (thrSus - 48.0)) / 12.0, 0.0, 1.0);
             }
             lift = liftTarget + (liftTarget < lift ? cLiftFall : cLiftRise) * (lift - liftTarget);

@@ -16,9 +16,10 @@
 //        low delayed by L1 = round (1 ms fs): transient t = w low, sustain s = (1 - w) low (t + s == low exactly)|
 //        punch: t x 10^(punch / 20) (smoothed 20 ms; no threshold)                                              |
 //        sustain power (sus.on): Ls = level of (1 - w) m (attack 10 / release 600 ms); lift = clamp ((thr - Ls) x |
-//          amount / 100, 0, 12) dB, faded out between thr - 36 and thr - 48 dB (no noise lift), falls fast (10 ms),|
-//          rises slowly (1 s); s x 10^(lift / 20). Character < 100: harmonics h = A d f (s (u) - u), an odd,       |
-//          compressive curve s (u) = k u / (1 + |k u|^p)^(1/p) / s (1) (k 2.85, p 1.85), d = (1 - char / 100)^2 x |
+//          amount / 100, 0, 12 x amount / 100) dB, faded out between thr - 36 and thr - 48 dB (no noise lift),    |
+//          falls fast (10 ms), rises slowly (1 s); s x 10^(lift / 20). Character < 100: harmonics            |
+//          h = A d f (s (u) - u), an odd, compressive curve s (u) = k u / (1 + |k u|^p)^(1/p) / s (1)          |
+//          (k 2.85, p 1.85), d = (1 - char / 100)^2 x                                                      |
 //          amount / 100, f = 10^(-0.31 (Ls - thr)^2 / 20) above the threshold (1 below), u = lifted s / A,       |
 //          A = 10^(thr / 20), high-passed at 20 Hz, low-passed at 8 x cutoff, added to the shaped low part BEFORE  |
 //          peak control (all measured: the reference's tone-test renders)                                      |
