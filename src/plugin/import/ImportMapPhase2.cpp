@@ -435,18 +435,13 @@ constexpr Key kLowcRegionSolo = 0xebbb102a716f997cull;   // solo the action regi
 // Character: 0 punchy, 1 smooth (the same order as ours).
 double lowContrastMode (double v, ModuleImport&, int, int) { return indexUpTo (v, 1); }
 
-// Contrast: a negative (smoothing) strength acts about 0.4 x as strongly in the reference as ours (test-track and
-// clean-slice renders of a sustain set at -49.6: sample match best at 0.3 .. 0.5 x, level within 0.2 LU at 0.4 x);
-// positive strengths map 1:1 (no data).
-double lowContrastStrength (double v, ModuleImport&, int, int) { return v < 0.0 ? 0.4 * v : v; }
-
 //------------------------------------------------------------------------------------------------------------------
 // LOW CONTRAST TABLE
 const std::vector<Rule>& lowContrastRules()
 {
     static const std::vector<Rule> rules {
         //  key              act               first count band        set A id          set B id          transform        foreign default   what
-        { kLowcContrast,    Act::Map,          0, 0, Band::Same, "~.a.contrast",   "~.b.contrast",   lowContrastStrength, known (0.0),  "contrast" },
+        { kLowcContrast,    Act::Map,          0, 0, Band::Same, "~.a.contrast",   "~.b.contrast",   nullptr,         known (0.0),      "contrast" },
         { kLowcGain,        Act::Map,          0, 0, Band::Same, "~.a.gain",       "~.b.gain",       nullptr,         known (0.0),      "region gain" },
         { kLowcCharacter,   Act::Map,          0, 0, Band::Same, "~.a.mode",       "~.b.mode",       lowContrastMode, known (0.0),      "character" },
         { kRegionLow,       Act::Hook,         0, 0, Band::Same, nullptr,          nullptr,          nullptr,         known (20.0),     "region start" },

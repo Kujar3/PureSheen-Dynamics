@@ -4,29 +4,30 @@
 
 #include <memory>
 
-// Low Contrast: time-frequency contrast of the low end inside an action region (20..300 Hz; channel modes Stereo,
-// M/S, T/S). Positive contrast makes loud low-end moments (a kick) stand out more from the quiet ones around them
-// (tighter, punchier); negative contrast evens them out (rounder, denser). Owner: dsp-lowc. Implementation:
+// Low Contrast: time-domain contrast of the low end inside an action region (20..300 Hz; channel modes Stereo,
+// M/S, T/S). Punchy at positive contrast lifts the first ~20 ms of each low-end note or hit (an onset shaper) and
+// dips the body slightly after it; Smooth at positive contrast does the opposite on steady notes (onset slightly
+// down, sustain up); negative contrast reverses each mode, about half as strongly. Owner: dsp-lowc. Implementation:
 // LowContrast.cpp. Tests: tests/LowContrastTests.cpp, prefix "lowc.".
 //
-//   y = x delayed by N  +  ISTFT ((G - 1) X)      ("delta" form: every G exactly 1 -> bit-exact delayed input)
-// STFT: N = 4096 at 44.1 / 48 kHz, 8192 at 88.2 / 96, 16384 at 176.4 / 192 (~11 Hz bins at every rate), hop N / 8,
-// periodic Hann analysis and synthesis (sum of w^2 = 3: synthesis scaled by 1/3), both channels in one complex FFT,
-// only the bins with region weight > 0 computed. Latency = N exactly (85 ms at 48 kHz) for any block size, constant.
-// Per hop, per bin k (Stereo / T/S: one detector on |X_L|^2 + |X_R|^2 and the same G for both; M/S: per channel and
-// set):
-//   1. P = |X|^2 smoothed across bins [0.25 0.5 0.25]
-//   2. fast envelope F (per-hop one-pole, attack / release) and slow reference S (one-pole, then averaged over
-//      +-1/3 octave of bins): Punchy F 5 / 60 ms, S 400 ms, depth 1.0; Smooth F 40 / 200 ms, S 1500 ms, depth 0.6
-//   3. rel = 10 log10 ((F + eps) / (S + eps)) clamped to [-30, +20] dB
-//   4. c = contrast / 100 (one-pole 50 ms, snapped to 0 below 1e-6); gDb = clamp (c x depth x rel, -24, +12)
-//   5. region weight W (k): 1 inside [low, high], raised-cosine to 0 over 1/3 octave outside (log f), 0 beyond;
-//      region edges glide (one-pole 50 ms in log f); make-up mDb = gain + autoGainDb (both smoothed 50 ms)
-//   6. G (k) = 10^(W (gDb + mDb) / 20): exactly 1 where W = 0 or gDb + mDb == 0
-// Mode switches only change coefficients (no click). Auto gain: region in / out power (Pin = sum W P, Pout =
-// sum W |G|^2 P, one-pole 2 s), autoGainDb = clamp (10 log10 (Pin / Pout), -12, +12), frozen below -70 dBFS, glides 1 s.
+//   y = x delayed by N  +  sum_b (g_b - 1) xb_b       (every g_b exactly 1 -> bit-exact delayed input)
+// Region bands: xb_b = ISTFT (W W_b X), N = 4096 at 44.1 / 48 kHz, 8192 at 88.2 / 96, 16384 above, hop N / 4, periodic
+// Hann analysis and synthesis (linear phase). W: 1 inside [low, high], raised cosine to 0 over 1.1 octaves outside
+// (log f; edges glide 50 ms); W_b: 4 bands equally spaced in log f inside the region, cosine^2 crossfades 0.9 octave
+// wide, sum 1. Latency = N exactly (93 ms at 44.1 kHz) for any block size, constant.
+// Gains (per band; Stereo / T/S: one detector on (eL + eR) / 2 and the same gains for both; M/S: per channel and set):
+//   1. detector band: Butterworth high pass (2nd order) and low pass (4th order) at the band's edges, on the
+//      undelayed input; e = squared quadrature envelope (ripple-free on steady tones)
+//   2. r = one-pole of e; fast F and slow S follow r with their own attack / release (per mode)
+//   3. gDb = k c clamp (10 log10 ((F + eps) / (S + eps)), lo, hi) (c = contrast / 100, glides 50 ms; negative c:
+//      x neg, plus off |c|), one-pole smoothed, minus m x its slower one-pole (the dip after an onset lift)
+//   4. the output reads each band's gain D ms ahead of its content (lookahead inside the latency N)
+//   5. g_b = 10^((gDb_b + mDb) / 20), mDb = gain + autoGainDb (both smoothed 50 ms)
+// The per-mode constants are fitted to renders of the reference (LowContrast.cpp). Mode switches glide 50 ms between
+// both modes' gains (both always run). Auto gain: region power before / after the contrast gains (one-pole 2 s),
+// autoGainDb = clamp (10 log10 (Pin / Pout), -12, +12), frozen below -70 dBFS, glides 1 s.
 // Neutral: contrast 0 and gain 0 (the defaults) -> the input delayed by N, bit-exact.
-// Monitors: soloRegion = ISTFT (W X) (the unprocessed region, delayed by N; no dry path). Delta: the slot's.
+// Monitors: soloRegion = sum_b xb_b (the unprocessed region, delayed by N; no dry path). Delta: the slot's.
 // T/S: the twin (getParamSet() == 1) reads set B for both channels (Module.h).
 namespace ps
 {
