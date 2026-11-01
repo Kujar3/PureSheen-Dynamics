@@ -579,7 +579,7 @@ TEST_CASE ("import.p2. low contrast: character table, shared region, mix")
                                                                    { "region end", "218.4" },
                                                                    { "contrast", "41.1", -1, true } });
     REQUIRE (p.ok);
-    CHECK (near (value (p, "lowc.a.contrast"), -70.19));
+    CHECK (near (value (p, "lowc.a.contrast"), 0.4 * -70.19));   // negative strengths: 0.4 x
     CHECK (near (value (p, "lowc.a.gain"), 0.81));
     CHECK (near (value (p, "lowc.a.mode"), 1.0));
     CHECK (near (value (p, "lowc.b.mode"), 1.0));
