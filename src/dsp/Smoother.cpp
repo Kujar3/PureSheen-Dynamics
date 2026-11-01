@@ -64,9 +64,14 @@ struct ScopedFlushDenormals {};
 
 // The gain computer, measured from the reference (out/importer/tools/spsfit.py, spsfit2.py: pink noise in level steps,
 // Amount 60..100, the three styles, tilt -100 / +50 / +100; fit rms 0.3..0.6 dB):
-//   e  = X + 6.98 - 3.44 log2 (f / 1 kHz) - 0.173 tone log2 (f / f_c) - T,  T = -65.1 + (100 - amount) dB
+//   e  = X' + 6.98 - 3.44 log2 (f / 1 kHz) - 0.173 tone log2 (f / f_c) - T,  T = -64.5 + (100 - amount) dB
 //        (X: octave density re a full-scale sine per octave, so X + 6.98 is the level of pink noise of that density;
 //        the detector reads per-Hz level, 3.44 dB / octave below the octave density; f_c = the region's centre)
+//   X' = 10 log10 (0.15 x 10^(X / 10) + 0.85 x sum_k w_k 10^(X_k / 10)), w = a Gaussian in octaves (sigma 0.3)
+//        centred 1.5 octaves ABOVE the band, normalised: a band's detector mostly reads the spectrum higher up, so
+//        bright spectra are cut harder and dark ones (most music) less than their own level says; flat octave
+//        density (pink) reads unchanged (spsopt.py: pink / brown / white noise and five music renders with three
+//        presets, plus the pink level steps; music band error 0.86 -> 0.26 dB, noise 0.70 -> 0.40 dB)
 //   GR = -mask M tanh (r softknee (e, K) / M): a compressor (slope r) that saturates at M
 struct ModeShape
 {
@@ -85,7 +90,8 @@ ModeShape modeShape (SmootherMode m) noexcept
 }
 
 constexpr double kPinkOffsetDb = 6.98, kDetectorSlopeDb = 3.44, kToneSlopeDb = 0.173;
-constexpr double kThresholdAt100 = -65.1, kThresholdPerPercent = 1.0;
+constexpr double kThresholdAt100 = -64.5, kThresholdPerPercent = 1.0;
+constexpr double kLookUpOct = 1.5, kLookUpSigmaOct = 0.3, kLookUpShare = 0.85;   // detector spread (see above)
 constexpr double kMaskWidthOct = 1.3;
 constexpr double kLearnMarginDb = 3.0;  // Learn scores what stands this far above the frame's mean band level   // the region edges: raised cosine this wide, centred on each limit
 
@@ -130,6 +136,7 @@ struct Smoother::Impl final : SpectralEngine::Client
 
     // band grid (prepare)
     double bandHz[kB] {}, bandLog2[kB] {}, toneOct[kB] {}, invWidthOct[kB] {};
+    double lookUpW[kB][kB] {};         // detector spread: normalised weights of band k in band b's reading
     int refLo[kB] {}, refHi[kB] {}, refCount[kB] {};
     std::vector<int> binBand;          // lower covering band of bin k (-1: only band 0 or none)
     std::vector<float> binW;           // weight of band binBand + 1 (the upper one); the lower one has 1 - binW
@@ -268,6 +275,20 @@ struct Smoother::Impl final : SpectralEngine::Client
             const double tau = std::clamp (kDetectTB / std::max (1.0, hzWidth[b]), kDetectMinSec, kDetectMaxSec);
             kDetect[b] = 1.0 - std::exp (-hopSec / tau);
         }
+        // detector spread: Gaussian in octaves around 1.5 octaves above the band, each band weighted by its width
+        // in octaves (an integral over log frequency), normalised so a flat octave density reads unchanged
+        for (int b = 0; b < kB; ++b)
+        {
+            double sum = 0.0;
+            for (int k = 0; k < kB; ++k)
+            {
+                const double d = (bandLog2[k] - bandLog2[b] - kLookUpOct) / kLookUpSigmaOct;
+                lookUpW[b][k] = std::exp (-0.5 * d * d) * width[k];
+                sum += lookUpW[b][k];
+            }
+            for (int k = 0; k < kB; ++k)
+                lookUpW[b][k] = sum > 0.0 ? lookUpW[b][k] / sum : (k == b ? 1.0 : 0.0);
+        }
 
         reset();
     }
@@ -358,12 +379,25 @@ struct Smoother::Impl final : SpectralEngine::Client
             meanX = count > 0 ? meanX / count : kFloorDb;
         }
 
+        // detector spread (the gain computer's reading; the gate and learn use X itself)
+        double dens[kB], xs[kB];
+        for (int b = 0; b < kB; ++b)
+            dens[b] = l.det[b] * invWidthOct[b];
+        for (int b = 0; b < kB; ++b)
+        {
+            double up = 0.0;
+            for (int k = 0; k < kB; ++k)
+                up += lookUpW[b][k] * dens[k];
+            const double d = (1.0 - kLookUpShare) * dens[b] + kLookUpShare * up;
+            xs[b] = d > 1.0e-15 ? 10.0 * std::log10 (d) : kFloorDb;
+        }
+
         // 2, 4 - 7. detector level vs the threshold, gain computer, gate, region mask (+ learn)
         double regionPeak = kFloorDb, bestMask = 0.0, bestMaskLevel = kFloorDb;
         for (int b = 0; b < kB; ++b)
         {
             const bool valid = l.x[b] >= gateDb;
-            const double level = l.x[b] + kPinkOffsetDb - kDetectorSlopeDb * toneOct[b] - tilt * (bandLog2[b] - centreL2);
+            const double level = xs[b] + kPinkOffsetDb - kDetectorSlopeDb * toneOct[b] - tilt * (bandLog2[b] - centreL2);
             const double e = level - threshold;
             if (learnRegion)
             {

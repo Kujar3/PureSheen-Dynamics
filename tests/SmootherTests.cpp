@@ -176,9 +176,10 @@ void learnedRegion (const SmootherMeters& m, int set, double& lowHz, double& hig
 
 double meanGr (const std::vector<double>& v) { double s = 0.0; for (double x : v) s += x; return v.empty() ? 0.0 : s / (double) v.size(); }
 
-// The gain computer's detector level (Smoother.cpp) of a band for this material: the band meter X, averaged after the
-// first second, + 6.98 - 3.44 log2 (f / 1 kHz). The threshold is -65.1 + (100 - Amount) dB, so amountFor (level - m)
-// puts the threshold m dB under that level (e = m).
+// The gain computer's detector level (Smoother.cpp) of a band for this material: the band meters X, averaged after
+// the first second, spread like the DSP (15 % the band's own density + 85 % a Gaussian, sigma 0.3 octave, around 1.5
+// octaves higher; band widths from the centre spacing), + 6.98 - 3.44 log2 (f / 1 kHz). The threshold is -64.5 +
+// (100 - Amount) dB, so amountFor (level - m) puts the threshold m dB under that level (e = m).
 double detectorLevel (const std::vector<float>& l, const std::vector<float>& r, double hz)
 {
     Smoother s;
@@ -187,12 +188,27 @@ double detectorLevel (const std::vector<float>& l, const std::vector<float>& r, 
     s.setParams (v.data());
     Stereo x { l, r };
     const int b = bandNear (hz);
-    std::vector<double> xs;
-    run (s, x, kHop, {}, [&] (size_t bi) { if ((double) bi * kHop > kSr) xs.push_back (s.getMeters().bandLevelDb[0][b].load()); });
-    return meanGr (xs) + 6.98 - 3.44 * std::log2 (smootherBandHz (b, kSr) / 1000.0);
+    std::vector<double> xs[kSmootherBands];
+    run (s, x, kHop, {}, [&] (size_t bi)
+    {
+        if ((double) bi * kHop > kSr)
+            for (int k = 0; k < kSmootherBands; ++k)
+                xs[k].push_back (s.getMeters().bandLevelDb[0][k].load());
+    });
+    auto l2 = [] (int k) { return std::log2 (smootherBandHz (std::clamp (k, 0, kSmootherBands - 1), kSr)); };
+    double up = 0.0, wsum = 0.0;
+    for (int k = 0; k < kSmootherBands; ++k)
+    {
+        const double d = (l2 (k) - l2 (b) - 1.5) / 0.3;
+        const double w = std::exp (-0.5 * d * d) * 0.5 * (l2 (k + 1) - l2 (k - 1) + (k == 0 || k == kSmootherBands - 1 ? l2 (k + 1) - l2 (k - 1) : 0.0));
+        up += w * std::pow (10.0, 0.1 * meanGr (xs[k]));
+        wsum += w;
+    }
+    const double reading = 10.0 * std::log10 (0.15 * std::pow (10.0, 0.1 * meanGr (xs[b])) + 0.85 * up / wsum);
+    return reading + 6.98 - 3.44 * std::log2 (smootherBandHz (b, kSr) / 1000.0);
 }
 
-float amountFor (double thresholdDb) { return (float) std::clamp (100.0 - (thresholdDb + 65.1), 0.0, 100.0); }
+float amountFor (double thresholdDb) { return (float) std::clamp (100.0 - (thresholdDb + 64.5), 0.0, 100.0); }
 } // namespace
 
 //==============================================================================
@@ -286,11 +302,13 @@ TEST_CASE ("smth. amount 0 is a bit-exact delay by N (every mode, channel mode, 
     CHECK_EQ (worstMismatch, 0);
 }
 
-TEST_CASE ("smth. a +9 dB resonance at 3 kHz over the threshold is cut, its neighbours under it are not")
+TEST_CASE ("smth. a +15 dB resonance at 3 kHz over the threshold is cut, the bands above it and outside the region are not")
 {
+    // (a band reads only 15 % of its own level, the rest from ~1.5 octaves higher, so a resonance reads well under its
+    // own height: +15 dB reads ~+7.5 dB, like the reference, which cuts a +12 dB bump at Amount 50 by only ~1 dB)
     const size_t period = 1u << 17;
-    const auto base = shapedNoise (period, 21u, -20.0, [] (double f) { return bandDb (f, 3000.0, 9.0); });
-    const auto baseR = shapedNoise (period, 22u, -20.0, [] (double f) { return bandDb (f, 3000.0, 9.0); });
+    const auto base = shapedNoise (period, 21u, -20.0, [] (double f) { return bandDb (f, 3000.0, 15.0); });
+    const auto baseR = shapedNoise (period, 22u, -20.0, [] (double f) { return bandDb (f, 3000.0, 15.0); });
     const size_t total = (size_t) (8.0 * kSr);
     const auto inL = tiled (base, total), inR = tiled (baseR, total);
 
@@ -298,8 +316,9 @@ TEST_CASE ("smth. a +9 dB resonance at 3 kHz over the threshold is cut, its neig
     {
         Smoother s;
         prepare (s);
-        // the threshold 2 dB above the highest-reading neighbour (the detector reads lower bands higher)
-        const auto v = harshValues (amountFor (detectorLevel (inL, inR, 1500.0) + 2.0), mode);
+        // the threshold 2 dB under the 3 kHz band's reading (the bands up to 1.5 octaves under a resonance read part
+        // of it too, so the 1.5 kHz band is only reported; the 6 kHz band reads flat noise and stays under)
+        const auto v = harshValues (amountFor (detectorLevel (inL, inR, 3000.0) - 2.0), mode);
         s.setParams (v.data());
         Stereo x { inL, inR };
         const int b3k = bandNear (3000.0), b500 = bandNear (500.0), b15 = bandNear (1500.0), b6 = bandNear (6000.0);
@@ -332,8 +351,7 @@ TEST_CASE ("smth. a +9 dB resonance at 3 kHz over the threshold is cut, its neig
         note (tag + ": measured change at that band's centre (dB)", probe);
         note (tag + ": mean meter GR 1.5 kHz (dB)", meanGr (gr15));
         note (tag + ": mean meter GR 6 kHz (dB)", meanGr (gr6));
-        CHECK (c3 <= (mode == SmootherMode::Medium ? -1.5 : -1.8));   // the resonance only partly fills its Mel band
-        CHECK (std::abs (c15) < 0.5);
+        CHECK (c3 <= -1.0);   // the resonance only partly fills its Mel band
         CHECK (std::abs (c6) < 0.5);
         CHECK (std::abs (c500) < 0.05);
         CHECK_EQ (gr500, 0.0);
@@ -759,7 +777,8 @@ TEST_CASE ("smth. attack and release timing")
         const int i37 = firstAt (t, hopAt (offset), [&] (double g) { return g >= 0.37 * fin; });
         const double ms = (i37 - r37Ref) * hopMs;
         note ("release " + std::to_string ((int) rel) + " ms: back to 37 % after (ms, relative to the 2 ms trace)", ms);
-        CHECK (ms <= rel + hopMs + 1.0e-9);
+        // a band's reading includes higher bands, whose detectors settle on their own time: up to ~7 % slower
+        CHECK (ms <= 1.1 * rel + hopMs + 1.0e-9);
         if (rel >= 100.0f)
             CHECK (ms >= 0.5 * rel);
     }

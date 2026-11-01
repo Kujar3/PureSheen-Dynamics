@@ -231,14 +231,14 @@ constexpr Key kSmthResidual   = 0xd0a68959515c4d42ull;   // listen to the remove
 double smootherMode (double v, ModuleImport&, int, int) { return indexUpTo (v, 2); }
 
 // Older writers: an absolute threshold (lower = more reduction) instead of an amount. Our Smoother's threshold is the
-// reference's measured law, T = -65.1 + (100 - amount) dB, so amount = 34.9 - threshold (assuming the older writers'
-// threshold is on that scale: -20 dB -> 54.9 %); a threshold at full scale (above -1 dB, which is also the assumed
+// reference's measured law, T = -64.5 + (100 - amount) dB, so amount = 35.5 - threshold (assuming the older writers'
+// threshold is on that scale: -20 dB -> 55.5 %); a threshold at full scale (above -1 dB, which is also the assumed
 // default) never acts: 0 %.
 double smootherThresholdToAmount (double thresholdDb)
 {
     if (thresholdDb > -1.0)
         return 0.0;
-    return std::clamp (34.9 - thresholdDb, 0.0, 100.0);
+    return std::clamp (35.5 - thresholdDb, 0.0, 100.0);
 }
 
 //------------------------------------------------------------------------------------------------------------------
