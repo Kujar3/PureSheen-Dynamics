@@ -82,6 +82,49 @@ namespace
 
 #include "dsp/ExciterCurves.inc"
 
+    // Level dependence (measured: the reference's one-band renders of 1 kHz tones at -40 .. -4 dBFS, rounds 3 and 6,
+    // out/importer/tools/exclev.py): Triode at 7.5 / 15, Tape and Dual Triode move their operating point with the
+    // level, so quiet input gets much more gain than the static curves (measured at -10 .. -4 dBFS) give, e.g. Triode
+    // 15 +9.1 dB at -40 dBFS vs the curve's -10.7. The wet signal is scaled by the difference (reference - curve),
+    // looked up from the band's level (a 3 ms RMS peak-held with a 100 ms release, as sine-peak equivalent dBFS: noise
+    // reads a few dB over its RMS, as in the reference; pink at -30 / -20 dBFS, not in the fit, lands within 0.4 dB on
+    // every measured model) and interpolated linearly in level and in drive (0 at drive 0). Rows: drive 20 / 50 / 100 %; levels below -40 / above -4 dBFS hold the end values;
+    // where the reference was only measured from -10 dBFS (Tape 20 / 100 %) the -10 value holds below.
+    constexpr double kLevelPointsDb[8] { -40.0, -30.0, -20.0, -14.0, -10.0, -8.0, -6.0, -4.0 };
+    constexpr double kLevelCorrDb[7][3][8] {
+        { {}, {}, {} },   // Analog: static
+        { {}, {}, {} },   // Retro (not measured quiet)
+        { { 1.64, 1.64, 1.64, 1.64, 1.64, 1.00, 0.04, -1.35 },   // Tape
+          { 9.76, 9.62, 8.49, 4.87, 1.20, 0.00, -0.95, -1.85 },
+          { 0.99, 0.99, 0.99, 0.99, 0.99, 0.14, -0.67, -1.51 } },
+        { {}, {}, {} },   // Tube (not measured quiet)
+        { {}, {}, {} },   // Warm (not measured quiet)
+        { {},             // Triode (20 %: within 0.1 dB)
+          { 2.20, 2.20, 2.17, 1.48, 0.54, 0.17, 0.04, -0.30 },
+          { 19.77, 19.09, 13.47, 5.85, 1.39, 0.06, -0.96, -2.05 } },
+        { {},             // Dual Triode (20 / 100 % not measured quiet)
+          { -0.04, -0.04, 0.13, 0.66, 0.39, 0.23, 0.02, -0.24 },
+          {} },
+    };
+    constexpr double kLevelShortMs = 3.0, kLevelHoldMs = 100.0, kLevelCorrSmoothMs = 5.0;
+
+    inline double levelCorrDb (int mode, double drive, double powerRms) noexcept
+    {
+        const double lv = 10.0 * std::log10 (2.0 * powerRms + 1.0e-20);
+        auto row = [&] (int a)
+        {
+            const double* r = kLevelCorrDb[mode][a];
+            if (lv <= kLevelPointsDb[0]) return r[0];
+            for (int i = 1; i < 8; ++i)
+                if (lv <= kLevelPointsDb[i])
+                    return r[i - 1] + (r[i] - r[i - 1]) * (lv - kLevelPointsDb[i - 1]) / (kLevelPointsDb[i] - kLevelPointsDb[i - 1]);
+            return r[7];
+        };
+        if (drive <= 20.0) return row (0) * drive / 20.0;
+        if (drive <= 50.0) return row (0) + (row (1) - row (0)) * (drive - 20.0) / 30.0;
+        return row (1) + (row (2) - row (1)) * (std::min (drive, 100.0) - 50.0) / 50.0;
+    }
+
     // Evaluates one measured table at x: linear between points, linear with the end slope beyond the table.
     inline double tableAt (const float* t, double x) noexcept
     {
@@ -156,6 +199,8 @@ namespace
         double hpHz = 0.0;
         bool nlRunning = false;
         double meterPower = 0.0;
+        double levelPower = 0.0, shortPower = 0.0;   // the band's level for the level-dependent correction
+        double corrGain = 1.0;                       // the correction, smoothed (5 ms) so setting changes do not click
     };
 
     struct BandState
@@ -454,6 +499,8 @@ struct ExciterEngine
         cs.hp.reset();
         cs.lp1.reset();
         cs.lp2.reset();
+        cs.levelPower = cs.shortPower = 0.0;
+        cs.corrGain = 1.0;
         cs.lpMix.snap (cs.wantedMode == ExciterMode::Triode ? 1.0f : 0.0f);
     }
 
@@ -654,10 +701,18 @@ struct ExciterEngine
             cs.lpMix.setTarget (cs.wantedMode == ExciterMode::Triode ? 1.0f : 0.0f);
             float* d = diffBuf[c].data();
             const float* x = dry[c];
+            const double shortCoef = 1.0 - std::exp (-1.0 / (kLevelShortMs * 0.001 * sr));
+            const double holdDecay = std::exp (-1.0 / (kLevelHoldMs * 0.001 * sr));
+            const double corrCoef = 1.0 - std::exp (-1.0 / (kLevelCorrSmoothMs * 0.001 * sr));
+            const double corrDrive = (double) cs.driveTarget;
             for (int i = 0; i < n; ++i)
             {
                 const double xd = (double) x[i];
-                double w = xd + (double) d[i];
+                cs.shortPower += shortCoef * (xd * xd - cs.shortPower);
+                cs.levelPower = std::max (cs.shortPower, cs.levelPower * holdDecay);
+                const double corr = std::pow (10.0, levelCorrDb (m, corrDrive, cs.levelPower) / 20.0);
+                cs.corrGain += corrCoef * (corr - cs.corrGain);
+                double w = (xd + (double) d[i]) * cs.corrGain;
                 const double lp = cs.lp2.processSample (cs.lp1.processSample (w));
                 w += (double) cs.lpMix.next() * (lp - w);
                 d[i] = (float) (cs.hp.processSample (w) - xd);
@@ -975,6 +1030,13 @@ void Exciter::process (float* const* channels, int numSamples, const ProcessCont
 
 int Exciter::getLatencySamples() const noexcept { return impl->latency.load (std::memory_order_relaxed); }
 const ExciterMeters& Exciter::getMeters() const noexcept { return impl->meters; }
+
+float Exciter::levelCorrectionDb (ExciterMode mode, float drivePercent, float sinePeakDbfs) noexcept
+{
+    const int m = std::clamp ((int) mode, 0, kNumModes - 1);
+    const double d = std::clamp (std::isfinite (drivePercent) ? (double) drivePercent : 0.0, 0.0, 100.0);
+    return (float) levelCorrDb (m, d, 0.5 * std::pow (10.0, (double) sinePeakDbfs / 10.0));
+}
 
 float Exciter::transferCurve (ExciterMode mode, float x, float drivePercent) noexcept
 {

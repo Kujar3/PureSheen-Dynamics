@@ -14,6 +14,8 @@
 //       Warm       even harmonics only (rectifier-like)
 //       Triode     asymmetric, adds level at low drive, clips one half at full drive
 //       DualTriode clean on quiet input, then a strong asymmetric clip
+//   - level dependence (measured, Triode 7.5 / 15, Tape, Dual Triode 7.5): the wet signal is scaled by a gain looked up
+//     from the band's level, so quiet input gets the reference's much higher gain (Triode 15: +9.1 dB at -40 dBFS)
 //   - oversampling: ps::Oversampler 4x around the nonlinear stage (linear phase), latency reported
 //   - post filter: high shelf on the wet signal only (postFilterHz / postFilterGainDb)
 //   - Stereo or M/S (sets A / B)
@@ -42,6 +44,8 @@ public:
 
     // Static transfer curve of a model (for the UI's curve thumbnail): output for input x at the given drive.
     static float transferCurve (ExciterMode, float x, float drivePercent) noexcept;
+    // The level-dependent gain (dB) on the wet signal for a band whose level reads sinePeakDbfs (a steady sine's peak).
+    static float levelCorrectionDb (ExciterMode, float drivePercent, float sinePeakDbfs) noexcept;
 
 private:
     struct Impl;

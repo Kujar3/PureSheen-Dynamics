@@ -336,7 +336,10 @@ TEST_CASE ("exc. transferCurve matches the audio path for steady input")
             return h;
         };
         const cd w1 = wet (2900.0);
-        const double gainErr = pstest::dbOf (hm.fundamental / (hp.fundamental * std::abs (w1)));
+        // the level-dependent gain on the wet signal (steady sine at -12 dBFS; the level reading holds the ripple peak
+        // of a 3 ms RMS, a few hundredths of a dB over the sine's level, hence the wider tolerance where it applies)
+        const double corrDb = Exciter::levelCorrectionDb (mode, 70.0f, -12.0f);
+        const double gainErr = pstest::dbOf (hm.fundamental / (hp.fundamental * std::abs (w1))) - corrDb;
         const double phaseErr = std::abs (std::arg (hm.fundamentalPhasor / (hp.fundamentalPhasor * w1))) * 180.0 / kPi;
         double worstHarm = 0.0;
         for (int k = 2; k <= 5; ++k)
@@ -346,7 +349,7 @@ TEST_CASE ("exc. transferCurve matches the audio path for steady input")
         note (tag + "H1 error (dB)", gainErr);
         note (tag + "H1 phase error (deg)", phaseErr);
         note (tag + "worst H2..H5 error (dB)", worstHarm);
-        CHECK (std::abs (gainErr) < 0.02);
+        CHECK (std::abs (gainErr) < (corrDb != 0.0 ? 0.08 : 0.02));
         CHECK (phaseErr < 0.5);
         CHECK (worstHarm < 0.3);
     }
