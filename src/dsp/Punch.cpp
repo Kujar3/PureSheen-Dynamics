@@ -70,12 +70,12 @@ struct ScopedFlushDenormals {};
 
 constexpr double kOnset = 0.25;                    // -6 dB: instantaneous power floor for onsets
 // Fitted to the reference (out/importer/tools/impopt2.py: one-band renders of a tone / kick / noise test signal at
-// amounts +50 / +100 / -100, plus two music slices with a four-band preset; rms 0.6 dB on the test points, 0.4 dB
-// on the music bands):
-constexpr double kRelScale = 0.732;                // gain in dB per dB of envelope ratio at amount 100
+// amounts +50 / +100 / -100, plus two music slices with a four-band preset; the floor and gain scale then refined on
+// the same test signal 20 dB down and a third music slice: rms 0.8 dB on the test points, 0.06 dB 20 dB down):
+constexpr double kRelScale = 0.80;                 // gain in dB per dB of envelope ratio at amount 100
 constexpr double kNegativeScale = 0.578;           // negative amounts act 0.58 x as strongly as positive ones
 constexpr double kGainMin = -8.0, kGainMax = 8.0;  // dB
-constexpr double kFloor = 5.35e-3;                 // -22.7 dB (re a full-scale sine's detector power) added to both
+constexpr double kFloor = 1.26e-2;                 // -19 dB (re a full-scale sine's detector power) added to both
                                                    // envelopes: quiet bands get little or no gain
 constexpr double kLongAttack = 88.4, kLongRelease = 9.19;   // x E: the long envelope rises over seconds, falls fast
 constexpr double kLongAttackMaxMs = 10000.0;       // our cap (the fit saw E ~ 100 ms only)

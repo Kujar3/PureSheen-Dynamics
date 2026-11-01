@@ -14,9 +14,9 @@
 //     P   = max (QuadratureEnvelope (d), d^2 / 4) (ripple-free power; the quarter of the instantaneous power only
 //           takes over on fast onsets, where the all-pass chains' group delay lags the quadrature power by > 6 dB)
 //     As  = one-pole (P; attack tau_a, release tau_r), Al = one-pole (P; rise tau_la, fall tau_l)   (double)
-//     rel = 10 log10 ((As + F) / (Al + F)), F = 5.35e-3 (-22.7 dB re a full-scale sine), clamped to [-40, +24] dB
+//     rel = 10 log10 ((As + F) / (Al + F)), F = 1.26e-2 (-19 dB re a full-scale sine), clamped to [-40, +24] dB
 //     k   = band amount / 100 x amount / 100, negative band amounts x 0.578   (20 ms linear smoothing per sample)
-//     g   = clamp (0.732 k x rel, -8, +8) dB;  y = x_band x 10^(g / 20) x makeup
+//     g   = clamp (0.80 k x rel, -8, +8) dB;  y = x_band x 10^(g / 20) x makeup
 //     band off: y = x_band (still from the crossover, so the band sum stays the crossover's sum)
 //   -> sum of the bands
 // Ballistics from the envelope E (ms; with sync: kPunchSyncFractions[syncNote] x 4 x 60000 / bpm, clamped to
