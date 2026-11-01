@@ -26,9 +26,9 @@
 //   out   = sum_b solo_b [ (1 - mix_b) dry_b ] + PostShelf ( sum_b solo_b mix_b wet_b )
 // Computing f(u) - u in the oversampled domain and adding it to the delayed band keeps the dry part bit-exact (drive 0
 // is exactly transparent, nothing above 0.45 fs is lost) and the nonlinearity still runs at 4x. Each band's wet signal
-// dry + D goes through a first-order high pass at 14.1 Hz (the reference's wet path has exactly this one; it also
-// removes the DC of the asymmetric curves) while the band is processed. When a band stops driving, the oversampler is
-// flushed with silence (no state is cut mid-signal).
+// dry + D goes through the reference's per-model wet filters while the band is processed: a first-order high pass at
+// 14.1 Hz (Triode 18.5, Dual Triode 20; it also removes the DC of the asymmetric curves) and, for Triode, a low pass.
+// When a band stops driving, the oversampler is flushed with silence (no state is cut mid-signal).
 //
 // Curves: measured from the reference (out/importer/tools/gen_exc.py, tone test, one band, mix 100 %): the static
 // transfer curve of each model at the reference's amounts 3, 7.5 and 15 (its maximum), which are our drive 20 / 50 /
@@ -39,8 +39,8 @@
 // (waveform error re the sine amplitude over the four test levels): Analog / Retro / Tube / Warm, and Triode / Dual
 // Triode at low drive, about 1..4 %; Tape 2..13 % and Triode / Dual Triode at full drive up to 17 %: there the
 // reference also moves its operating point with the level (a bias shift) and has hysteresis, which a static curve
-// cannot follow. Below ~200 Hz the reference filters the harmonics of Warm / Triode / Dual Triode / Tape more than its
-// 14.1 Hz wet high pass (not modelled).
+// cannot follow. Below ~200 Hz the reference filters the harmonics of Warm / Tape more than its wet high pass
+// (not modelled).
 // Choices (research silent): oversampling 4x linear phase (latency is reported, identical for every band); the post
 // filter is a matched 2nd-order high shelf (Q 0.707) on the summed wet signal (linear, so equal to filtering each
 // band's wet); a band that is off is dry. Neutral settings (every band at mix 0, or at drive 0 with the post filter
@@ -72,7 +72,12 @@ namespace
     constexpr double kShelfRampMs = 10.0;
     constexpr double kMeterTauMs = 300.0;
 
-    constexpr double kWetHighPassHz = 14.1;
+    // The wet path's linear filters per model (measured: the reference's noise renders at amount 3): a first-order
+    // high pass (14.1 Hz; Triode 18.5, Dual Triode 20), and for Triode a low pass, first order at 7834 Hz times second
+    // order at 13611 Hz (Q 1.17): -1.2 / -3.7 / -7.2 dB at 7.7 / 12.4 / 16 kHz.
+    constexpr double kWetHighPassHz[] { 14.1, 14.1, 14.1, 14.1, 14.1, 18.5, 20.0 };
+    constexpr double kTriodeLowPass1Hz = 7834.0, kTriodeLowPass2Hz = 13611.0, kTriodeLowPass2Q = 1.17;
+    constexpr double kWetFilterRampMs = 20.0;
     constexpr double kTwoPi = 6.283185307179586;
 
 #include "dsp/ExciterCurves.inc"
@@ -145,7 +150,10 @@ namespace
         LinearSmoother fade;
         bool fading = false;
 
-        Biquad dc;   // the wet high pass (on dry + D)
+        SmoothedBiquad hp;           // the wet high pass (on dry + D), per model
+        Biquad lp1, lp2;             // Triode's wet low pass, blended in by lpMix
+        LinearSmoother lpMix;
+        double hpHz = 0.0;
         bool nlRunning = false;
         double meterPower = 0.0;
     };
@@ -231,7 +239,13 @@ struct ExciterEngine
                 cs.drive.prepare (sr, kRampMs);
                 cs.mix.prepare (sr, kRampMs);
                 cs.fade.prepare (sr, kModeFadeMs);
-                cs.dc.setCoeffs (design::highPass1 (sr, kWetHighPassHz));
+                cs.hp.setRampLength ((int) std::lround (kWetFilterRampMs * 0.001 * sr));
+                cs.hpHz = kWetHighPassHz[0];
+                cs.hp.setTarget (design::highPass1 (sr, cs.hpHz));
+                cs.hp.snapToTarget();
+                cs.lp1.setCoeffs (design::lowPass1 (sr, std::min (kTriodeLowPass1Hz, 0.45 * sr)));
+                cs.lp2.setCoeffs (design::lowPass (sr, std::min (kTriodeLowPass2Hz, 0.45 * sr), kTriodeLowPass2Q));
+                cs.lpMix.prepare (sr, kWetFilterRampMs);
             }
             band.solo.prepare (sr, kSoloRampMs);
         }
@@ -267,7 +281,7 @@ struct ExciterEngine
             for (int c = 0; c < 2; ++c)
             {
                 band.dryDelay[c].reset();
-                band.ch[c].dc.reset();
+                resetWetFilters (band.ch[c]);
                 band.ch[c].nlRunning = false;
                 band.ch[c].meterPower = 0.0;
             }
@@ -304,7 +318,7 @@ struct ExciterEngine
             {
                 band.dryDelay[c].reset();
                 auto& cs = band.ch[c];
-                cs.dc.reset();
+                resetWetFilters (cs);
                 cs.nlRunning = false;
                 cs.meterPower = 0.0;
             }
@@ -389,6 +403,7 @@ struct ExciterEngine
                     cs.curMode = cs.nextMode = cs.wantedMode;
                     cs.fading = false;
                     cs.fade.snap (0.0f);
+                    resetWetFilters (cs);
                 }
                 else
                 {
@@ -429,6 +444,19 @@ struct ExciterEngine
     }
 
     //==========================================================================
+    // The wet filters at the wanted model's settings, with no history.
+    void resetWetFilters (ChanState& cs) noexcept
+    {
+        const int m = std::clamp ((int) cs.wantedMode, 0, kNumModes - 1);
+        cs.hpHz = kWetHighPassHz[m];
+        cs.hp.setTarget (design::highPass1 (sr, cs.hpHz));
+        cs.hp.snapToTarget();
+        cs.hp.reset();
+        cs.lp1.reset();
+        cs.lp2.reset();
+        cs.lpMix.snap (cs.wantedMode == ExciterMode::Triode ? 1.0f : 0.0f);
+    }
+
     static void finishFade (ChanState& cs) noexcept
     {
         cs.curMode = cs.nextMode = cs.wantedMode;
@@ -611,17 +639,28 @@ struct ExciterEngine
             meters.harmonicsDb[1][b].store (-120.0f);
         }
 
-        // the wet path's high pass (14.1 Hz, first order) acts on the whole wet signal dry + D, as in the reference;
-        // it runs for as long as the band is processed (the module's neutral fade covers switching it in and out)
+        // the wet path's filters act on the whole wet signal dry + D, as in the reference (per model; a model change
+        // glides them over 20 ms); they run for as long as the band is processed (the module's neutral fade covers
+        // switching them in and out)
         for (int c = 0; c < 2; ++c)
         {
-            auto& hp = band.ch[c].dc;
+            auto& cs = band.ch[c];
+            const int m = std::clamp ((int) cs.wantedMode, 0, kNumModes - 1);
+            if (kWetHighPassHz[m] != cs.hpHz)
+            {
+                cs.hpHz = kWetHighPassHz[m];
+                cs.hp.setTarget (design::highPass1 (sr, cs.hpHz));
+            }
+            cs.lpMix.setTarget (cs.wantedMode == ExciterMode::Triode ? 1.0f : 0.0f);
             float* d = diffBuf[c].data();
             const float* x = dry[c];
             for (int i = 0; i < n; ++i)
             {
                 const double xd = (double) x[i];
-                d[i] = (float) (hp.processSample (xd + (double) d[i]) - xd);
+                double w = xd + (double) d[i];
+                const double lp = cs.lp2.processSample (cs.lp1.processSample (w));
+                w += (double) cs.lpMix.next() * (lp - w);
+                d[i] = (float) (cs.hp.processSample (w) - xd);
             }
         }
 
@@ -656,7 +695,7 @@ struct ExciterEngine
             cs.mix.snap (cs.mixTarget);
             finishFade (cs);
             cs.meterPower = 0.0;
-            cs.dc.reset();
+            resetWetFilters (cs);
             cs.nlRunning = false;
         }
         band.solo.snap (band.solo.getCurrent());

@@ -303,9 +303,11 @@ TEST_CASE ("exc. oversampling reduces aliasing (7 kHz at 48 kHz, drive 100)")
 TEST_CASE ("exc. transferCurve matches the audio path for steady input")
 {
     // 2.9 kHz at -12 dBFS, drive 70: compare H1 (magnitude + phase) and H2..H5 of the processed signal with the
-    // transferCurve applied to the same input sample by sample (the 14.1 Hz wet high pass is negligible up there; at
-    // 48 kHz the aliases of the sample-by-sample prediction do not land on the harmonics of 2.9 kHz, as they would for
-    // a tone dividing 48 kHz)
+    // transferCurve applied to the same input sample by sample, then the model's wet filters (the reference's: a first-
+    // order high pass at 14.1 Hz, 18.5 for Triode, 20 for Dual Triode; Triode also low-passes at 7834 Hz (1st order) x
+    // 13611 Hz (2nd order, Q 1.17)). At 48 kHz the aliases of the sample-by-sample prediction do not land on the
+    // harmonics of 2.9 kHz, as they would for a tone dividing 48 kHz.
+    const double hpHz[] { 14.1, 14.1, 14.1, 14.1, 14.1, 18.5, 20.0 };
     for (int mi = 0; mi < (int) ExciterMode::Count; ++mi)
     {
         const auto mode = (ExciterMode) mi;
@@ -326,12 +328,20 @@ TEST_CASE ("exc. transferCurve matches the audio path for steady input")
         std::vector<float> aligned (out.l.begin() + lat, out.l.end());
         const auto hm = harmonicsOf (aligned, start, n, 2900.0);
         const auto hp = harmonicsOf (pred, start, n, 2900.0);
-        const double gainErr = pstest::dbOf (hm.fundamental / hp.fundamental);
-        const double phaseErr = std::abs (std::arg (hm.fundamentalPhasor / hp.fundamentalPhasor)) * 180.0 / kPi;
+        auto wet = [&] (double hz)
+        {
+            cd h = design::highPass1 (kSr, hpHz[mi]).response (hz, kSr);
+            if (mode == ExciterMode::Triode)
+                h *= design::lowPass1 (kSr, 7834.0).response (hz, kSr) * design::lowPass (kSr, 13611.0, 1.17).response (hz, kSr);
+            return h;
+        };
+        const cd w1 = wet (2900.0);
+        const double gainErr = pstest::dbOf (hm.fundamental / (hp.fundamental * std::abs (w1)));
+        const double phaseErr = std::abs (std::arg (hm.fundamentalPhasor / (hp.fundamentalPhasor * w1))) * 180.0 / kPi;
         double worstHarm = 0.0;
         for (int k = 2; k <= 5; ++k)
-            if (hp.h[k] > 1.0e-4)   // > -80 dBc
-                worstHarm = std::max (worstHarm, std::abs (pstest::dbOf (hm.h[k] / hp.h[k])));
+            if (hp.h[k] > 1.0e-4 && k * 2900.0 < 0.5 * kSr)   // > -80 dBc
+                worstHarm = std::max (worstHarm, std::abs (pstest::dbOf (hm.h[k] / (hp.h[k] * std::abs (wet (k * 2900.0)) / std::abs (w1)))));
         const std::string tag = std::string ("exc. transferCurve ") + kModeNames[mi] + ": ";
         note (tag + "H1 error (dB)", gainErr);
         note (tag + "H1 phase error (deg)", phaseErr);
