@@ -68,9 +68,18 @@ struct ScopedFlushDenormals
 struct ScopedFlushDenormals {};
 #endif
 
-constexpr double kEps = 1.0e-9;
 constexpr double kOnset = 0.25;                    // -6 dB: instantaneous power floor for onsets
-constexpr double kGainMin = -24.0, kGainMax = 12.0;
+// Fitted to the reference (out/importer/tools/impopt2.py: one-band renders of a tone / kick / noise test signal at
+// amounts +50 / +100 / -100, plus two music slices with a four-band preset; rms 0.6 dB on the test points, 0.4 dB
+// on the music bands):
+constexpr double kRelScale = 0.732;                // gain in dB per dB of envelope ratio at amount 100
+constexpr double kNegativeScale = 0.578;           // negative amounts act 0.58 x as strongly as positive ones
+constexpr double kGainMin = -8.0, kGainMax = 8.0;  // dB
+constexpr double kFloor = 5.35e-3;                 // -22.7 dB (re a full-scale sine's detector power) added to both
+                                                   // envelopes: quiet bands get little or no gain
+constexpr double kLongAttack = 88.4, kLongRelease = 9.19;   // x E: the long envelope rises over seconds, falls fast
+constexpr double kLongAttackMaxMs = 10000.0;       // our cap (the fit saw E ~ 100 ms only)
+constexpr double kShortRelease = 1.39, kShortAttack = 0.0158;   // x E
 constexpr double kDbToLn = 0.11512925464970228;    // ln (10) / 20
 constexpr double kPowToDb = 4.3429448190325182;    // 10 / ln (10)
 constexpr double kRatioMin = 1.0e-4, kRatioMax = 251.18864315095797;   // rel clamped to [-40, +24] dB
@@ -106,7 +115,7 @@ inline double fastLn (double x) noexcept
 
 inline double relDb (double as, double al) noexcept
 {
-    return kPowToDb * fastLn (std::clamp ((as + kEps) / (al + kEps), kRatioMin, kRatioMax));
+    return kPowToDb * fastLn (std::clamp ((as + kFloor) / (al + kFloor), kRatioMin, kRatioMax));
 }
 
 //==============================================================================
@@ -200,10 +209,10 @@ struct EnvPair
 {
     double as = 0.0, al = 0.0;
 
-    inline void run (double p, double ca, double cr, double cl) noexcept
+    inline void run (double p, double ca, double cr, double cl, double cla) noexcept
     {
         as += (p > as ? ca : cr) * (p - as);
-        al += cl * (p - al);
+        al += (p > al ? cla : cl) * (p - al);
     }
     void clear() noexcept { as = al = 0.0; }
 };
@@ -343,7 +352,7 @@ struct Punch::Impl
     bool modeKnown = false;
 
     double envMs = -1.0;
-    double ca = 0.0, cr = 0.0, cl = 0.0;
+    double ca = 0.0, cr = 0.0, cl = 0.0, cla = 0.0;
     double cPower = 0.0, cMakeup = 0.0, cMicro = 0.0;
     int autoCounter = 0, microCounter = 0;
 
@@ -461,9 +470,10 @@ struct Punch::Impl
         if (e == envMs)
             return;
         envMs = e;
-        cl = coeff (e, sr);
-        cr = coeff (std::max (1.0, e / 10.0), sr);
-        ca = coeff (std::clamp (e / 100.0, 0.2, 2.0), sr);
+        cl = coeff (e * kLongRelease, sr);
+        cla = coeff (std::min (e * kLongAttack, kLongAttackMaxMs), sr);
+        cr = coeff (std::max (1.0, e * kShortRelease), sr);
+        ca = coeff (std::clamp (e * kShortAttack, 0.2, 2.0), sr);
     }
 
     // set used by channel slot c in the given mode
@@ -483,7 +493,7 @@ struct Punch::Impl
             {
                 const auto& bp = p.bands[set][b];
                 const double a = std::isfinite (bp.amountPercent) ? std::clamp ((double) bp.amountPercent, -100.0, 100.0) : 0.0;
-                amountK[c][b].setTarget (a * 0.01 * amount);
+                amountK[c][b].setTarget ((a < 0.0 ? kNegativeScale : 1.0) * a * 0.01 * amount);
                 bandOn[c][b].setTarget (bp.on ? 1.0 : 0.0);
                 if (snap)
                 {
@@ -655,8 +665,8 @@ struct Punch::Impl
         double* midAl = midBuffer.data() + maxBlock;
         double* midP = midBuffer.data() + 2 * maxBlock;
 
-        const V2 vca = splat (ca), vcr = splat (cr), vcl = splat (cl), veps = splat (kEps);
-        const V2 rmin = splat (kRatioMin), rmax = splat (kRatioMax), gmin = splat (kGainMin), gmax = splat (kGainMax);
+        const V2 vca = splat (ca), vcr = splat (cr), vcl = splat (cl), vcla = splat (cla);
+        const V2 rmin = splat (kRatioMin), rmax = splat (kRatioMax), gmin = splat (kGainMin), gmax = splat (kGainMax), vks = splat (kRelScale), vfl = splat (kFloor);
         const V2 vOnset = splat (kOnset), vPow = splat (cPower), vMk = splat (cMakeup), one = splat (1.0);
         const V2 toDb = splat (kPowToDb), toLn = splat (kDbToLn), zero = splat (0.0);
 
@@ -670,13 +680,13 @@ struct Punch::Impl
                 quadPair (bs.quad, x, qa, qb);
                 const V2 p = vmax (qa * qa + qb * qb, vOnset * x * x);
                 as = as + greaterSelect (p, as, vca, vcr) * (p - as);
-                al = al + vcl * (p - al);
+                al = al + greaterSelect (p, al, vcla, vcl) * (p - al);
                 if (stereo)
                 {
                     const double am = 0.5 * (lane0 (qa) + lane1 (qa)), bmid = 0.5 * (lane0 (qb) + lane1 (qb));
                     const double xm = 0.5 * (lane0 (x) + lane1 (x));
                     const double pm = std::max (am * am + bmid * bmid, kOnset * xm * xm);
-                    bs.midIn.run (pm, ca, cr, cl);
+                    bs.midIn.run (pm, ca, cr, cl, cla);
                     midP[i] = pm;
                 }
                 if (holdMask[(size_t) i] != 0)
@@ -706,8 +716,8 @@ struct Punch::Impl
                 V2 g = zero, rel = zero;
                 if (w < 1.0 || microTick)
                 {
-                    rel = toDb * fastLn (vclamp ((load (envAs + 2 * i) + veps) / (load (envAl + 2 * i) + veps), rmin, rmax));
-                    g = vclamp (k * rel, gmin, gmax);
+                    rel = toDb * fastLn (vclamp ((load (envAs + 2 * i) + vfl) / (load (envAl + 2 * i) + vfl), rmin, rmax));
+                    g = vclamp (k * rel * vks, gmin, gmax);
                 }
                 double relM = 0.0;
                 if (w > 0.0 || (stereo && microTick))
@@ -715,7 +725,7 @@ struct Punch::Impl
                     relM = relDb (midAs[i], midAl[i]);
                     if (w > 0.0)
                     {
-                        const double gm = std::clamp (lane0 (k) * relM, kGainMin, kGainMax);
+                        const double gm = std::clamp (lane0 (k) * relM * kRelScale, kGainMin, kGainMax);
                         g = g + splat (w) * (splat (gm) - g);
                     }
                 }
@@ -800,12 +810,12 @@ struct Punch::Impl
                 quadPair (bs.quadOut, y, qoa, qob);
                 const V2 po = vmax (qoa * qoa + qob * qob, vOnset * y * y);
                 aso = aso + greaterSelect (po, aso, vca, vcr) * (po - aso);
-                alo = alo + vcl * (po - alo);
+                alo = alo + greaterSelect (po, alo, vcla, vcl) * (po - alo);
                 if (stereo)
                 {
                     const double am = 0.5 * (lane0 (qoa) + lane1 (qoa)), bmid = 0.5 * (lane0 (qob) + lane1 (qob));
                     const double ym = 0.5 * (lane0 (y) + lane1 (y));
-                    bs.midOut.run (std::max (am * am + bmid * bmid, kOnset * ym * ym), ca, cr, cl);
+                    bs.midOut.run (std::max (am * am + bmid * bmid, kOnset * ym * ym), ca, cr, cl, cla);
                 }
                 if (holdMask[(size_t) i] != 0)
                 {
@@ -816,7 +826,7 @@ struct Punch::Impl
                 if (mc + 1 >= kMicroInterval)
                 {
                     mc = 0;
-                    const V2 relO = toDb * fastLn (vclamp ((aso + veps) / (alo + veps), rmin, rmax));
+                    const V2 relO = toDb * fastLn (vclamp ((aso + vfl) / (alo + vfl), rmin, rmax));
                     bs.microOut[0].push (lane0 (relO), cMicro);
                     bs.microOut[1].push (lane1 (relO), cMicro);
                     if (stereo)

@@ -478,23 +478,26 @@ TEST_CASE ("pnch. step response follows the documented ballistics")
     pstest::note ("gain at 100 ms", gp[s + at (0.1)]);
     pstest::note ("gain at 230 ms", gp[s + at (0.23)]);
     pstest::note ("gain at 300 ms", gp[s + at (0.3)]);
+    // the reference (one-band renders, a 1 kHz step of +12 dB at +50): about +4 dB right after the step, still
+    // +2.4 dB after 1 s (its long envelope rises over seconds)
     CHECK (std::abs (gp[s - 10]) < 0.05);
-    CHECK (peak >= 6.3 && peak <= 7.8);
-    CHECK (peakAt * ms >= 1.0 && peakAt * ms <= 8.0);
-    CHECK (gp[s + at (0.1)] >= 0.7 && gp[s + at (0.1)] <= 1.3);
-    CHECK (gp[s + at (0.3)] < 0.2);
+    CHECK (peak >= 3.0 && peak <= 4.2);
+    CHECK (peakAt * ms <= 20.0);
+    CHECK (gp[s + at (0.3)] >= 2.5 && gp[s + at (0.3)] < gp[s + at (0.1)]);
 
+    // negative amounts: the same trace scaled by -0.578 (no clamp at 50 %)
     double mirror = 0.0;
     for (size_t i = s - at (0.1); i < s + at (1.0); ++i)
-        mirror = std::max (mirror, std::abs (gp[i] + gn[i]));
-    pstest::note ("|gain(+50) + gain(-50)| max (dB)", mirror);
-    CHECK (mirror < 0.2);
+        mirror = std::max (mirror, std::abs (gn[i] + 0.578 * gp[i]));
+    pstest::note ("|gain(-50) + 0.578 gain(+50)| max (dB)", mirror);
+    CHECK (mirror < 0.05);
 
+    // every time constant scales with E: E = 25 ms at 75 ms = E = 100 ms at 300 ms
     pstest::note ("E = 25 ms: gain at 75 ms (dB)", g25[s + at (0.075)]);
-    CHECK (std::abs (g25[s + at (0.075)]) < 0.25);
+    CHECK (std::abs (g25[s + at (0.075)] - gp[s + at (0.3)]) < 0.1);
 }
 
-TEST_CASE ("pnch. attack and sustain: positive lifts the hit, negative lifts the tail")
+TEST_CASE ("pnch. a train of hits: positive amounts lift it, negative amounts lower it")
 {
     // decaying 1 kHz hits (5 ms attack portion vs the 60..250 ms tail), measured with the gain trace
     auto ratio = [] (float amount, double& attackDb, double& tailDb)
@@ -527,18 +530,22 @@ TEST_CASE ("pnch. attack and sustain: positive lifts the hit, negative lifts the
     pstest::note ("+60: mean gain in the tail 60..250 ms (dB)", tp);
     pstest::note ("-60: hit (dB)", an);
     pstest::note ("-60: tail (dB)", tn);
-    CHECK (ap > 3.0);
-    CHECK (tp < -0.5);
-    CHECK (an < -3.0);
-    CHECK (tn > 0.5);
+    // the long envelope falls fast and rises slowly, so it sits near the troughs of a hit train: the train is lifted
+    // (hit and tail alike) at positive amounts, lowered at negative ones (like the reference on its kick test and
+    // on music, where its gain follows the band level rather than single onsets)
+    CHECK (ap > 2.0);
+    CHECK (tp > 2.0);
+    CHECK (an < -1.0);
+    CHECK (tn < -1.0);
+    CHECK (std::abs (an / ap + 0.578) < 0.05);
 }
 
-TEST_CASE ("pnch. level independence: the gain trace does not depend on the level")
+TEST_CASE ("pnch. level floor: quiet bands get little gain")
 {
     std::vector<double> traces[2];
     int idx = 0;
     std::vector<double> envRef;
-    for (double peakDb : { -6.0, -26.0 })
+    for (double peakDb : { -6.0, -46.0 })
     {
         Rig rig;
         rig.set ("stLink", 1.0f);
@@ -552,12 +559,17 @@ TEST_CASE ("pnch. level independence: the gain trace does not depend on the leve
         const auto out = rig.run (in.l, in.r);
         traces[idx++] = gainTraceDb (in, out);
     }
-    double worst = 0.0;
+    double loud = 0.0, quiet = 0.0;
     for (size_t i = at (1.0); i < traces[0].size(); ++i)
         if (envRef[i] > pstest::dbfsToAmplitude (-70.0))
-            worst = std::max (worst, std::abs (traces[0][i] - traces[1][i]));
-    pstest::note ("max |gain(-6 dBFS) - gain(-26 dBFS)| (dB)", worst);
-    CHECK (worst < 0.05);
+        {
+            loud = std::max (loud, std::abs (traces[0][i]));
+            quiet = std::max (quiet, std::abs (traces[1][i]));
+        }
+    pstest::note ("max |gain| at -6 dBFS (dB)", loud);
+    pstest::note ("max |gain| at -46 dBFS (dB)", quiet);
+    CHECK (loud > 2.0);
+    CHECK (quiet < 0.1 * loud);
 }
 
 TEST_CASE ("pnch. crest factor and micro-dynamics of a kick + bass loop and a drum signal")
@@ -581,14 +593,13 @@ TEST_CASE ("pnch. crest factor and micro-dynamics of a kick + bass loop and a dr
     }
     CHECK (micro[0] < micro[1] && micro[1] < micro[2] && micro[2] < micro[3] && micro[3] < micro[4]);
     CHECK (std::abs (crest[2]) < 1e-9);
-    // measured (documented in the report): +50 -> +1.7 dB, +100 -> +3.8 dB, -50 -> -1.2 dB, -100 -> -0.5 dB. At -100 the
-    // decaying kick tails are lifted by up to +12 dB (sustain), which takes back part of the crest reduction; the
-    // micro-dynamics measure falls monotonically.
-    CHECK (crest[3] >= 1.4);
-    CHECK (crest[4] >= 3.2);
-    CHECK (crest[1] <= -0.9);
-    CHECK (crest[0] <= -0.3);
-    CHECK (crest[4] > crest[3] && crest[3] > crest[2] && crest[2] > crest[1]);
+    // measured with the fitted law: micro std 0.93 / 0.96 / 1.07 / 1.16 at -100 / -50 / +50 / +100; the crest moves by
+    // +1.5 / +0.7 / +0.4 / +1.1 dB (the whole loop is lifted or lowered over seconds, so the crest changes little;
+    // the reference's crest change on music is small too)
+    CHECK (micro[4] >= 1.08 && micro[4] <= 1.25);
+    CHECK (micro[0] >= 0.88 && micro[0] <= 0.97);
+    for (int k = 0; k < 5; ++k)
+        CHECK (std::abs (crest[k]) < 2.5);
 
     // the spec's drum signal with the independent micro-dynamics detector
     const auto drum = drumSignal (8.0);
@@ -612,12 +623,11 @@ TEST_CASE ("pnch. crest factor and micro-dynamics of a kick + bass loop and a dr
     pstest::note ("drum: micro std ratio at -100", ratio[1]);
     pstest::note ("drum: crest change at +50 (dB)", dc[0]);
     pstest::note ("drum: crest change at -50 (dB)", dc[1]);
-    // measured: 1.99 / 0.41, crest +1.2 / -0.5 dB. Without lookahead the first quarter cycle of each hit leads the
-    // gain, so the crest moves less than the micro-dynamics measure (the spec's +2 / -1.5 dB were estimates).
-    CHECK (ratio[0] >= 1.6 && ratio[0] <= 2.2);
-    CHECK (ratio[1] <= 0.45);
-    CHECK (dc[0] >= 1.0);
-    CHECK (dc[1] <= -0.35);
+    // measured with the fitted law: 1.13 / 0.92, crest -1.0 / +1.0 dB
+    CHECK (ratio[0] >= 1.05 && ratio[0] <= 1.2);
+    CHECK (ratio[1] >= 0.85 && ratio[1] <= 0.97);
+    CHECK (std::abs (dc[0]) < 1.5);
+    CHECK (std::abs (dc[1]) < 1.5);
 }
 
 TEST_CASE ("pnch. steady sines are unaffected after settling, without distortion")
@@ -641,7 +651,8 @@ TEST_CASE ("pnch. steady sines are unaffected after settling, without distortion
                                       + std::to_string ((int) amount) + ": level (dB)", lvl);
                     pstest::note ("   THD+N (dB)", thd);
                 }
-                CHECK (std::abs (lvl) < 0.1);
+                // at E = 1000 ms the long envelope rises over 10 s: a start-up remainder is still decaying at 3 s
+                CHECK (std::abs (lvl) < (env < 1000.0f ? 0.1 : 1.0));
                 CHECK (thd < (hz < 100.0 ? -55.0 : -60.0));
             }
 }
@@ -1285,8 +1296,8 @@ TEST_CASE ("pnch. other sample rates keep the time constants")
             pk = std::max (pk, g[i]);
         pstest::note ("peak gain at " + std::to_string ((int) sr), pk);
         pstest::note ("   gain at 100 ms", g[at (2.1, sr)]);
-        CHECK (pk >= 6.3 && pk <= 7.8);
-        CHECK (g[at (2.1, sr)] >= 0.7 && g[at (2.1, sr)] <= 1.3);
+        CHECK (pk >= 3.0 && pk <= 4.2);
+        CHECK (g[at (2.1, sr)] >= 3.0 && g[at (2.1, sr)] <= 3.8);
     }
 }
 
