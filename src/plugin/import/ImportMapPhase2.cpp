@@ -391,6 +391,10 @@ void punchPrepare (ModuleImport& m)
 
 void punchFinish (ModuleImport& m)
 {
+    // The foreign module stores no crossover kind; its renders are sample-aligned with the input at every frequency
+    // (linear phase, like the other multiband modules), where our analog split delays the bass by milliseconds.
+    m.set ("~.xoverType", (double) CrossoverType::Digital);
+
     // A band bypass is shared by both sets: our band power in both.
     for (int slot = 0; slot < kMaxBands; ++slot)
     {
