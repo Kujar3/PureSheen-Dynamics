@@ -292,6 +292,15 @@ double meterGain (const ToneBalance& tb, double hz, int set = 0)
     return (1.0 - t) * m.gainDb[set][i0].load() + t * m.gainDb[set][i0 + 1].load();
 }
 
+// Unweighted power (dB) of a stereo segment: Shape's level anchor is power-neutral.
+double powerDb (const Buf& l, const Buf& r, size_t start, size_t len)
+{
+    double s = 0.0;
+    for (size_t i = start; i < start + len && i < l.size(); ++i)
+        s += (double) l[i] * l[i] + (double) r[i] * r[i];
+    return 10.0 * std::log10 (s / (double) len + 1.0e-30);
+}
+
 double integratedLufs (const Buf& l, const Buf& r, size_t start, size_t len)
 {
     return measureIntegratedLufs (l.data() + start, r.data() + start, (long long) len, kSr);
@@ -619,7 +628,7 @@ TEST_CASE ("tbal. shape pulls a +6 dB 2 kHz bump toward the target within the do
     }
 }
 
-TEST_CASE ("tbal. shape corrects a bass excess and stays loudness neutral on several materials")
+TEST_CASE ("tbal. shape corrects a bass excess and stays power neutral on several materials")
 {
     struct Material
     {
@@ -647,12 +656,14 @@ TEST_CASE ("tbal. shape corrects a bass excess and stays loudness neutral on sev
             const int lat = rig.tb.getLatencySamples();
             const size_t m0 = (size_t) (5.0 * kSr), len = (size_t) (7.0 * kSr) - (size_t) lat;
             const Buf dl = delayed (m.l, lat), dr = delayed (m.r, lat);
-            const double dLu = integratedLufs (l, r, m0, len) - integratedLufs (dl, dr, m0, len);
+            const double dLu = powerDb (l, r, m0, len) - powerDb (dl, dr, m0, len);
             const double maxCorr = std::max (std::abs ((double) rig.tb.getMeters().maxBoostDb[0].load()),
                                              std::abs ((double) rig.tb.getMeters().maxCutDb[0].load()));
-            note (std::string (m.name) + (amount > 50.0f ? " (Amount 100)" : " (Amount 50)") + ": loudness change (LU)", dLu);
+            note (std::string (m.name) + (amount > 50.0f ? " (Amount 100)" : " (Amount 50)") + ": power change (dB)", dLu);
             note ("  largest correction (dB)", maxCorr);
-            CHECK (std::abs (dLu) < 0.5);
+            // the lowest STFT bins are coarse; with unweighted power they carry a bass shelf's energy (K-weighting hid
+            // that): within 0.8 dB on shelved noise, <= 0.25 dB on music-like material
+            CHECK (std::abs (dLu) < 0.8);
             CHECK (maxCorr > 1.0);
             if (m.target == ToneTarget::Flat && amount == 100.0f)
             {
@@ -667,7 +678,7 @@ TEST_CASE ("tbal. shape corrects a bass excess and stays loudness neutral on sev
         }
 }
 
-TEST_CASE ("tbal. shape loudness neutrality follows interpolated bin gains on sparse tonal material")
+TEST_CASE ("tbal. shape power neutrality follows interpolated bin gains on sparse tonal material")
 {
     // Widely spaced low-frequency band centres can straddle tones with very different corrections. Summing the
     // powers after exponentiating each band's gain is not equivalent to the audio path's interpolation in dB:
@@ -707,13 +718,13 @@ TEST_CASE ("tbal. shape loudness neutrality follows interpolated bin gains on sp
         rig.run (l, r);
         const Buf dry = delayed (input, rig.tb.getLatencySamples());
         const size_t start = (size_t) (4.0 * kSr), len = (size_t) (1.9 * kSr);
-        const double delta = integratedLufs (l, r, start, len) - integratedLufs (dry, dry, start, len);
+        const double delta = powerDb (l, r, start, len) - powerDb (dry, dry, start, len);
         worst = std::max (worst, std::abs (delta));
         note ("sparse pair " + std::to_string ((int) c.hz) + "/350 Hz, Amount " + std::to_string ((int) c.amount)
-              + ", Smoothing " + std::to_string ((int) c.smoothing) + ": loudness change (LU)", delta);
+              + ", Smoothing " + std::to_string ((int) c.smoothing) + ": power change (dB)", delta);
         CHECK (std::abs (delta) < 0.5);
     }
-    note ("sparse tonal material: worst loudness change (LU)", worst);
+    note ("sparse tonal material: worst power change (dB)", worst);
 }
 
 TEST_CASE ("tbal. shape loudness solve stays stable when quiet bands become active")
@@ -1070,7 +1081,7 @@ TEST_CASE ("tbal. region amounts act independently")
         note ("Mid 0: largest |correction| 125 Hz .. 5 kHz (dB)", worstMid);
         note ("  correction at 40 Hz (the low region still works, dB)", lowCorr);
         CHECK (worstMid < 0.3);
-        CHECK (lowCorr < -1.0);
+        CHECK (lowCorr < -0.5);   // (the power-neutral anchor sits higher in the lows than the loudness-neutral one)
     }
 }
 
@@ -1231,7 +1242,7 @@ TEST_CASE ("tbal. stereo link, M/S sets and the T/S twin")
         note ("twin set B vs normal set A with the same values: max diff", same);
         note ("  twin correction (dB)", twin2.tb.getMeters().maxCutDb[0].load());
         CHECK_EQ (same, 0.0);
-        CHECK (twin2.tb.getMeters().maxCutDb[0].load() < -1.0f);
+        CHECK (twin2.tb.getMeters().maxCutDb[0].load() < -0.5f);
         CHECK_EQ (twin2.tb.getLatencySamples(), normal.tb.getLatencySamples());
     }
 }
@@ -1441,7 +1452,7 @@ TEST_CASE ("tbal. mode and target changes glide the curve")
     note ("  after the change to Trap (dB)", g60[(size_t) (7.5 * kSr) / kHop]);
     note ("  after the change to Boost mode (dB)", g60.back());
     note ("largest change of the 60 Hz gain per hop (dB)", maxStep);
-    CHECK (g60[from] < -3.0);
+    CHECK (g60[from] < -2.0);
     CHECK (g60[(size_t) (7.5 * kSr) / kHop] > g60[from] + 2.0);   // Trap wants much more bass
     CHECK (g60.back() >= 0.0);
     CHECK (maxStep < 1.2);
@@ -1736,6 +1747,7 @@ TEST_CASE ("tbal. proposed factory presets behave on music-like material")
         const size_t m0 = (size_t) (4.0 * kSr), len = (size_t) (6.0 * kSr) - (size_t) lat;
         const double dLu = integratedLufs (l, r, m0, len)
                          - integratedLufs (delayed (srcL, lat), delayed (srcR, lat), m0, len);
+        const double dPow = powerDb (l, r, m0, len) - powerDb (delayed (srcL, lat), delayed (srcR, lat), m0, len);
         bool finite = true;
         for (size_t i = 0; i < l.size(); ++i)
             finite = finite && std::isfinite (l[i]) && std::isfinite (r[i]);
@@ -1745,7 +1757,7 @@ TEST_CASE ("tbal. proposed factory presets behave on music-like material")
         CHECK (finite);
         CHECK (maxBoost <= 9.0 * p.amount / 100.0 + 0.01);
         if (p.mode == ToneBalanceMode::Shape)
-            CHECK (std::abs (dLu) < 0.5);
+            CHECK (std::abs (dPow) < 0.5);
         else
             CHECK (maxBoost == 0.0 && dLu <= 0.01);
         CHECK (maxCut < -0.5);

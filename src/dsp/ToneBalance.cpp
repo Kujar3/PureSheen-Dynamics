@@ -1,7 +1,6 @@
 #include "dsp/ToneBalance.h"
 #include "dsp/SpectralEngine.h"
 #include "dsp/ToneTargets.h"
-#include "core/Loudness.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,15 +31,16 @@
 // - All three detectors (Shape / Boost S at tauS, Cut F at tauC, Cut reference S at 1.5 s) always run, so a mode change
 //   only glides the curve (80 ms one-pole, at least 300 ms and until it has converged) and never restarts detection.
 // - Shape corrects 80 % of the deviation at Amount 100 (the reference's noise renders: pink vs brown). Its level anchor
-//   stays loudness-neutral: an energy-weighted anchor fitted to the same noise renders (it kept brown noise's lows and
-//   lifted the rest by 5 dB) lifted quiet acoustic music by 2.5 LU and over full scale, where the reference stays near
-//   (slightly under) neutral on music.
-// - Loudness neutrality (Shape) is computed on the amount-scaled, region-weighted curve, and its level shift x is
-//   applied in proportion to the region weight w (Newton steps solve sum Q 10^(final (C - x w) / 10) = sum Q, where
-//   final () applies the limits below). So the curve is loudness neutral at every Amount (not only at 100), the limits
-//   are taken into account, and a region at 0 % gets no correction at all, the shift included. Q is the K-weighted
-//   power of every bin (BS.1770 pre-filter response). The solve interpolates the final dB curve at each bin before
-//   converting to power gain, exactly as synthesis does; averaging endpoint power gains would overestimate energy.
+//   is POWER-neutral (unweighted): the reference keeps the output power within ~0.2 dB of the input on pink noise with
+//   band level steps at every Amount, while its K-weighted loudness drops 0.4 .. 2.8 LU (cutting highs costs more
+//   loudness than power); a K-weighted (loudness-neutral) anchor read 1.1 .. 1.8 dB high in every band. (An earlier
+//   energy-weighted offset anchor without this solve lifted quiet acoustic music by 2.5 LU.)
+// - Power neutrality (Shape) is computed on the amount-scaled, region-weighted curve, and its level shift x is applied
+//   in proportion to the region weight w (Newton steps solve sum Q 10^(final (C - x w) / 10) = sum Q, where final ()
+//   applies the limits below). So the curve is power neutral at every Amount (not only at 100), the limits are taken
+//   into account, and a region at 0 % gets no correction at all, the shift included. Q is the power of every bin. The
+//   solve interpolates the final dB curve at each bin before converting to power gain, exactly as synthesis does;
+//   averaging endpoint power gains would overestimate energy.
 //   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / empty-band fade kinks.
 //   The +9 / -12 dB limits scale with Amount (at most +9 x Amount / 100 dB boost).
 // - "No boost in empty bands" fades boosts out between 34 and 40 dB under the loudest band (no hard switch), and also
@@ -144,7 +144,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
     std::vector<float> binWA, binWB;
     // band -> bin interpolation
     std::vector<int> binLo;
-    std::vector<float> binK;   // K-weighting power per bin (loudness neutrality)
     std::vector<float> binT;
     int dispLo[kToneDisplayPoints] {};
     float dispT[kToneDisplayPoints] {};
@@ -223,10 +222,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         binWA.assign ((size_t) numBins, 0.0f);
         binWB.assign ((size_t) numBins, 0.0f);
         binLo.assign ((size_t) numBins, 0);
-        binK.assign ((size_t) numBins, 0.0f);
-        for (int k = 1; k < numBins; ++k)
-            binK[(size_t) k] = (float) std::pow (10.0, std::max ((double) kWeightingResponseDb ((double) k * binHz, sampleRate),
-                                                                 -100.0) / 10.0);
         binT.assign ((size_t) numBins, 0.0f);
         auto centreAt = [this] (int b) noexcept
         {
@@ -694,8 +689,8 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             return v;
         };
 
-        // 7. loudness neutral (Shape): Newton steps for the region-weighted shift x with
-        //    sum q 10^(interpolate (final (C - x w)) / 10) = sum q   (q: K-weighted bin power)
+        // 7. power neutral (Shape): Newton steps for the region-weighted shift x with
+        //    sum q 10^(interpolate (final (C - x w)) / 10) = sum q   (q: bin power)
         double shift = 0.0;
         if (mode == ToneBalanceMode::Shape && amount > 0.0)
         {
@@ -892,7 +887,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     bp[a] += binWA[(size_t) k] * p;
                 if (b >= 0)
                     bp[b] += binWB[(size_t) k] * p;
-                lp[k] = p * binK[(size_t) k];
+                lp[k] = p;
             }
 
             const auto& sp = params.sets[f.linked ? 0 : l];

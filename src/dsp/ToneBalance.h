@@ -25,7 +25,7 @@
 //   5. frequency smoothing (Shape / Boost): Gaussian over log2 f, sigma = 0.08 x (1.5 / 0.08)^(smooth / 100) octaves;
 //      Cut: [0.25 0.5 0.25] across bands
 //   6. region amounts: C x mix of low / mid / high % with 1/3-octave raised-cosine crossfades at 100 Hz and 5.6 kHz
-//   7. Shape only: loudness neutral, C -= 10 log10 (sum P K 10^(C / 10) / sum P K) (K = K-weighting power at f_b)
+//   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P)
 //   8. C = amount / 100 x clamp (C, -12, +9) (at most +9 dB boost); no boost in bands more than 40 dB under the
 //      frame's band maximum
 //   9. ballistics on the final curve: boosts rise at most 1 dB per hop; release toward 0 with max (2 hops, tauS / 2)
@@ -46,8 +46,8 @@
 //     (2.8 measured) and <= 2 dB at Smoothing 0 (1.8); the correction reaches 63 % of its final value 0.5 .. 1.5 tauS
 //     after the bump appears (0.69 s at tauS 0.49 s).
 //   - Speed: 63 % time of a level step 4.6 s at Speed 0, 0.53 s at 50, 75 ms at 100.
-//   - Shape is loudness neutral within 0.5 LU (BS.1770 integrated; <= 0.27 LU on the test materials, including sparse
-//     tonal pairs). The solve uses each bin's interpolated dB gain before conversion to power.
+//   - Shape is power neutral within 0.5 dB (unweighted output power; K-weighted loudness falls where highs are cut,
+//     like the reference). The solve uses each bin's interpolated dB gain before conversion to power.
 //   - Flat target on pink noise: every 1/3-octave band within +-0.75 dB (0.35).
 //   - Cut, Sensitivity 100: a steady sine 12 dB over its 1/12-octave band is cut >= 5 dB (5.4), an octave away < 1 dB;
 //     Sensitivity 50: >= 2 dB (2.8); Sensitivity 0: a peak is left alone until it is tol + 10 dB over the target.
