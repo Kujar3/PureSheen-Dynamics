@@ -21,5 +21,6 @@ struct ToneTargetShape
     float sub, bass, lowMid, pres, slope, air, tol;
 };
 
-const ToneTargetShape& toneTargetShape (ToneTarget) noexcept;
+const ToneTargetShape& toneTargetShape (ToneTarget) noexcept;   // the curve itself only when not measured
+bool toneTargetIsMeasured (ToneTarget) noexcept;                  // the curve is the reference's measured table
 } // namespace ps

@@ -185,7 +185,8 @@ enum class MatchPhase : int { Linear = 0, Minimum };
 
 enum class ToneBalanceMode : int { Shape = 0, Cut, Boost };
 
-// Tone Balance targets (our own curves relative to pink noise, see ToneBalance.h toneTargetDb). Index = choice value.
+// Tone Balance targets (curves relative to pink noise: measured from the reference where rendered, else our own; see
+// ToneTargets.cpp). Index = choice value.
 enum class ToneTarget : int
 {
     Balanced = 0, Cinematic, Country, Edm, Folk, HipHop, Jazz, Pop, Reggae, RnbSoul, Rock,
