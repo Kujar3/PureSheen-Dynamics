@@ -369,6 +369,22 @@ int runRender (const juce::File& input, const juce::File& output, const juce::St
     for (auto t : proc.getChainOrder())
         std::cout << " " << ps::moduleInfo (t).shortName;
     std::cout << "\n";
+    // Per-module latency (the chain sums every module in it, powered on or off; T/S adds the splitter).
+    auto& chain = proc.getChain();
+    for (auto t : proc.getChainOrder())
+    {
+        const auto prefix = juce::String (ps::moduleInfo (t).idPrefix);
+        const int a = chain.getModule (t, 0).getLatencySamples();
+        const int b = chain.hasTwin (t) ? chain.getModule (t, 1).getLatencySamples() : a;
+        auto* mode = proc.getParameter (prefix + ".chMode");
+        std::cout << "    " << std::left << std::setw (8) << ps::moduleInfo (t).shortName << std::right
+                  << (proc.getParameterValue (prefix + ".on") > 0.5f ? " on " : " off") << std::setw (7) << a;
+        if (b != a)
+            std::cout << " (twin " << b << ")";
+        if (mode != nullptr)
+            std::cout << "  " << mode->getCurrentValueAsText();
+        std::cout << "\n";
+    }
     if (proc.isModuleInChain (ps::ModuleType::Maximizer) && proc.getParameterValue ("max.on") > 0.5f)
         std::cout << "  maximizer output level " << std::fixed << std::setprecision (2)
                   << proc.getParameterValue ("max.ceiling") << " dB, true peak "
