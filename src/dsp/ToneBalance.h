@@ -18,15 +18,14 @@
 //      plus S (b) at 1.5 s. Tame Transients: bands with L - S > 6 dB (Cut: L - F) attack at once (Cut: the cut lands
 //      in the onset's frame); in Shape boosts are frozen for 3 hops in flagged bands
 //   3. target T (b) = toneTargetDb (target, f_b); level offset o = octave-width weighted mean of S - T over
-//      100 Hz .. 5.6 kHz (Shape: over 20 Hz .. 8 kHz, each band also weighted by its power density^0.75; gated bands
-//      excluded); deviation D = T + o - S (positive = needs a boost)
+//      100 Hz .. 5.6 kHz (gated bands excluded); deviation D = T + o - S (positive = needs a boost)
 //   4. Shape: C = 0.8 D with a 0.5 dB soft dead band (the reference corrects 80 % of the deviation at Amount 100).
 //      Boost: C = max (0, (T + o - tol) - S). Cut: reference R = T + o + (tol + 10 dB) (1 - sens / 100)^1.5,
 //      excess E = F - R, C = -0.8 softknee (E, 3 dB), cuts only
 //   5. frequency smoothing (Shape / Boost): Gaussian over log2 f, sigma = 0.08 x (1.5 / 0.08)^(smooth / 100) octaves;
 //      Cut: [0.25 0.5 0.25] across bands
 //   6. region amounts: C x mix of low / mid / high % with 1/3-octave raised-cosine crossfades at 100 Hz and 5.6 kHz
-//   7. (no loudness-neutral shift: the reference has none; step 3's power-weighted offset anchors the level)
+//   7. Shape only: loudness neutral, C -= 10 log10 (sum P K 10^(C / 10) / sum P K) (K = K-weighting power at f_b)
 //   8. C = amount / 100 x clamp (C, -12, +9) (at most +9 dB boost); no boost in bands more than 40 dB under the
 //      frame's band maximum
 //   9. ballistics on the final curve: boosts rise at most 1 dB per hop; release toward 0 with max (2 hops, tauS / 2)
@@ -36,9 +35,10 @@
 // Neutral: Amount 0 (the default) -> exact null against the input delayed by N.
 // Monitors: none of its own (Delta and channel solo are the slot's).
 // T/S: the twin (getParamSet() == 1) reads set B for both channels (Module.h).
-// (dsp-tone) Implementation notes (details at the top of ToneBalance.cpp): steps 2 - 4 and 7 follow measurements of
-// the reference (noise renders per target); step 8 limits scale with Amount (+9 x Amount / 100 dB at most); boosts
-// also fade out in bands that are gated.
+// (dsp-tone) Implementation notes (details at the top of ToneBalance.cpp): steps 2 and 4 and the targets follow
+// measurements of the reference (noise renders per target); step 7 is solved on the amount-scaled, region-weighted,
+// limited curve (neutral at every Amount; a region at 0 % gets no shift either); step 8 limits scale with Amount
+// (+9 x Amount / 100 dB at most); boosts also fade out in bands that are gated.
 // Silent frames hold detector history while control ramps and gain releases continue, so edits during a pause
 // have settled when audio resumes.
 // Measured behaviour (tests/ToneBalanceTests.cpp, 48 kHz, Amount 100, defaults unless noted):
@@ -46,7 +46,8 @@
 //     (2.8 measured) and <= 2 dB at Smoothing 0 (1.8); the correction reaches 63 % of its final value 0.5 .. 1.5 tauS
 //     after the bump appears (0.69 s at tauS 0.49 s).
 //   - Speed: 63 % time of a level step 4.6 s at Speed 0, 0.53 s at 50, 75 ms at 100.
-//   - Shape keeps the level where the energy is: on brown noise the lows stay within 1 dB while the highs rise.
+//   - Shape is loudness neutral within 0.5 LU (BS.1770 integrated; <= 0.27 LU on the test materials, including sparse
+//     tonal pairs). The solve uses each bin's interpolated dB gain before conversion to power.
 //   - Flat target on pink noise: every 1/3-octave band within +-0.75 dB (0.35).
 //   - Cut, Sensitivity 100: a steady sine 12 dB over its 1/12-octave band is cut >= 5 dB (5.4), an octave away < 1 dB;
 //     Sensitivity 50: >= 2 dB (2.8); Sensitivity 0: a peak is left alone until it is tol + 10 dB over the target.

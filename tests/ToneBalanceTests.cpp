@@ -619,7 +619,7 @@ TEST_CASE ("tbal. shape pulls a +6 dB 2 kHz bump toward the target within the do
     }
 }
 
-TEST_CASE ("tbal. shape corrects a bass excess on several materials (the level anchored where the energy is)")
+TEST_CASE ("tbal. shape corrects a bass excess and stays loudness neutral on several materials")
 {
     struct Material
     {
@@ -652,8 +652,7 @@ TEST_CASE ("tbal. shape corrects a bass excess on several materials (the level a
                                              std::abs ((double) rig.tb.getMeters().maxCutDb[0].load()));
             note (std::string (m.name) + (amount > 50.0f ? " (Amount 100)" : " (Amount 50)") + ": loudness change (LU)", dLu);
             note ("  largest correction (dB)", maxCorr);
-            // not loudness neutral (like the reference): the level follows the energy-weighted anchor
-            CHECK (std::abs (dLu) < 5.0);
+            CHECK (std::abs (dLu) < 0.5);
             CHECK (maxCorr > 1.0);
             if (m.target == ToneTarget::Flat && amount == 100.0f)
             {
@@ -668,7 +667,56 @@ TEST_CASE ("tbal. shape corrects a bass excess on several materials (the level a
         }
 }
 
-TEST_CASE ("tbal. shape stays stable when quiet bands become active")
+TEST_CASE ("tbal. shape loudness neutrality follows interpolated bin gains on sparse tonal material")
+{
+    // Widely spaced low-frequency band centres can straddle tones with very different corrections. Summing the
+    // powers after exponentiating each band's gain is not equivalent to the audio path's interpolation in dB:
+    // that approximation overestimated the output power and attenuated the 180 / 350 Hz pair by 0.84 LU.
+    struct Case
+    {
+        double hz;
+        float amount, smoothing, low, mid, high;
+    };
+    const Case cases[] {
+        { 120.0, 100.0f, 50.0f, 100.0f, 100.0f, 100.0f },
+        { 180.0, 100.0f, 50.0f, 100.0f, 100.0f, 100.0f },
+        { 120.0,  50.0f, 50.0f, 100.0f, 100.0f, 100.0f },
+        { 180.0,  50.0f, 50.0f, 100.0f, 100.0f, 100.0f },
+        { 120.0, 100.0f,  0.0f, 100.0f, 100.0f, 100.0f },
+        { 180.0, 100.0f,  0.0f, 100.0f, 100.0f, 100.0f },
+        { 120.0, 100.0f, 50.0f,   0.0f, 100.0f, 100.0f },
+        { 180.0, 100.0f, 50.0f, 100.0f,  50.0f,   0.0f }
+    };
+    double worst = 0.0;
+    for (const auto& c : cases)
+    {
+        Buf input = pink (6.0, 575u, 0.004);
+        for (size_t i = 0; i < input.size(); ++i)
+        {
+            const double t = (double) i / kSr;
+            input[i] += (float) (0.2 * std::sin (2.0 * pstest::kPi * c.hz * t)
+                                + 0.3 * std::sin (2.0 * pstest::kPi * 350.0 * t));
+        }
+        Rig rig;
+        rig.common (ToneTarget::Flat, ToneBalanceMode::Shape, c.amount);
+        rig.setBoth ("smooth", c.smoothing);
+        rig.setBoth ("low", c.low);
+        rig.setBoth ("mid", c.mid);
+        rig.setBoth ("high", c.high);
+        Buf l = input, r = input;
+        rig.run (l, r);
+        const Buf dry = delayed (input, rig.tb.getLatencySamples());
+        const size_t start = (size_t) (4.0 * kSr), len = (size_t) (1.9 * kSr);
+        const double delta = integratedLufs (l, r, start, len) - integratedLufs (dry, dry, start, len);
+        worst = std::max (worst, std::abs (delta));
+        note ("sparse pair " + std::to_string ((int) c.hz) + "/350 Hz, Amount " + std::to_string ((int) c.amount)
+              + ", Smoothing " + std::to_string ((int) c.smoothing) + ": loudness change (LU)", delta);
+        CHECK (std::abs (delta) < 0.5);
+    }
+    note ("sparse tonal material: worst loudness change (LU)", worst);
+}
+
+TEST_CASE ("tbal. shape loudness solve stays stable when quiet bands become active")
 {
     // Sparse tones crossing the detector gate leave different histories in the power average and the boost
     // presence fade. The neutrality solve must converge across the fade's zero-gain corner. An unbounded Newton
@@ -1022,7 +1070,7 @@ TEST_CASE ("tbal. region amounts act independently")
         note ("Mid 0: largest |correction| 125 Hz .. 5 kHz (dB)", worstMid);
         note ("  correction at 40 Hz (the low region still works, dB)", lowCorr);
         CHECK (worstMid < 0.3);
-        CHECK (lowCorr < -0.5);   // the bass excess carries the energy anchor, so only part of it is corrected
+        CHECK (lowCorr < -1.0);
     }
 }
 
@@ -1183,7 +1231,7 @@ TEST_CASE ("tbal. stereo link, M/S sets and the T/S twin")
         note ("twin set B vs normal set A with the same values: max diff", same);
         note ("  twin correction (dB)", twin2.tb.getMeters().maxCutDb[0].load());
         CHECK_EQ (same, 0.0);
-        CHECK (twin2.tb.getMeters().maxCutDb[0].load() < -0.3f);
+        CHECK (twin2.tb.getMeters().maxCutDb[0].load() < -1.0f);
         CHECK_EQ (twin2.tb.getLatencySamples(), normal.tb.getLatencySamples());
     }
 }
@@ -1393,7 +1441,7 @@ TEST_CASE ("tbal. mode and target changes glide the curve")
     note ("  after the change to Trap (dB)", g60[(size_t) (7.5 * kSr) / kHop]);
     note ("  after the change to Boost mode (dB)", g60.back());
     note ("largest change of the 60 Hz gain per hop (dB)", maxStep);
-    CHECK (g60[from] < -1.0);   // the bass excess carries the energy anchor, so only part of it is cut
+    CHECK (g60[from] < -3.0);
     CHECK (g60[(size_t) (7.5 * kSr) / kHop] > g60[from] + 2.0);   // Trap wants much more bass
     CHECK (g60.back() >= 0.0);
     CHECK (maxStep < 1.2);
@@ -1558,8 +1606,7 @@ TEST_CASE ("tbal. meters match the audio")
     note ("target offset (dB)", rig.tb.getMeters().targetOffsetDb[0].load());
     CHECK_RANGE (l40 - l1k, 6.5, 9.0);
     CHECK_RANGE (l12k - l1k, -7.0, -4.5);
-    // the offset is energy-weighted (Shape): between the 1 kHz level and the louder bass
-    CHECK_RANGE (rig.tb.getMeters().targetOffsetDb[0].load() - l1k, -1.5, l40 - l1k + 1.5);
+    CHECK (std::abs (rig.tb.getMeters().targetOffsetDb[0].load() - l1k) < 1.5);
 }
 
 TEST_CASE ("tbal. works the same at 44.1, 96 and 192 kHz")
@@ -1701,6 +1748,6 @@ TEST_CASE ("tbal. proposed factory presets behave on music-like material")
             CHECK (std::abs (dLu) < 0.5);
         else
             CHECK (maxBoost == 0.0 && dLu <= 0.01);
-        CHECK (maxCut < -0.5 || maxBoost > 0.5);   // each preset does something
+        CHECK (maxCut < -0.5);
     }
 }

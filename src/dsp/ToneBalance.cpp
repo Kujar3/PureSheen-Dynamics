@@ -1,6 +1,7 @@
 #include "dsp/ToneBalance.h"
 #include "dsp/SpectralEngine.h"
 #include "dsp/ToneTargets.h"
+#include "core/Loudness.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,18 +25,23 @@
 //   is excluded. The octave width of a band is the weighted sum of its bins' exact octave spans, so pink noise
 //   measures flat in every band (also the merged low ones).
 // - Shape / Boost detector S: a one-pole on band power (tauS), in dB afterwards (measured: the reference's Shape on
-//   music matches a power average much better than a dB average, which under-reads peaky bands). Cut: F (tauC) and
-//   the 1.5 s reference are one-poles on band power too (peak-leaning in dB, which suits a cut detector).
+//   music matches a power average better than a dB average, which under-reads peaky bands). Cut: F (tauC) and the
+//   1.5 s reference are one-poles on band power too (peak-leaning in dB, which suits a cut detector).
 //   Every detector uses a growing memory after reset (coefficient min (a, n / (n + 1)) for the n-th measured frame), so
 //   the first estimate is an average, not a single noisy frame; the correction also fades in over 300 ms after reset.
 // - All three detectors (Shape / Boost S at tauS, Cut F at tauC, Cut reference S at 1.5 s) always run, so a mode change
 //   only glides the curve (80 ms one-pole, at least 300 ms and until it has converged) and never restarts detection.
-// - Level anchor (Shape, measured: the reference): the offset o is the mean of S - T over 20 Hz .. 8 kHz weighted by
-//   width x (band power density)^0.75, so the target sits where the energy is (brown noise: its lows stay, everything
-//   above rises); there is no loudness-neutral shift. Shape corrects 80 % of the deviation at Amount 100. The
-//   reference's target tables and these rules give pink / brown / white noise within ~0.5 dB of its renders (apart
-//   from the bottom octave and the top 1/3 octave). On music its per-band gain follows the band level more strongly
-//   (test slice S: correlation -0.7 at 1 kHz, ours +0.4) and it cuts the mids and highs ~2 dB more: not modelled.
+// - Shape corrects 80 % of the deviation at Amount 100 (the reference's noise renders: pink vs brown). Its level anchor
+//   stays loudness-neutral: an energy-weighted anchor fitted to the same noise renders (it kept brown noise's lows and
+//   lifted the rest by 5 dB) lifted quiet acoustic music by 2.5 LU and over full scale, where the reference stays near
+//   (slightly under) neutral on music.
+// - Loudness neutrality (Shape) is computed on the amount-scaled, region-weighted curve, and its level shift x is
+//   applied in proportion to the region weight w (Newton steps solve sum Q 10^(final (C - x w) / 10) = sum Q, where
+//   final () applies the limits below). So the curve is loudness neutral at every Amount (not only at 100), the limits
+//   are taken into account, and a region at 0 % gets no correction at all, the shift included. Q is the K-weighted
+//   power of every bin (BS.1770 pre-filter response). The solve interpolates the final dB curve at each bin before
+//   converting to power gain, exactly as synthesis does; averaging endpoint power gains would overestimate energy.
+//   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / empty-band fade kinks.
 //   The +9 / -12 dB limits scale with Amount (at most +9 x Amount / 100 dB boost).
 // - "No boost in empty bands" fades boosts out between 34 and 40 dB under the loudest band (no hard switch), and also
 //   scales boosts by a smoothed presence of the band (0 while it is gated): a gated band holds a level that may be
@@ -69,10 +75,8 @@ constexpr double kParamSmoothSec = 0.05;
 constexpr double kWarmSec = 0.3;
 constexpr double kGlideTauSec = 0.08, kGlideMinSec = 0.3;
 constexpr double kCutRefTauSec = 1.5;
+constexpr double kPreAverageSec = 0.05;   // power pre-average of S: min (50 ms, tauS / 2)
 constexpr double kOffsetLoHz = 100.0, kOffsetHiHz = 5600.0;
-// Shape anchors the target where the energy is (measured: the reference): o = sum w (S - T) / sum w over 20 Hz ..
-// 8 kHz with w = width x (band power density)^0.75, and no loudness-neutral shift afterwards.
-constexpr double kShapeOffsetHiHz = 8000.0, kShapeOffsetPowerExp = 0.75;
 
 #if PS_TBAL_HAS_SSE_CSR
 struct ScopedFlushDenormals
@@ -135,12 +139,12 @@ struct ToneBalance::Impl final : SpectralEngine::Client
     std::vector<double> bandLog2;
     std::vector<float> bandHz, bandWidthOct, bandRegion;   // bandRegion: 3 per band (low, mid, high basis)
     std::vector<uint8_t> bandInOffset;                            // 100 Hz .. 5.6 kHz
-    std::vector<uint8_t> bandInShapeOffset;                       // up to 8 kHz (Shape)
     // measurement: each bin contributes to up to two bands
     std::vector<int> binBandA, binBandB;
     std::vector<float> binWA, binWB;
     // band -> bin interpolation
     std::vector<int> binLo;
+    std::vector<float> binK;   // K-weighting power per bin (loudness neutrality)
     std::vector<float> binT;
     int dispLo[kToneDisplayPoints] {};
     float dispT[kToneDisplayPoints] {};
@@ -149,10 +153,15 @@ struct ToneBalance::Impl final : SpectralEngine::Client
 
     struct Lane
     {
-        // sPow: the Shape / Boost detector (power one-pole, tauS), sLev: its level in dB (S); slowPow: the Cut
+        // sPow: power pre-average of the Shape / Boost detector, sLev: its dB one-pole (S); slowPow: the Cut
         // reference (1.5 s), fastPow: F (tauC); sDb / refDb: per hop, see updateLane
         std::vector<float> power, sPow, sLev, slowPow, fastPow, sDb, refDb, c, tmp, gBoost, gCut, out;
+        // K-weighted power per bin and its short pre-average (as sPow). Keep bins separate: interpolation in dB
+        // does not commute with conversion to power gain, especially on sparse spectra in the merged low bands.
+        std::vector<float> loudPow, loudAvg;
+        std::vector<double> shiftGain, shiftSlope;   // per-band scratch for the loudness solve
         std::vector<float> presence;   // 0..1: smoothed "this band is measured" (0 while gated); scales boosts
+        int loudCount = 0;
         std::vector<uint16_t> count;
         std::vector<uint8_t> gated, freeze, onset;
         std::vector<float> kernel;   // nb x nb row-normalised Gaussian weights
@@ -194,7 +203,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         bandWidthOct.assign ((size_t) nb, 0.0f);
         bandRegion.assign ((size_t) nb * 3, 0.0f);
         bandInOffset.assign ((size_t) nb, 0);
-        bandInShapeOffset.assign ((size_t) nb, 0);
         for (int b = 0; b < nb; ++b)
         {
             const double f = centres[(size_t) b];
@@ -207,7 +215,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             bandRegion[(size_t) b * 3 + 1] = (float) (sLow * (1.0 - sHigh));
             bandRegion[(size_t) b * 3 + 2] = (float) sHigh;
             bandInOffset[(size_t) b] = (uint8_t) (f >= kOffsetLoHz && f <= kOffsetHiHz ? 1 : 0);
-            bandInShapeOffset[(size_t) b] = (uint8_t) (f <= kShapeOffsetHiHz ? 1 : 0);
         }
 
         // measurement weights (triangles in log f, mirrored virtual neighbours at both ends)
@@ -216,6 +223,10 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         binWA.assign ((size_t) numBins, 0.0f);
         binWB.assign ((size_t) numBins, 0.0f);
         binLo.assign ((size_t) numBins, 0);
+        binK.assign ((size_t) numBins, 0.0f);
+        for (int k = 1; k < numBins; ++k)
+            binK[(size_t) k] = (float) std::pow (10.0, std::max ((double) kWeightingResponseDb ((double) k * binHz, sampleRate),
+                                                                 -100.0) / 10.0);
         binT.assign ((size_t) numBins, 0.0f);
         auto centreAt = [this] (int b) noexcept
         {
@@ -320,6 +331,10 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                              &lane.tmp, &lane.gBoost, &lane.gCut, &lane.out })
                 v->assign (n, 0.0f);
             lane.count.assign (n, 0);
+            lane.loudPow.assign ((size_t) numBins, 0.0f);
+            lane.loudAvg.assign ((size_t) numBins, 0.0f);
+            lane.shiftGain.assign (n, 0.0);
+            lane.shiftSlope.assign (n, 0.0);
             lane.presence.assign (n, 0.0f);
             lane.gated.assign (n, 0);
             lane.freeze.assign (n, 0);
@@ -339,7 +354,10 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                              &lane.tmp, &lane.gBoost, &lane.gCut, &lane.out })
                 std::fill (v->begin(), v->end(), 0.0f);
             std::fill (lane.count.begin(), lane.count.end(), (uint16_t) 0);
+            std::fill (lane.loudPow.begin(), lane.loudPow.end(), 0.0f);
+            std::fill (lane.loudAvg.begin(), lane.loudAvg.end(), 0.0f);
             std::fill (lane.presence.begin(), lane.presence.end(), 0.0f);
+            lane.loudCount = 0;
             std::fill (lane.gated.begin(), lane.gated.end(), (uint8_t) 0);
             std::fill (lane.freeze.begin(), lane.freeze.end(), (uint8_t) 0);
             std::fill (lane.onset.begin(), lane.onset.end(), (uint8_t) 0);
@@ -443,6 +461,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         const double tauC = 0.4 * std::pow (5.0 / 400.0, lane.cutSpeed / 100.0);
         const double aS = std::exp (-hopSec / tauS);
         const double aPresence = std::exp (-hopSec / std::clamp (tauS, 0.1, 0.5));
+        const double aP = std::exp (-hopSec / std::min (kPreAverageSec, 0.5 * tauS));
         const double aSlow = std::exp (-hopSec / kCutRefTauSec);
         const double aF = std::exp (-hopSec / tauC);
         const double aRel = std::exp (-hopSec / std::max (2.0 * hopSec, cutMode ? tauC : 0.5 * tauS));
@@ -521,6 +540,15 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                 if (n < 65535)
                     lane.count[i] = (uint16_t) (n + 1);
             }
+            {
+                const double eL = std::min (aP, (double) lane.loudCount / (double) (lane.loudCount + 1));
+                for (size_t k = 0; k < lane.loudPow.size(); ++k)
+                {
+                    const double q = lane.loudPow[k];
+                    lane.loudAvg[k] = (float) (q + ((double) lane.loudAvg[k] - q) * eL);
+                }
+                lane.loudCount = std::min (lane.loudCount + 1, 1 << 20);
+            }
             if (anyMeasured)
                 lane.warm = std::min (1.0, lane.warm + hopSec / kWarmSec);
         }
@@ -553,18 +581,14 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         const float* tgt = targetDb.data() + (size_t) targetIndex * (size_t) nb;
         const float* tol = targetTol.data() + (size_t) targetIndex * (size_t) nb;
         {
-            const bool shape = mode == ToneBalanceMode::Shape;
             double num = 0.0, den = 0.0;
             for (int b = 0; b < nb; ++b)
             {
                 const auto i = (size_t) b;
-                if (! (shape ? bandInShapeOffset[i] : bandInOffset[i]) || lane.gated[i] || lane.count[i] == 0)
+                if (! bandInOffset[i] || lane.gated[i] || lane.count[i] == 0)
                     continue;
-                // Shape: power-weighted (relative to the loudest band, so the weights stay in range)
-                const double w = (double) bandWidthOct[i]
-                                 * (shape ? std::exp (kShapeOffsetPowerExp * kPowDbToLn * ((double) lane.sDb[i] - smax)) : 1.0);
-                num += w * ((double) lane.sDb[i] - (double) tgt[i]);
-                den += w;
+                num += (double) bandWidthOct[i] * ((double) lane.sDb[i] - (double) tgt[i]);
+                den += bandWidthOct[i];
             }
             if (den > 0.0)
             {
@@ -670,8 +694,64 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             return v;
         };
 
-        // 7. no loudness-neutral shift (the reference has none): Shape anchors the level with the power-weighted offset
-        const double shift = 0.0;
+        // 7. loudness neutral (Shape): Newton steps for the region-weighted shift x with
+        //    sum q 10^(interpolate (final (C - x w)) / 10) = sum q   (q: K-weighted bin power)
+        double shift = 0.0;
+        if (mode == ToneBalanceMode::Shape && amount > 0.0)
+        {
+            double q0 = 0.0;
+            for (const float q : lane.loudAvg)
+                q0 += (double) q;
+            if (q0 > 1.0e-30)
+            {
+                // The pre-limited curve is nonnegative at -12 and nonpositive at +9. Keep that bracket:
+                // the empty-band fade and limiting make the derivative discontinuous, so plain Newton can
+                // bounce across a kink and finish far from neutrality on a newly populated, sparse spectrum.
+                double lower = -kMaxCutDb, upper = kMaxBoostDb;
+                double bestShift = shift, bestError = 1.0e30;
+                for (int it = 0; it < 16; ++it)
+                {
+                    for (int b = 0; b < nb; ++b)
+                    {
+                        const auto i = (size_t) b;
+                        lane.shiftGain[i] = finalValue (i, shift, &lane.shiftSlope[i]);
+                    }
+                    double f = 0.0, fd = 0.0;
+                    for (size_t k = 1; k < lane.loudAvg.size(); ++k)
+                    {
+                        const double q = lane.loudAvg[k];
+                        if (q <= 0.0)
+                            continue;
+                        const auto lo = (size_t) binLo[k], hi = std::min (lo + 1, (size_t) nb - 1);
+                        const double t = binT[k];
+                        const double v = lane.shiftGain[lo] + t * (lane.shiftGain[hi] - lane.shiftGain[lo]);
+                        const double d = lane.shiftSlope[lo] + t * (lane.shiftSlope[hi] - lane.shiftSlope[lo]);
+                        const double e = q * std::exp (kPowDbToLn * v);
+                        f += e;
+                        fd += e * d;
+                    }
+                    if (f <= 0.0)
+                        break;
+                    const double g = std::log (f / q0);              // in nepers of power
+                    if (std::abs (g) < bestError)
+                    {
+                        bestError = std::abs (g);
+                        bestShift = shift;
+                    }
+                    if (bestError < kPowDbToLn * 1.0e-4)
+                        break;
+                    if (g > 0.0)
+                        lower = shift;
+                    else
+                        upper = shift;
+                    const double midpoint = 0.5 * (lower + upper);
+                    const double dg = kPowDbToLn * fd / f;           // d g / d x
+                    const double next = std::abs (dg) > 1.0e-12 ? shift - g / dg : midpoint;
+                    shift = next > lower && next < upper ? next : midpoint;
+                }
+                shift = bestShift;
+            }
+        }
         for (int b = 0; b < nb; ++b)
             lane.tmp[(size_t) b] = (float) finalValue ((size_t) b, shift, nullptr);
 
@@ -799,9 +879,11 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         {
             auto& lane = lanes[l];
             std::fill (lane.power.begin(), lane.power.end(), 0.0f);
+            std::fill (lane.loudPow.begin(), lane.loudPow.end(), 0.0f);
             const float* p0 = f.power[0];
             const float* p1 = f.power[1];
             float* bp = lane.power.data();
+            float* lp = lane.loudPow.data();
             for (int k = 1; ! f.silent && k < f.numBins; ++k)
             {
                 const float p = f.linked ? 0.5f * (p0[k] + p1[k]) : (l == 0 ? p0[k] : p1[k]);
@@ -810,6 +892,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     bp[a] += binWA[(size_t) k] * p;
                 if (b >= 0)
                     bp[b] += binWB[(size_t) k] * p;
+                lp[k] = p * binK[(size_t) k];
             }
 
             const auto& sp = params.sets[f.linked ? 0 : l];
