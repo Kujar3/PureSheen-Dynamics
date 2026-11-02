@@ -61,7 +61,9 @@
 //   a deep hole does not spill its deviation into the neighbouring octave; the reference's 4 kHz stays put while the
 //   top octaves go from -24 to -60 dB). The power-neutral shift is solved WITHOUT the boost cap, which applies
 //   afterwards: on white noise, whose bass boost is capped, the reference keeps the rest of the curve 1.5 .. 3 dB lower
-//   than a cap-aware solve would (the output loses power when boosts are capped).
+//   than a cap-aware solve would (the output loses power when boosts are capped). Boosts below ~40 Hz are rolled off
+//   before that limit (kBoostRollHz): the sub of pink noise gets less than the octave above it, white noise stays at
+//   the cap.
 // - Boosts are scaled by a smoothed presence of the band (0 while it is gated): a gated band holds a level that may be
 //   stale (e.g. the leakage of a tone's onset). There is no "empty band" rule beyond the gate: the reference lifts
 //   bands 40-60 dB under the loudest one (dark lo-fi / ambient slices with a bright target got +4..6 dB more air from it
@@ -94,6 +96,11 @@ constexpr int kNumTargets = (int) ToneTarget::Count;
 constexpr double kDbToLn = 0.11512925464970228;     // ln (10) / 20
 constexpr double kPowDbToLn = 0.23025850929940457;  // ln (10) / 10
 constexpr double kMaxCutDb = 12.0;
+// Boosts in the bottom octave are weighted 1 / (1 + (29.4 Hz / f)^3.75) before the cap (measured: on pink noise the
+// reference's boost at Amount 100 is +1.5 / +2.3 / +3.0 dB at 31 / 50 / 79 Hz where a flat weight gives ~+2.6 each;
+// white noise, whose bass boost is far above the cap, stays at the cap down to 31 Hz).
+constexpr double kBoostRollHz = 29.4;
+constexpr double kBoostRollOrder = 3.75;
 constexpr double kShapeFraction = 0.8;   // Shape corrects 80 % of the deviation at Amount 100 (measured: the reference)
 // ... of the target's shape; the measured part of the deviation (the music's shape relative to pink) counts 0.875 x:
 // the reference follows a darker or brighter spectrum ~0.87 x as far as a plain 0.8 law (pink with the highs -6 / -12
@@ -180,6 +187,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
     std::vector<double> bandLog2;
     std::vector<float> bandHz, bandWidthOct, bandRegion;   // bandRegion: 3 per band (low, mid, high basis)
     std::vector<float> bandBoostDrop;                             // boost fall time per band (kBoostDropSec law), s
+    std::vector<float> bandBoostRoll;                             // bottom-octave weight of boosts (before the cap)
     std::vector<uint8_t> bandInOffset;                            // 100 Hz .. 5.6 kHz
     std::vector<float> skirtW;                                    // [b * nb + j]: weight of band j's density in band b
     std::vector<float> skirtPow;                                  // scratch: skirted band powers of one lane
@@ -247,11 +255,13 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         bandRegion.assign ((size_t) nb * 3, 0.0f);
         bandInOffset.assign ((size_t) nb, 0);
         bandBoostDrop.assign ((size_t) nb, 0.0f);
+        bandBoostRoll.assign ((size_t) nb, 1.0f);
         for (int b = 0; b < nb; ++b)
         {
             const double f = centres[(size_t) b];
             bandLog2[(size_t) b] = std::log2 (f);
             bandHz[(size_t) b] = (float) f;
+            bandBoostRoll[(size_t) b] = (float) (1.0 / (1.0 + std::pow (kBoostRollHz / f, kBoostRollOrder)));
             // region basis: raised-cosine crossfades 1/3 octave wide centred on 100 Hz and 5.6 kHz
             const double sLow = raisedCosineStep ((std::log2 (f / 100.0) + 1.0 / 6.0) * 3.0);
             const double sHigh = raisedCosineStep ((std::log2 (f / 5600.0) + 1.0 / 6.0) * 3.0);
@@ -704,8 +714,13 @@ struct ToneBalance::Impl final : SpectralEngine::Client
 
         // 5. frequency smoothing (Shape / Boost: of the correction limited to [-12, rawBoost] first)
         if (! cutMode)
-            for (auto& v : lane.c)
+            for (int b = 0; b < nb; ++b)
+            {
+                auto& v = lane.c[(size_t) b];
+                if (v > 0.0f)
+                    v *= bandBoostRoll[(size_t) b];
                 v = (float) std::clamp ((double) v, -kMaxCutDb, rawBoost);
+            }
         if (cutMode)
         {
             for (int b = 0; b < nb; ++b)
