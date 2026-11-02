@@ -177,8 +177,13 @@ public:
         return range.snapToLegalValue (range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, norm)));
     }
 
-    juce::String text() const { return spec != nullptr ? formatSpecValue (*spec, value) : juce::String ("--"); }
-    juce::String textFor (float plain) const { return spec != nullptr ? formatSpecValue (*spec, plain) : juce::String(); }
+    juce::String text() const { return spec != nullptr ? formatSpecValue (*spec, shown (value)) : juce::String ("--"); }
+    juce::String textFor (float plain) const { return spec != nullptr ? formatSpecValue (*spec, shown (plain)) : juce::String(); }
+
+    // Display scale (ParamKnob::setDisplayScale): text shows scale x plain + offset; fromShown inverts it.
+    void setDisplayScale (float s, float o) noexcept { shownScale = s != 0.0f ? s : 1.0f; shownOffset = o; }
+    float shown (float plain) const noexcept { return shownScale * plain + shownOffset; }
+    float fromShown (float v) const noexcept { return (v - shownOffset) / shownScale; }
     juce::String hostName() const { return spec != nullptr ? juce::String (spec->name) : id; }
     const ps::ParamSpec* getSpec() const noexcept { return spec; }
     const juce::String& getId() const noexcept { return id; }
@@ -254,6 +259,7 @@ private:
     const ps::ParamSpec* spec = nullptr;
     std::unique_ptr<juce::ParameterAttachment> attachment;
     float value = 0.0f;
+    float shownScale = 1.0f, shownOffset = 0.0f;
     bool active = false;
     unsigned targetGeneration = 0;
 };
@@ -427,7 +433,7 @@ private:
         float v = 0.0f;
 
         if (const auto* spec = binding.getSpec(); spec != nullptr && parseValueText (*spec, getText(), v))
-            binding.setComplete (juce::jlimit (spec->minValue, spec->maxValue, v));
+            binding.setComplete (juce::jlimit (spec->minValue, spec->maxValue, binding.fromShown (v)));
 
         close();
     }
@@ -580,6 +586,7 @@ void ParamKnob::setColour (juce::Colour arc) { impl->colour = arc; repaint(); }
 void ParamKnob::setCompact (bool c) { impl->compact = c; repaint(); }
 void ParamKnob::setLinkedParamId (const juce::String& paramId) { impl->binding.link (paramId); }
 void ParamKnob::setCaption (const juce::String& c) { impl->caption = c; repaint(); }
+void ParamKnob::setDisplayScale (float scale, float offset) { impl->binding.setDisplayScale (scale, offset); repaint(); }
 void ParamKnob::resized() {}
 
 void ParamKnob::paint (juce::Graphics& g)

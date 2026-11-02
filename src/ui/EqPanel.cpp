@@ -257,6 +257,8 @@ struct EqPanel::Impl
                                    + (band.shape == ps::EqShape::Surgical && ! model.isDigital() ? " (Bell)" : juce::String()));
             setApplies (gain, traits.gain);
             setApplies (q, traits.q);
+            const auto shownQ = eqQDisplay (band.shape);
+            q.setDisplayScale (shownQ.scale, shownQ.offset);
             setApplies (slope, traits.slope);
             setApplies (freq, true);
             setApplies (shape, true);

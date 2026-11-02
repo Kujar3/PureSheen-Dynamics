@@ -3,6 +3,13 @@
 // Equalizer panel helpers (owner: ui-eq). See EqModel.h.
 namespace ps::ui
 {
+EqQDisplay eqQDisplay (ps::EqShape s) noexcept
+{
+    if (s == ps::EqShape::LowShelfAnalog || s == ps::EqShape::HighShelfAnalog)
+        return { 1.949f, 0.610f };
+    return {};
+}
+
 EqShapeTraits eqShapeTraits (ps::EqShape s) noexcept
 {
     EqShapeTraits t;

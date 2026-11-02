@@ -42,6 +42,9 @@ public:
     // it is set to the same plain value in the same gesture. Empty = none.
     void setLinkedParamId (const juce::String& paramId);
     void setCaption (const juce::String&);           // (added)
+    // (added) Shows scale x value + offset (value text, reset item, "Enter value..." in the same scale); the
+    // parameter keeps its own value. 1, 0 = as stored.
+    void setDisplayScale (float scale, float offset);
 
     void resized() override;
     void paint (juce::Graphics&) override;

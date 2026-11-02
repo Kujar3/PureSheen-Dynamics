@@ -695,7 +695,10 @@ struct EqDisplay::Impl
             parts.add (juce::String (ps::kEqSlopeDb[(size_t) juce::jlimit (0, 5, (int) band.slope)]) + " dB/oct");
 
         if (traits.q)
-            parts.add (qText (band.q));
+        {
+            const auto shown = eqQDisplay (band.shape);
+            parts.add (qText (shown.scale * band.q + shown.offset));
+        }
 
         const auto title = juce::String (b + 1) + "  " + eqShapeShortName (band.shape)
                            + (band.shape == ps::EqShape::Surgical && ! model.isDigital() ? " (as Bell)" : juce::String());

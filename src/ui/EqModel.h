@@ -19,6 +19,15 @@ struct EqShapeTraits
 };
 EqShapeTraits eqShapeTraits (ps::EqShape) noexcept;
 
+// Q as the band strip and the display show it. The analog shelves keep the reference's stored Q (what presets import
+// and the DSP is fitted on), but the reference's own UI shows those on another scale (measured, round 17: stored =
+// 0.513 x shown - 0.313, UI 1 .. 24 = stored 0.2 .. 12), so we show shown = 1.949 x stored + 0.610 there.
+struct EqQDisplay
+{
+    float scale = 1.0f, offset = 0.0f;
+};
+EqQDisplay eqQDisplay (ps::EqShape) noexcept;
+
 juce::Colour eqBandColour (int band);             // 0..7
 juce::String eqShapeShortName (ps::EqShape);      // "Bell", "Prop Q", "Low Shelf", "Baxandall Low", ...
 juce::String eqShapeFullName (ps::EqShape);       // the parameter's choice label
