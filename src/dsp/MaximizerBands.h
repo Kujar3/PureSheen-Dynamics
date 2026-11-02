@@ -81,6 +81,9 @@ private:
 // lookahead attack, 20 ms release, at most -14 dB per band; the core takes the rest), so the highs keep their level
 // with no gain ripple. Measured on the reference's bass bursts over a steady tone (max5.py / max6.py); music with
 // dense highs never has highs that steady, so it limits as before.
+// A steady bass (the bands < 1 kHz steady by the same test) under sparse highs takes the same path with a release that
+// follows the character (2 ms at character 1.4 .. 50 ms at 7, set by the Maximizer): fitted on the reference's
+// sustained 60 Hz tone (modes.py Tone renders: THD -31 / -49 dB at character 1.4 / 7); kicks are never steady that long.
 class MultibandStage
 {
 public:
@@ -91,6 +94,7 @@ public:
         double releaseMs = 80.0;     // the low band x2, the low mid band x1.3
         double siSus = 0.0, siTrans = 0.0;
         double amount = 1.0;         // fraction (in dB) of each band's reduction applied (0: the delayed input)
+        double steadyBassReleaseMs = 2.0;   // release of the low path on a steady bass under sparse highs
     };
 
     MultibandStage();
@@ -128,14 +132,17 @@ private:
     double hiPower[2] {}, kPower = 0.0;                        // the steady gate: power of the bands > 1 kHz
     long long steadyRun[2] {}, steadyMin = 0;                  // ... how long their crest has been low
 
-    // the smooth low path (the two bands < 1 kHz): reductions, window, release, box
-    static constexpr int kLowBands = 2;
-    std::array<std::array<std::vector<double>, 2>, kLowBands> lowRedRing;
-    std::array<std::array<MaxDeque, 2>, kLowBands> lowWindowMax;
-    std::array<std::array<BoxAverage, 2>, kLowBands> lowBox;
-    std::array<std::array<double, 3>, kLowBands> lowRelease {};
+    // the smooth low path (the two bands < 1 kHz; stream = path (steady highs, steady bass) x band): reductions,
+    // window, release, box
+    static constexpr int kLowBands = 2, kLowPaths = 2, kLowStreams = kLowBands * kLowPaths;
+    std::array<std::array<std::vector<double>, 2>, kLowStreams> lowRedRing;
+    std::array<std::array<MaxDeque, 2>, kLowStreams> lowWindowMax;
+    std::array<std::array<BoxAverage, 2>, kLowStreams> lowBox;
+    std::array<std::array<double, 3>, kLowStreams> lowRelease {};
     int lowAttack = 1;
-    double kLowRelease = 0.0;
+    std::array<double, kLowPaths> kLowRelease {};   // steady highs, steady bass
+    double loPeak[2] {}, loPower[2] {};
+    long long bassRun[2] {};                                    // how long the bands < 1 kHz have been steady
     Settings settings;
 };
 

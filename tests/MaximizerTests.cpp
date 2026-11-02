@@ -1564,6 +1564,31 @@ TEST_CASE ("max. multiband: bass-made peaks leave sparse or steady highs alone; 
     CHECK (std::abs (denseMb - denseAg) < 1.0);
 }
 
+TEST_CASE ("max. multiband: a sustained bass over the ceiling stays clean, more so at a higher character")
+{
+    // A 60 Hz tone 6 dB over the ceiling, alone: the smooth low path limits it with a release that follows the
+    // character, so its 3rd harmonic stays far below the broadband Aggressive core's.
+    const double sr = 48000.0;
+    auto thirdDb = [&] (MaximizerMode mode, float character)
+    {
+        Rig rig (sr);
+        rig.set ("max.mode", (float) mode);
+        rig.set ("max.ceiling", 0.0f);
+        rig.set ("max.character", character);
+        rig.restart();
+        Stereo s = tone (60.0, 2.0, 1.5, sr);
+        rig.run (s);
+        return dbOfLin (std::abs (pstest::toneOf (s.l, (size_t) sr, 24000, 180.0, sr)))
+               - dbOfLin (std::abs (pstest::toneOf (s.l, (size_t) sr, 24000, 60.0, sr)));
+    };
+    const double mbLow = thirdDb (MaximizerMode::Multiband, 1.4f), mbHigh = thirdDb (MaximizerMode::Multiband, 7.0f);
+    const double ag = thirdDb (MaximizerMode::Aggressive, 1.4f);
+    std::cout << "    60 Hz 3rd harmonic: Multiband " << fmt (mbLow) << " dB (character 1.4), " << fmt (mbHigh)
+              << " dB (7); Aggressive " << fmt (ag) << " dB\n";
+    CHECK (mbLow < ag - 5.0);
+    CHECK (mbHigh < mbLow - 10.0);
+}
+
 TEST_CASE ("max. upward compress lifts quiet passages and leaves loud ones; meter")
 {
     const double sr = 48000.0;

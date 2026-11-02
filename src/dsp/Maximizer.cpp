@@ -495,6 +495,7 @@ struct Maximizer::Impl
                 ms.siSus = siS;
                 ms.siTrans = siT;
                 ms.amount = 1.0;
+                ms.steadyBassReleaseMs = lerpExp (2.0, 50.0, (std::clamp ((double) p.character, 0.0, 10.0) - 1.4) / 5.6);
                 multiband.setSettings (ms);
                 fastCore (cs, std::clamp ((double) p.character, 0.0, 10.0));
                 break;
