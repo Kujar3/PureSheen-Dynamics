@@ -147,6 +147,7 @@ void LimiterCore::reset() noexcept
     preserveNow = settings.transientPreserve;
     envFast = envSlow = 0.0;
     lfState = lfPower = allPower = lfRatio = 0.0;
+    density = 0.0;
     attack = attackTarget;
     hold = holdTarget;
     for (auto& b : box)
@@ -165,7 +166,9 @@ void LimiterCore::setSettings (const CoreSettings& s) noexcept
                       && s.fastReleaseMs == settings.fastReleaseMs && s.slowReleaseMs == settings.slowReleaseMs
                       && s.slowChargeMs == settings.slowChargeMs && s.lfAdapt == settings.lfAdapt
                       && s.transientPreserve == settings.transientPreserve && s.siTrans == settings.siTrans
-                      && s.siSus == settings.siSus && s.midDetect == settings.midDetect;
+                      && s.siSus == settings.siSus && s.midDetect == settings.midDetect
+                      && s.denseReleaseMs == settings.denseReleaseMs && s.denseChargeMs == settings.denseChargeMs
+                      && s.denseReleaseEnvMs == settings.denseReleaseEnvMs && s.densePower == settings.densePower && s.denseKnee == settings.denseKnee;
     settings = s;
     if (same)
         return;
@@ -174,13 +177,18 @@ void LimiterCore::setSettings (const CoreSettings& s) noexcept
     kSlowCharge = s.slowChargeMs > 0.0 ? chargeCoeff (msToSamples (s.slowChargeMs, sr)) : 0.0;   // 0: no slow stage
     kSlowRelease = chargeCoeff (msToSamples (s.slowReleaseMs, sr));
     kFastBase = msToSamples (s.fastReleaseMs, sr);
+    denseSamples = msToSamples (s.denseReleaseMs, sr);
+    kDenseCharge = chargeCoeff (msToSamples (s.denseChargeMs, sr));
+    kDenseRelease = chargeCoeff (msToSamples (s.denseReleaseEnvMs, sr));
     updateCoefficients();
 }
 
 void LimiterCore::updateCoefficients() noexcept
 {
     const double lf = settings.lfAdapt * std::clamp ((lfRatio - 0.3) / 0.5, 0.0, 1.0);
-    kFast = decayCoeff (kFastBase * (1.0 + 3.0 * lf));
+    const double u = std::clamp ((density - settings.denseKnee) / (1.0 - settings.denseKnee), 0.0, 1.0);
+    const double dense = denseSamples > 0.0 && u > 0.0 ? denseSamples * std::pow (u, settings.densePower) : 0.0;
+    kFast = decayCoeff (kFastBase * (1.0 + 3.0 * lf) + dense);
     holdTarget = std::clamp ((int) std::lround (msToSamples (settings.holdMs + 8.0 * lf, sr)), 0, maxHold);
 }
 
@@ -260,6 +268,8 @@ void LimiterCore::process (const float* const* in, float* const* out, const doub
         windowMax[1].dropOlderThan (oldest);
         const double dm0 = windowMax[0].max(), dm1 = windowMax[1].max();
         const double dl = std::max (dm0, dm1);
+        const double limiting = dl > 0.0 ? 1.0 : 0.0;
+        density += (limiting - density) * (limiting > density ? kDenseCharge : kDenseRelease);
 
         const double dsrc[3] { dm0, dm1, dl };
         for (int s = 0; s < 3; ++s)

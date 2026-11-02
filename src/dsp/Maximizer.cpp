@@ -113,6 +113,16 @@ void smoothCore (maxi::CoreSettings& cs, double c) noexcept
     cs.slowReleaseMs = smoothCurve (slowReleaseMs, c);
     cs.slowChargeMs = c <= 4.0 ? 0.0 : (c >= 7.0 ? 30.0 : 1000.0 * std::pow (0.03, (c - 4.0) / 3.0));
     cs.lfAdapt = 0.0;
+    // Dense limiting: once more than ~60 % of the recent time is limited, the fast release slows (up to +100 ms), so
+    // steady material driven far into the limiter is turned down rather than flattened. Measured on the spectral
+    // algorithm at character 2 (Up-Test.wav, Gain +20: steady noise 10 dB over comes out 2.7 dB quieter than a plain
+    // fast release; 60 ms noise bursts at 16 dB over and decaying tones barely change). Music (limited ~15-45 % of the
+    // time at +8 dB) stays under the knee.
+    cs.denseReleaseMs = 100.0;
+    cs.denseKnee = 0.6;
+    cs.denseChargeMs = 50.0;
+    cs.denseReleaseEnvMs = 100.0;
+    cs.densePower = 3.0;
 }
 
 // The aggressive algorithm's core (fitted like smoothCore; the reference's multiband algorithm matches it too): the

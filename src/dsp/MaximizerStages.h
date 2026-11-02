@@ -147,6 +147,11 @@ struct CoreSettings
     double transientPreserve = 0.0;   // 0..1: part of a transient's reduction left to the (fast) guard after the core
     double siTrans = 0.0, siSus = 0.0;   // 0..1 stereo independence of the fast / slow stage
     bool midDetect = false;           // add half-sample interpolated peaks to the detector (True Peak on)
+    double denseReleaseMs = 0.0;      // the fast release grows by this x u^densePower (0: off), u = (density - denseKnee) /
+    double denseKnee = 0.6;           //   (1 - denseKnee) clamped to 0..1, density = the share of recent time spent
+    double denseChargeMs = 50.0;      //   limiting (one-pole, charge / release times)
+    double denseReleaseEnvMs = 100.0;
+    double densePower = 3.0;
 };
 
 class LimiterCore
@@ -182,6 +187,8 @@ private:
     // release state: [0], [1] per channel, [2] linked
     std::array<double, 3> slow {}, fast {};
     double kSlowCharge = 0.0, kSlowRelease = 0.0, kFast = 0.0, kFastBase = 0.0;
+    // dense limiting (linked): share of recent samples with a reduction, and what it adds to the fast release
+    double density = 0.0, kDenseCharge = 0.0, kDenseRelease = 0.0, denseSamples = 0.0;
 
     // transient detector (linked)
     double envFast = 0.0, envSlow = 0.0, kEnvFastRel = 0.0, kEnvSlowAtt = 0.0, kEnvSlowRel = 0.0;
