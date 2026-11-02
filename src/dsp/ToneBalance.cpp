@@ -44,11 +44,14 @@
 //   into account, and a region at 0 % gets no correction at all, the shift included. Q is the power of every bin. The
 //   solve interpolates the final dB curve at each bin before converting to power gain, exactly as synthesis does;
 //   averaging endpoint power gains would overestimate energy.
-//   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / empty-band fade kinks.
-//   The +9 / -12 dB limits scale with Amount (at most +9 x Amount / 100 dB boost).
-// - "No boost in empty bands" fades boosts out between 34 and 40 dB under the loudest band (no hard switch), and also
-//   scales boosts by a smoothed presence of the band (0 while it is gated): a gated band holds a level that may be
-//   stale (e.g. the leakage of a tone's onset), and lifting near-empty regions only amplifies window leakage.
+//   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / presence kinks.
+//   The limits scale with Amount: cuts -12 x Amount / 100 dB, boosts +9 x (Amount / 100)^0.82 dB
+//   (toneBalanceMaxBoostDb; measured: the reference's plateau on white noise is +9.0 dB at Amount 100 and +5.1 at 50,
+//   where a linear law gives 4.5).
+// - Boosts are scaled by a smoothed presence of the band (0 while it is gated): a gated band holds a level that may be
+//   stale (e.g. the leakage of a tone's onset). There is no "empty band" rule beyond the gate: the reference lifts
+//   bands 40-60 dB under the loudest one (dark lo-fi / ambient slices with a bright target got +4..6 dB more air from it
+//   than from ours, which faded boosts out 34-40 dB under the loudest band).
 // - Tame Transients: an onset needs L - S > 6 dB (Cut: L - F) in the band and in a neighbour (a lone narrow band
 //   jumping 6 dB is far more often a noise peak than a hit); from an onset the detector attacks at once for 3 hops
 //   (it takes L whenever L is above it, so a hit rising over two frames is caught completely) and, in Shape, boosts
@@ -65,13 +68,18 @@
 // - levelDb meters: Shape / Boost show S, Cut shows F (the measurement the cut compares with the target).
 namespace ps
 {
+double toneBalanceMaxBoostDb (double amount) noexcept
+{
+    return amount > 0.0 ? 9.0 * std::pow (std::min (amount, 1.0), 0.82) : 0.0;
+}
+
 namespace
 {
 constexpr int kBaseFftSize = 2048;
 constexpr int kNumTargets = (int) ToneTarget::Count;
 constexpr double kDbToLn = 0.11512925464970228;     // ln (10) / 20
 constexpr double kPowDbToLn = 0.23025850929940457;  // ln (10) / 10
-constexpr double kMaxBoostDb = 9.0, kMaxCutDb = 12.0;
+constexpr double kMaxCutDb = 12.0;
 constexpr double kShapeFraction = 0.8;   // Shape corrects 80 % of the deviation at Amount 100 (measured: the reference)
 // ... of the target's shape; the measured part of the deviation (the music's shape relative to pink) counts 0.875 x:
 // the reference follows a darker or brighter spectrum ~0.87 x as far as a plain 0.8 law (pink with the highs -6 / -12
@@ -79,7 +87,6 @@ constexpr double kShapeFraction = 0.8;   // Shape corrects 80 % of the deviation
 // is unchanged (its measured shape is flat).
 constexpr double kMeasuredShape = 0.875;
 constexpr double kGateAbsDb = -80.0, kGateRelDb = 60.0;
-constexpr double kEmptyBandDb = 40.0, kEmptyBandFadeDb = 6.0;
 constexpr double kOnsetDb = 6.0;
 constexpr double kSnapDb = 1.0e-5;
 constexpr double kParamSmoothSec = 0.05;
@@ -578,7 +585,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         }
 
         // 2. levels in dB (sDb: S, the Shape / Boost detector or the Cut reference; refDb: what the correction compares)
-        double smax = -1.0e9;
         for (int b = 0; b < nb; ++b)
         {
             const auto i = (size_t) b;
@@ -592,7 +598,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             const double s = cutMode ? powToDb ((double) lane.slowPow[i] / width) : (double) lane.sLev[i];
             lane.sDb[i] = (float) s;
             lane.refDb[i] = cutMode ? (float) powToDb ((double) lane.fastPow[i] / width) : (float) s;
-            smax = std::max (smax, s);
         }
 
         // 3. target offset o
@@ -681,26 +686,26 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             }
         }
 
-        // 6 + 8. region amounts, limits, Amount; the empty-band boost fade (boosts fade out between 34 and 40 dB under
-        // the loudest band) goes into lane.c, the region weight into lane.power (free after the measurement)
+        // 6 + 8. region amounts, limits, Amount; the boost presence (0 in gated or never measured bands) goes into
+        // lane.c, the region weight into lane.power (free after the measurement). The pre-Amount clamp is the
+        // correction at which the boost cap binds (capBoost / amount), so the bracket of step 7 holds.
         const double amount = lane.amount / 100.0 * lane.warm;
+        const double capBoost = toneBalanceMaxBoostDb (amount), capCut = kMaxCutDb * amount;
+        const double rawBoost = amount > 0.0 ? capBoost / amount : toneBalanceMaxBoostDb (1.0);
         const double rl = lane.low / 100.0, rm = lane.mid / 100.0, rh = lane.high / 100.0;
         for (int b = 0; b < nb; ++b)
         {
             const auto i = (size_t) b;
             const double w = (double) bandRegion[i * 3] * rl + (double) bandRegion[i * 3 + 1] * rm
                            + (double) bandRegion[i * 3 + 2] * rh;
-            lane.tmp[i] = (float) (std::clamp ((double) lane.tmp[i], -kMaxCutDb, kMaxBoostDb) * amount * w);
+            lane.tmp[i] = (float) (std::clamp ((double) lane.tmp[i], -kMaxCutDb, rawBoost) * amount * w);
             lane.power[i] = (float) (amount * w);
-            const double sb = lane.count[i] != 0 ? (double) lane.sDb[i] : -1.0e9;
-            // boosts only where there is something to lift: within 40 dB of the loudest band, and measured (a gated
-            // band holds its level, which may be stale, e.g. the leakage of a tone's onset)
-            lane.c[i] = (float) (std::clamp ((sb - (smax - kEmptyBandDb)) / kEmptyBandFadeDb, 0.0, 1.0)
-                                 * (double) lane.presence[i]);
+            // boosts only in measured bands (a gated band holds its level, which may be stale, e.g. the leakage of a
+            // tone's onset)
+            lane.c[i] = lane.count[i] != 0 ? lane.presence[i] : 0.0f;
         }
 
-        // final value of band i for a loudness shift x: limits scaled by Amount, empty-band fade, mode sign
-        const double capBoost = kMaxBoostDb * amount, capCut = kMaxCutDb * amount;
+        // final value of band i for a loudness shift x: limits scaled by Amount, boost presence, mode sign
         auto finalValue = [&] (size_t i, double x, double* slope) noexcept
         {
             const double raw = (double) lane.tmp[i] - x * (double) lane.power[i];
@@ -730,10 +735,10 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                 q0 += (double) q;
             if (q0 > 1.0e-30)
             {
-                // The pre-limited curve is nonnegative at -12 and nonpositive at +9. Keep that bracket:
-                // the empty-band fade and limiting make the derivative discontinuous, so plain Newton can
+                // The pre-limited curve is nonnegative at -12 and nonpositive at rawBoost. Keep that bracket:
+                // the boost presence and limiting make the derivative discontinuous, so plain Newton can
                 // bounce across a kink and finish far from neutrality on a newly populated, sparse spectrum.
-                double lower = -kMaxCutDb, upper = kMaxBoostDb;
+                double lower = -kMaxCutDb, upper = rawBoost;
                 double bestShift = shift, bestError = 1.0e30;
                 for (int it = 0; it < 16; ++it)
                 {

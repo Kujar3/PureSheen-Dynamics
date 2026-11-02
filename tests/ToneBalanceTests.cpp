@@ -787,7 +787,7 @@ TEST_CASE ("tbal. shape loudness solve stays stable when quiet bands become acti
     CHECK (maxSteadyStep < 2.0);
 }
 
-TEST_CASE ("tbal. boost cap: at most +9 dB x Amount, Boost mode never cuts")
+TEST_CASE ("tbal. boost cap: at most +9 dB x (Amount / 100)^0.82, Boost mode never cuts")
 {
     // pink with a deep notch from 2 to 4 kHz (two cascaded bells)
     auto notched = [] (std::uint32_t seed)
@@ -797,7 +797,7 @@ TEST_CASE ("tbal. boost cap: at most +9 dB x Amount, Boost mode never cuts")
     const Buf srcL = notched (61u), srcR = notched (62u);
     struct Case { ToneBalanceMode mode; float amount; double cap; const char* name; };
     for (const Case c : { Case { ToneBalanceMode::Shape, 100.0f, 9.0, "Shape, Amount 100" },
-                          Case { ToneBalanceMode::Shape, 50.0f, 4.5, "Shape, Amount 50" },
+                          Case { ToneBalanceMode::Shape, 50.0f, 5.1, "Shape, Amount 50" },
                           Case { ToneBalanceMode::Boost, 100.0f, 9.0, "Boost, Amount 100" } })
     {
         Rig rig;
@@ -1778,7 +1778,7 @@ TEST_CASE ("tbal. proposed factory presets behave on music-like material")
         note ("  largest boost / cut (dB)", maxBoost);
         note ("  ", maxCut);
         CHECK (finite);
-        CHECK (maxBoost <= 9.0 * p.amount / 100.0 + 0.01);
+        CHECK (maxBoost <= toneBalanceMaxBoostDb (p.amount / 100.0) + 0.01);
         if (p.mode == ToneBalanceMode::Shape)
             CHECK (std::abs (dPow) < 0.5);
         else

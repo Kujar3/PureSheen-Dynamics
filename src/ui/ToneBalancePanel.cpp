@@ -345,10 +345,10 @@ struct ToneBalancePanel::Impl
 
         metersValid = valid;
 
-        // The module's limits at this Amount: +9 x Amount (Shape / Boost) and -12 x Amount (Shape / Cut).
+        // The module's limits at this Amount: toneBalanceMaxBoostDb (Shape / Boost) and -12 x Amount (Shape / Cut).
         const float amountNow = processor.getParameterValue (setParamId (kType, s.set, "amount")) / 100.0f;
         const int modeNow = currentMode();
-        const float boostCap = modeNow == (int) ps::ToneBalanceMode::Cut ? 0.0f : 9.0f * amountNow;
+        const float boostCap = modeNow == (int) ps::ToneBalanceMode::Cut ? 0.0f : (float) ps::toneBalanceMaxBoostDb (amountNow);
         const float cutCap = modeNow == (int) ps::ToneBalanceMode::Boost ? 0.0f : -12.0f * amountNow;
         range.setLimit (0, boostCap);
         range.setLimit (1, cutCap);

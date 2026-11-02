@@ -28,8 +28,8 @@
 //      Cut: [0.25 0.5 0.25] across bands
 //   6. region amounts: C x mix of low / mid / high % with 1/3-octave raised-cosine crossfades at 100 Hz and 5.6 kHz
 //   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P)
-//   8. C = amount / 100 x clamp (C, -12, +9) (at most +9 dB boost); no boost in bands more than 40 dB under the
-//      frame's band maximum
+//   8. C = amount / 100 x C, limited to -12 x amount / 100 and +9 x (amount / 100)^0.82 dB (measured: +5.1 at 50);
+//      boosts only in measured (ungated) bands
 //   9. ballistics on the final curve: boosts rise at most 1 dB per hop and fall with min (50 ms x clamp ((1 kHz / f)^1.5,
 //      1/16, 16), max (2 hops, tauS / 2)); cuts attack per hop and release toward 0 with max (2 hops, tauS / 2) (Cut:
 //      tauC). Mode / target changes glide the final curve (80 ms one-pole for 300 ms)
@@ -41,7 +41,7 @@
 // (dsp-tone) Implementation notes (details at the top of ToneBalance.cpp): steps 2 and 4 and the targets follow
 // measurements of the reference (noise renders per target); step 7 is solved on the amount-scaled, region-weighted,
 // limited curve (neutral at every Amount; a region at 0 % gets no shift either); step 8 limits scale with Amount
-// (+9 x Amount / 100 dB at most); boosts also fade out in bands that are gated.
+// (toneBalanceMaxBoostDb); boosts also fade out in bands that are gated.
 // Silent frames hold detector history while control ramps and gain releases continue, so edits during a pause
 // have settled when audio resumes.
 // Measured behaviour (tests/ToneBalanceTests.cpp, 48 kHz, Amount 100, defaults unless noted):
@@ -72,6 +72,9 @@ double toneBalanceDisplayHz (int index) noexcept;
 // 300 Hz, presence extra at 3 kHz, slope above 1 kHz, air extra at 14 kHz, tolerance), monotone cubic in log2 f.
 // The UI draws the corridor with it; the phase 3 Assistant reuses it.
 double toneTargetDb (ToneTarget, double hz, double* tolDb = nullptr) noexcept;
+
+// Largest boost (dB) at amount = Amount / 100 (0..1): 9 x amount^0.82 (+9 at 100, +5.1 at 50, +2.9 at 25).
+double toneBalanceMaxBoostDb (double amount) noexcept;
 
 struct ToneBalanceMeters
 {
