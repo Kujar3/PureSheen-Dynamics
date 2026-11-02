@@ -5,6 +5,7 @@
 #include "dsp/Chain.h"
 
 namespace ps { struct MatchSpectrum; }
+namespace psplug { class Assistant; }
 
 #include <functional>
 #include <memory>
@@ -214,6 +215,12 @@ public:
     // operation observe a complete state (a synchronous save from a parameter notification gets the previous state).
     bool applyImportedPreset (int scope, const std::vector<float>& values, const std::vector<ps::ModuleType>& order,
                               const juce::String& name, const ps::MatchSpectrum* matchReference = nullptr);
+
+    //==============================================================================
+    // (phase 3) The Assistant (src/plugin/Assistant.h): listens to the input, builds suggested chains, applies one as a
+    // single undo step and drives the macro controls. Its cards and targets are saved with the state ("Assistant"
+    // child); undo, snapshots and presets do not touch them. Message thread.
+    psplug::Assistant& getAssistant() noexcept;
 
 private:
     struct Impl;

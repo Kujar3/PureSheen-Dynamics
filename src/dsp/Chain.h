@@ -67,6 +67,10 @@ struct IoMeters
     AtomicFloat moduleTsShareDb[kNumModuleTypes];
 };
 
+// (added, phase 3) A new, unprepared instance of a module type (the chain's own factory); the Assistant's offline
+// renderer builds the few modules it needs with it. nullptr for ModuleType::Count.
+std::unique_ptr<Module> createModule (ModuleType);
+
 class Chain
 {
 public:

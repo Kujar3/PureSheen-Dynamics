@@ -161,6 +161,84 @@ private:
     int slot;
     bool hasData = false, isActive = false;
 };
+
+//==============================================================================
+// (phase 3) Assistant | Chain view switch: two icon segments (sparkle = the Assistant page, tiles = the module panels).
+class ViewSwitch final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    ViewSwitch()
+    {
+        setWantsKeyboardFocus (false);
+        setMouseClickGrabsKeyboardFocus (false);
+        setRepaintsOnMouseActivity (true);
+    }
+
+    std::function<void (bool assistant)> onSwitch;
+
+    void set (bool assistant)
+    {
+        if (assistant != assistantOn)
+        {
+            assistantOn = assistant;
+            repaint();
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced (0.5f, 7.0f);
+        drawChip (g, b, b.getHeight() * 0.5f, Colours::background.darker (0.1f), Colours::outline);
+        const auto mouse = getMouseXYRelative().toFloat();
+        const bool hover = isMouseOver (true);
+
+        for (int i = 0; i < 2; ++i)
+        {
+            const bool isAssistant = i == 0;
+            auto seg = b.withWidth (b.getWidth() * 0.5f).translated (isAssistant ? 0.0f : b.getWidth() * 0.5f, 0.0f).reduced (2.0f);
+            const bool on = isAssistant == assistantOn;
+            if (on)
+                drawChip (g, seg, seg.getHeight() * 0.5f, blend (Colours::panelRaised, Colours::accent, 0.22f), Colours::accent.withAlpha (0.7f));
+            else if (hover && seg.contains (mouse))
+            {
+                g.setColour (Colours::panelHover.withAlpha (0.8f));
+                g.fillRoundedRectangle (seg, seg.getHeight() * 0.5f);
+            }
+
+            const auto c = seg.getCentre();
+            g.setColour (on ? Colours::accent.brighter (0.3f) : Colours::textDim);
+            if (isAssistant)
+            {
+                juce::Path p;
+                for (int k = 0; k < 4; ++k)
+                {
+                    const float a = juce::MathConstants<float>::halfPi * (float) k;
+                    p.addTriangle (c.getPointOnCircumference (6.5f, a), c.getPointOnCircumference (1.6f, a + 0.8f),
+                                   c.getPointOnCircumference (1.6f, a - 0.8f));
+                }
+                p.addEllipse (juce::Rectangle<float> (2.6f, 2.6f).withCentre (c.translated (5.5f, -5.0f)));
+                g.fillPath (p);
+            }
+            else
+            {
+                for (int k = 0; k < 3; ++k)
+                    g.fillRoundedRectangle (juce::Rectangle<float> (3.6f, 9.0f).withCentre (c.translated (-4.6f + 4.6f * (float) k, 0.0f)), 1.0f);
+            }
+        }
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! isLeftClick (e) || ! getLocalBounds().contains (e.getPosition()) || onSwitch == nullptr)
+            return;
+        onSwitch (e.position.x < (float) getWidth() * 0.5f);
+    }
+
+    void mouseMove (const juce::MouseEvent&) override { repaint(); }
+
+private:
+    bool assistantOn = false;
+};
 } // namespace
 
 //==============================================================================
@@ -173,6 +251,8 @@ struct HeaderBar::Impl
         next.setTooltip ("Next preset");
         next.onClick = [this] { proc.loadNextPreset (1); update(); };
         presetName.onOpen = [this] { showPresetMenu(); };
+        view.setTooltip ("Assistant: build a master from what it hears, then shape it with a few macros. Chain: the modules.");
+        view.onSwitch = [this] (bool assistant) { ctx.select (assistant ? kAssistantSelection : kChainSelection); update(); };
         save.setTooltip ("Save the whole chain and every setting as a preset");
         save.onClick = [this] { savePresetAs(); };
         presetMenu.setTooltip ("Preset options");
@@ -196,7 +276,7 @@ struct HeaderBar::Impl
         help.setTooltip ("How to use PureSheen");
         help.onClick = [this] { ctx.toggleHelp(); };
 
-        for (juce::Component* comp : std::initializer_list<juce::Component*> { &prev, &presetName, &next, &save, &presetMenu,
+        for (juce::Component* comp : std::initializer_list<juce::Component*> { &view, &prev, &presetName, &next, &save, &presetMenu,
                                                                             &undo, &redo, &history, &options, &help })
             owner.addAndMakeVisible (comp);
 
@@ -515,6 +595,7 @@ struct HeaderBar::Impl
         redo.setEnabled (proc.canRedo());
         history.setToggleState (ctx.isHistoryOpen(), juce::dontSendNotification);
         help.setToggleState (ctx.isHelpOpen(), juce::dontSendNotification);
+        view.set (ctx.getSelection() == kAssistantSelection);
 
         const int active = proc.getActiveSnapshot();
 
@@ -554,6 +635,7 @@ struct HeaderBar::Impl
     IconButton prev { "Previous preset", IconButton::Icon::prev };
     IconButton next { "Next preset", IconButton::Icon::next };
     PresetName presetName;
+    ViewSwitch view;
     IconButton save { "Save preset", IconButton::Icon::save };
     IconButton presetMenu { "Preset options", IconButton::Icon::options };
     IconButton undo { "Undo", IconButton::Icon::undo };
@@ -631,7 +713,8 @@ void HeaderBar::resized()
     d.showWordmark = true;
     d.showSubtitle = true;
     auto brandWidth = [&] { return 30 + (d.showWordmark ? 9 + wordW + (d.showSubtitle ? subW : 0) : 0); };
-    auto required = [&] { return brandWidth() + 4 * groupGap + presetMin + presetTools + middleTools + fixedRight; };
+    const int viewW = 72;
+    auto required = [&] { return brandWidth() + 6 * groupGap + viewW + presetMin + presetTools + middleTools + fixedRight; };
 
     if (required() > r.getWidth()) d.showSubtitle = false;
     if (required() > r.getWidth()) groupGap = 10;
@@ -639,6 +722,10 @@ void HeaderBar::resized()
 
     d.separators.clear();
     d.brandArea = r.removeFromLeft (brandWidth());
+    r.removeFromLeft (groupGap);
+    d.separators.push_back (r.getX());
+    r.removeFromLeft (groupGap);
+    d.view.setBounds (r.removeFromLeft (viewW));
     r.removeFromLeft (groupGap);
     d.separators.push_back (r.getX());
     r.removeFromLeft (groupGap);
@@ -661,7 +748,7 @@ void HeaderBar::resized()
     r.removeFromRight (64);   // "SNAPSHOTS" label
 
     // Middle: preset bar, then undo / redo / history.
-    const int presetW = juce::jlimit (presetMin, presetMax, r.getWidth() - presetTools - middleTools - 2 * groupGap - 20);
+    const int presetW = juce::jlimit (presetMin - 20, presetMax, r.getWidth() - presetTools - middleTools - 2 * groupGap - 20);
     d.prev.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
     r.removeFromLeft (gap);
     d.presetName.setBounds (r.removeFromLeft (presetW).withSizeKeepingCentre (presetW, 30));

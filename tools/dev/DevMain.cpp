@@ -18,6 +18,7 @@
 //                                         -> preset importer over .xml files (ImportTool.cpp)
 //   PureSheenDev importkey "<name>" ...  -> the importer's template / key of a ParamID or section name
 //   PureSheenDev importtest              -> importer text-path and processor checks
+//   PureSheenDev assist ...              -> the Assistant from the command line (AssistTool.cpp)
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
@@ -28,6 +29,7 @@ int runMemory (const juce::StringArray& args);                        // Memory.
 int runImport (const juce::StringArray& args);                        // ImportTool.cpp
 int runImportKey (const juce::StringArray& args);                     // ImportTool.cpp
 int runImportTests();                                                 // ImportTool.cpp
+int runAssist (const juce::StringArray& args);                        // AssistTool.cpp
 
 int main (int argc, char** argv)
 {
@@ -70,6 +72,14 @@ int main (int argc, char** argv)
         return command == "import" ? runImport (args) : runImportKey (args);
     }
 
+    if (command == "assist")
+    {
+        juce::StringArray args;
+        for (int i = 2; i < argc; ++i)
+            args.add (juce::String::fromUTF8 (argv[i]));
+        return runAssist (args);
+    }
+
     if (command == "importtest")
         return runImportTests();
 
@@ -78,6 +88,7 @@ int main (int argc, char** argv)
                  "       [--import <file.xml>] [id=value ...]\n"
                  "       icon <out.png> [size]\n"
                  "       import <file-or-folder> ... [--verbose] [--values] [--no-audio] | import --defaults\n"
-                 "       importkey \"<ParamID>\" ... | importtest\n";
+                 "       importkey \"<ParamID>\" ... | importtest\n"
+                 "       assist <in.wav> [--features] [--seconds s] [--profile n] [--render out.wav] ... | assist --targets\n";
     return 2;
 }

@@ -1,5 +1,6 @@
 #include "ui/PluginEditor.h"
 
+#include "ui/AssistantPanel.h"
 #include "ui/ChainStrip.h"
 #include "ui/Controls.h"
 #include "ui/DitherPanel.h"
@@ -72,7 +73,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     };
 
     Impl (PureSheenEditor& o, PureSheenProcessor& p)
-        : owner (o), processor (p), header (*this), strip (*this), io (*this), dither (*this), history (p)
+        : owner (o), processor (p), header (*this), strip (*this), io (*this), dither (*this), assistantPanel (*this), history (p)
     {
         help.onClose = [this] { setHelpVisible (false); };
         history.onClose = [this] { setHistoryVisible (false); };
@@ -128,7 +129,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (savedSize.x <= 0 || savedSize.y <= 0)
             savedSize = processor.getEditorSize();   // state saved by a host that kept only the processor's size
 
-        if (selected < -1 || selected >= ps::kNumModuleTypes)
+        if ((selected < -1 && selected != ps::ui::kAssistantSelection) || selected >= ps::kNumModuleTypes)
             selected = (int) ps::ModuleType::Equalizer1;
 
         return true;
@@ -195,10 +196,34 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         header.update();
     }
 
-    // The module selection: a panel for a module in the chain, or the Dither panel (-1).
+    // The module selection: a panel for a module in the chain, the Dither panel (-1) or the Assistant page.
     void showSelection()
     {
         const auto order = processor.getChainOrder();
+        const bool assistantShown = selected == ps::ui::kAssistantSelection;
+
+        if (assistantShown != assistantPanel.isVisible())
+        {
+            assistantPanel.setVisible (assistantShown);
+            if (assistantShown)
+            {
+                panel.reset();
+                dither.setVisible (false);
+                processor.setTapModule (-1);
+                assistantPanel.setBounds (moduleArea);
+                assistantPanel.tick();
+                help.toFront (false);
+                history.toFront (false);
+            }
+        }
+
+        if (assistantShown)
+        {
+            io.setDitherSelected (false);
+            strip.refresh();
+            content.repaint (moduleArea.expanded (4));
+            return;
+        }
 
         if (selected >= 0 && std::find (order.begin(), order.end(), (ps::ModuleType) selected) == order.end())
             selected = order.empty() ? selected : (int) order.front();
@@ -259,6 +284,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             panel->setBounds (moduleArea);
 
         dither.setBounds (moduleArea);
+        assistantPanel.setBounds (moduleArea);
         help.setBounds (content.getLocalBounds());
 
         if (history.isVisible())
@@ -278,7 +304,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             g.fillRoundedRectangle (r.translated (0.0f, 1.0f), ps::ui::kCornerRadius);
         }
 
-        if (panel == nullptr && ! dither.isVisible())
+        if (panel == nullptr && ! dither.isVisible() && ! assistantPanel.isVisible())
         {
             ps::ui::drawPanel (g, moduleArea.toFloat());
             auto b = moduleArea.toFloat();
@@ -408,6 +434,9 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (dither.isVisible())
             dither.tick();
 
+        if (assistantPanel.isVisible())
+            assistantPanel.tick();
+
         if (history.isVisible() && ++historyCountdown >= 10)
         {
             historyCountdown = 0;
@@ -446,6 +475,8 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     ps::ui::ChainStrip strip;
     ps::ui::IoPanel io;
     ps::ui::DitherPanel dither;
+    ps::ui::AssistantPanel assistantPanel;
+    int chainSelection = (int) ps::ModuleType::Equalizer1;   // where "Chain" returns to from the Assistant
     std::unique_ptr<ps::ui::ModulePanel> panel;
     ps::ui::HelpOverlay help;
     ps::ui::HistoryPopup history;
@@ -479,6 +510,7 @@ PureSheenEditor::PureSheenEditor (PureSheenProcessor& p)
         d.content.addAndMakeVisible (c);
 
     d.content.addChildComponent (d.dither);
+    d.content.addChildComponent (d.assistantPanel);
     d.content.addChildComponent (d.help);
     d.content.addChildComponent (d.history);
 
@@ -546,7 +578,18 @@ void PureSheenEditor::resized()
 void PureSheenEditor::selectModule (int moduleTypeOrMinus1)
 {
     auto& d = *impl;
-    d.selected = juce::jlimit (-1, ps::kNumModuleTypes - 1, moduleTypeOrMinus1);
+    if (moduleTypeOrMinus1 == ps::ui::kChainSelection)
+        moduleTypeOrMinus1 = d.chainSelection;
+    if (moduleTypeOrMinus1 == ps::ui::kAssistantSelection)
+    {
+        if (d.selected != ps::ui::kAssistantSelection)
+            d.chainSelection = d.selected;
+        d.selected = ps::ui::kAssistantSelection;
+    }
+    else
+    {
+        d.selected = juce::jlimit (-1, ps::kNumModuleTypes - 1, moduleTypeOrMinus1);
+    }
     d.showSelection();
     d.saveUiState();
 }

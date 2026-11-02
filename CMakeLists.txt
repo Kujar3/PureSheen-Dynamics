@@ -17,11 +17,13 @@ add_subdirectory("${JUCE_PATH}" JUCE EXCLUDE_FROM_ALL)
 # Source lists (globbed per folder so new files are picked up on the next configure)
 #   src/core  measurement core reused from RefMatch (loudness, true peak, FFT)  - pure C++17
 #   src/dsp   the DSP modules and the chain host                                 - pure C++17
+#   src/assist the Assistant (analysis features, suggestion engine, offline render) - pure C++17
 #   src/plugin, src/ui                                                            - JUCE
 # ---------------------------------------------------------------------------
 file(GLOB PS_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/*.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/assist/*.cpp")
 file(GLOB PS_PLUGIN_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/plugin/import/*.cpp")

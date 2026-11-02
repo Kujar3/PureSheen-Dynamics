@@ -6,6 +6,11 @@
 // Implemented by PureSheenEditor::Impl. Owner: ui-shell (internal, not a contract for module panels).
 namespace ps::ui
 {
+// (phase 3) Selections besides the modules (0..) and the Dither panel (-1): the Assistant page, and "back to the chain"
+// (select (kChainSelection) returns to the module that was selected before the Assistant opened).
+inline constexpr int kAssistantSelection = -3;
+inline constexpr int kChainSelection = -4;
+
 struct EditorContext
 {
     virtual ~EditorContext() = default;
@@ -15,7 +20,7 @@ struct EditorContext
     virtual const UiOptions& getUiOptions() const = 0;
     virtual void applyOptions (const UiOptions&) = 0;
 
-    virtual void select (int moduleTypeOrMinus1) = 0;     // -1 = Dither panel
+    virtual void select (int moduleTypeOrMinus1) = 0;     // -1 = Dither panel, kAssistantSelection, kChainSelection
     virtual int getSelection() const = 0;
 
     virtual void toggleHelp() = 0;

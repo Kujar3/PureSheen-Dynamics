@@ -35,6 +35,15 @@ If FL Studio has the plugin loaded, the installer offers to close it first.
 
 The **?** button in the top-right corner explains every part inside the plugin. A short version:
 
+0. **Or let the Assistant start it.** Click the sparkle switch next to the logo, press **Quick** and play the loudest
+   part of your song for a few seconds. The Assistant builds a complete chain (EQ, Punch, Imager, Definition, Tone
+   Balance, Dynamic EQ, Maximizer) for the genre it hears and offers a few other starting points (Gentle, Loud, Warm,
+   Bright & Wide, Punchy). Each card is one undo step, and every module stays editable.
+   - **Custom** picks the genre target, the loudness, the output level and which modules it may use first. A
+     reference track (the **+** in the target list) can be the target too.
+   - The macros (Tone Match, Tilt, Dynamics Match, Width Match and four band widths, Compress, Definition, Tone
+     Balance, Loudness) keep the master's loudness steady while you move them, so you hear the change, not a level
+     jump.
 1. **Start from a preset.** Click the preset name in the header.
    - *Streaming Ready* aims at about -14 LUFS and -1 dBTP.
    - *Loud and Clear* aims at about -9 LUFS, *Club Loud* at about -8 LUFS.

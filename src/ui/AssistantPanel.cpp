@@ -1,0 +1,1255 @@
+#include "ui/AssistantPanel.h"
+
+#include "dsp/ToneBalance.h"
+#include "plugin/Assistant.h"
+#include "ui/Controls.h"
+
+#include <cmath>
+
+namespace ps::ui
+{
+namespace
+{
+using psplug::Assistant;
+using ps::assist::Macro;
+namespace Col = Colours;
+
+constexpr int kRowH = 26;
+constexpr float kLoMinHz = 20.0f, kHiMaxHz = 20000.0f;
+
+float xForHz (juce::Rectangle<float> r, double hz)
+{
+    return r.getX() + r.getWidth() * (float) (std::log (hz / kLoMinHz) / std::log (kHiMaxHz / kLoMinHz));
+}
+
+juce::String lufsText (float v) { return v > -100.0f ? juce::String (v, 1) + " LUFS" : juce::String ("--"); }
+
+//==============================================================================
+// A big clickable card (start page).
+class StartCard final : public juce::Component
+{
+public:
+    StartCard (juce::String t, juce::String l1, juce::String l2, juce::Colour c)
+        : title (std::move (t)), line1 (std::move (l1)), line2 (std::move (l2)), colour (c)
+    {
+        setRepaintsOnMouseActivity (true);
+    }
+
+    std::function<void()> onClick;
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced (1.0f);
+        const bool hover = isMouseOver (true);
+        drawChip (g, b, 10.0f, hover ? Col::panelHover : Col::panelRaised, hover ? colour.withAlpha (0.8f) : Col::outline);
+
+        auto r = b.reduced (18.0f);
+        auto top = r.removeFromTop (r.getHeight() * 0.5f);
+        const auto f = font (20.0f, 700);
+        const float w = textWidth (f, title) + 40.0f;
+        auto row = top.withSizeKeepingCentre (w, 32.0f).withY (top.getBottom() - 40.0f);
+        auto dot = row.removeFromLeft (30.0f).withSizeKeepingCentre (28.0f, 28.0f);
+        g.setGradientFill (juce::ColourGradient (colour.brighter (0.3f), dot.getX(), dot.getY(), colour.darker (0.4f),
+                                                 dot.getRight(), dot.getBottom(), false));
+        g.fillEllipse (dot);
+        g.setColour (Col::background);
+        if (title == "Quick")
+        {
+            // sparkle
+            juce::Path p;
+            const auto c = dot.getCentre();
+            for (int i = 0; i < 4; ++i)
+            {
+                const float a = juce::MathConstants<float>::halfPi * (float) i;
+                p.addTriangle (c.getPointOnCircumference (8.0f, a), c.getPointOnCircumference (2.0f, a + 0.8f),
+                               c.getPointOnCircumference (2.0f, a - 0.8f));
+            }
+            g.fillPath (p);
+        }
+        else
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                const float x = dot.getX() + 8.5f + 5.5f * (float) i;
+                g.fillRect (x - 0.6f, dot.getY() + 7.0f, 1.2f, 14.0f);
+                g.fillEllipse (juce::Rectangle<float> (4.5f, 4.5f).withCentre ({ x, dot.getY() + (i == 1 ? 17.0f : 11.0f) }));
+            }
+        }
+        g.setFont (f);
+        g.setColour (Col::text);
+        g.drawText (title, row.withTrimmedLeft (8.0f), juce::Justification::centredLeft, false);
+
+        g.setColour (Col::outline);
+        g.fillRect (juce::Rectangle<float> (b.getCentreX() - 90.0f, top.getBottom(), 180.0f, 1.0f));
+        g.setFont (font (13.0f));
+        g.setColour (Col::textDim);
+        g.drawText (line1, r.removeFromTop (22.0f).withTrimmedTop (8.0f), juce::Justification::centred, false);
+        g.drawText (line2, r.removeFromTop (22.0f).withTrimmedTop (4.0f), juce::Justification::centred, false);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (isLeftClick (e) && getLocalBounds().contains (e.getPosition()) && onClick != nullptr)
+            onClick();
+    }
+
+private:
+    juce::String title, line1, line2;
+    juce::Colour colour;
+};
+
+//==============================================================================
+// The target list: Auto, the reference (when loaded), every tone target. Scrolls with the wheel / drag.
+class TargetList final : public juce::Component
+{
+public:
+    TargetList() { setRepaintsOnMouseActivity (true); }
+
+    std::function<void (int profile)> onSelect;          // -1 = Auto
+    std::function<void()> onRemoveReference, onAddReference, onSelectReference;
+
+    // referenceSelected: the loaded reference is the target (its row is highlighted instead of the profile's)
+    void set (int selectedProfile, ps::ToneTarget detected, const juce::String& referenceName, bool loading,
+              bool referenceSelected)
+    {
+        if (selectedProfile != selected || detected != detectedTarget || referenceName != refName || loading != refLoading
+            || referenceSelected != refSelected)
+        {
+            selected = selectedProfile;
+            detectedTarget = detected;
+            refName = referenceName;
+            refLoading = loading;
+            refSelected = referenceSelected;
+            repaint();
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto b = getLocalBounds().toFloat();
+        drawPanel (g, b);
+        auto head = b.removeFromTop (34.0f).reduced (12.0f, 0.0f);
+        g.setFont (font (13.0f, 700));
+        g.setColour (Col::text);
+        g.drawText ("Target", head, juce::Justification::centredLeft, false);
+        plusArea = head.removeFromRight (24.0f).withSizeKeepingCentre (22.0f, 22.0f);
+        g.setColour (plusHover ? Col::panelHover : Col::panelRaised);
+        g.fillEllipse (plusArea);
+        g.setColour (Col::text);
+        g.fillRect (juce::Rectangle<float> (10.0f, 1.6f).withCentre (plusArea.getCentre()));
+        g.fillRect (juce::Rectangle<float> (1.6f, 10.0f).withCentre (plusArea.getCentre()));
+
+        listArea = b.reduced (6.0f, 0.0f).withTrimmedBottom (6.0f);
+        g.reduceClipRegion (listArea.toNearestInt());
+        const int rows = numRows();
+        for (int i = 0; i < rows; ++i)
+        {
+            const auto row = rowBounds (i);
+            if (! row.intersects (listArea))
+                continue;
+            const int id = rowId (i);
+            const bool useRef = refSelected && refName.isNotEmpty();
+            const bool isSel = id == kRefRow ? useRef : (! useRef && id == selected);
+            const bool hover = hoverRow == i;
+            if (isSel || hover)
+            {
+                g.setColour (isSel ? blend (Col::panelRaised, Col::accent, 0.18f) : Col::panelHover.withAlpha (0.7f));
+                g.fillRoundedRectangle (row.reduced (0.0f, 1.0f), 5.0f);
+            }
+            g.setFont (font (12.5f, isSel ? 600 : 400));
+            g.setColour (isSel ? Col::text : Col::textDim.brighter (0.1f));
+            g.drawText (rowText (id), row.reduced (10.0f, 0.0f), juce::Justification::centredLeft, true);
+            if (id == kRefRow && refName.isNotEmpty())
+            {
+                g.setColour (hover ? Col::text : Col::textSubtle);
+                const auto x = row.withLeft (row.getRight() - 24.0f).withSizeKeepingCentre (8.0f, 8.0f);
+                g.drawLine ({ x.getTopLeft(), x.getBottomRight() }, 1.4f);
+                g.drawLine ({ x.getBottomLeft(), x.getTopRight() }, 1.4f);
+            }
+        }
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        const bool p = plusArea.expanded (3.0f).contains (e.position);
+        const int r = rowAt (e.position);
+        if (p != plusHover || r != hoverRow)
+        {
+            plusHover = p;
+            hoverRow = r;
+            repaint();
+        }
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        plusHover = false;
+        hoverRow = -1;
+        repaint();
+    }
+
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    {
+        scroll = juce::jlimit (0.0f, maxScroll(), scroll - w.deltaY * 120.0f);
+        repaint();
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! isLeftClick (e))
+            return;
+        if (plusArea.expanded (3.0f).contains (e.position))
+        {
+            if (onAddReference != nullptr)
+                onAddReference();
+            return;
+        }
+        const int r = rowAt (e.position);
+        if (r < 0)
+            return;
+        const int id = rowId (r);
+        if (id == kRefRow)
+        {
+            if (refName.isNotEmpty() && e.position.x > (float) getWidth() - 34.0f && onRemoveReference != nullptr)
+                onRemoveReference();
+            else if (refName.isNotEmpty() && onSelectReference != nullptr)
+                onSelectReference();
+            else if (refName.isEmpty() && onAddReference != nullptr)
+                onAddReference();
+            return;
+        }
+        if (onSelect != nullptr)
+            onSelect (id);
+    }
+
+private:
+    static constexpr int kRefRow = -2;
+
+    int numRows() const { return 2 + (int) ps::ToneTarget::Count; }
+    int rowId (int row) const { return row == 0 ? -1 : (row == 1 ? kRefRow : row - 2); }
+    juce::String rowText (int id) const
+    {
+        if (id == -1)
+            return "Auto (detected: " + juce::String (ps::assist::targetName (detectedTarget)) + ")";
+        if (id == kRefRow)
+            return refLoading ? juce::String ("Reference: analysing...")
+                              : (refName.isNotEmpty() ? "Reference: " + refName : juce::String ("+ Reference track..."));
+        return ps::assist::targetName ((ps::ToneTarget) id);
+    }
+    juce::Rectangle<float> rowBounds (int i) const
+    {
+        return { listArea.getX(), listArea.getY() + (float) (i * kRowH) - scroll, listArea.getWidth(), (float) kRowH };
+    }
+    int rowAt (juce::Point<float> p) const
+    {
+        if (! listArea.contains (p))
+            return -1;
+        const int r = (int) ((p.y - listArea.getY() + scroll) / (float) kRowH);
+        return r >= 0 && r < numRows() ? r : -1;
+    }
+    float maxScroll() const { return juce::jmax (0.0f, (float) (numRows() * kRowH) - listArea.getHeight()); }
+
+    int selected = -1, hoverRow = -1;
+    ps::ToneTarget detectedTarget = ps::ToneTarget::Balanced;
+    juce::String refName;
+    bool refLoading = false, refSelected = false, plusHover = false;
+    float scroll = 0.0f;
+    juce::Rectangle<float> plusArea, listArea;
+};
+
+//==============================================================================
+// One suggestion card.
+class CardButton final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    CardButton() { setRepaintsOnMouseActivity (true); }
+
+    std::function<void()> onClick;
+
+    void set (const ps::assist::Suggestion& s, bool isApplied)
+    {
+        name = s.name;
+        description = s.description;
+        detail = juce::String (ps::assist::targetName (s.target)) + "  " + juce::String (s.loudnessLufs, 1) + " LUFS";
+        isDefault = s.isDefault;
+        applied = isApplied;
+        setTooltip ("Build this chain: " + description + ". One undo step; every module stays editable.");
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced (1.0f);
+        const bool hover = isMouseOver (true);
+        drawChip (g, b, 8.0f, applied ? blend (Col::panelRaised, Col::accent, 0.2f) : (hover ? Col::panelHover : Col::panelRaised),
+                  applied ? Col::accent.withAlpha (0.9f) : Col::outline.brighter (hover ? 0.2f : 0.0f));
+        auto r = b.reduced (10.0f, 6.0f);
+        g.setFont (font (13.0f, 700));
+        g.setColour (Col::text);
+        g.drawFittedText (name, r.removeFromTop (18.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+        g.setFont (font (11.0f));
+        g.setColour (Col::textDim);
+        g.drawFittedText (description, r.removeFromTop (16.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+        auto bottom = r.removeFromTop (16.0f);
+        if (isDefault)
+        {
+            // the reference-like default: a small "DEFAULT" badge on the detail line (the name stays readable)
+            const auto f = font (8.5f, 700).withExtraKerningFactor (0.08f);
+            const float w = textWidth (f, "DEFAULT") + 10.0f;
+            const auto badge = bottom.removeFromRight (w).withSizeKeepingCentre (w, 13.0f);
+            g.setColour (Col::accent.withAlpha (0.2f));
+            g.fillRoundedRectangle (badge, 6.5f);
+            g.setColour (Col::accent);
+            g.setFont (f);
+            g.drawText ("DEFAULT", badge, juce::Justification::centred, false);
+        }
+        g.setFont (font (11.0f, 600));
+        g.setColour (applied ? Col::accent.brighter (0.3f) : Col::textSubtle);
+        g.drawFittedText (detail, bottom.toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (isLeftClick (e) && getLocalBounds().contains (e.getPosition()) && onClick != nullptr)
+            onClick();
+    }
+
+private:
+    juce::String name, description, detail;
+    bool isDefault = false, applied = false;
+};
+
+//==============================================================================
+// A macro control: a slider (rotary, horizontal or vertical) with its name and value. Drags are one undo step.
+class MacroControl final : public juce::Component
+{
+public:
+    MacroControl (Assistant& a, Macro m, juce::Slider::SliderStyle style) : assistant (a), macro (m)
+    {
+        const auto& info = ps::assist::macroInfo (m);
+        slider.setSliderStyle (style);
+        slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        slider.setRange (info.minValue, info.maxValue, 0.0);
+        slider.setScrollWheelEnabled (true);
+        slider.setWantsKeyboardFocus (false);
+        slider.setMouseClickGrabsKeyboardFocus (false);
+        if (style == juce::Slider::RotaryHorizontalVerticalDrag)
+            slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+        slider.onDragStart = [this] { dragging = true; };
+        slider.onValueChange = [this] {
+            if (! updating)
+                assistant.setMacro (macro, (float) slider.getValue(), ! dragging);
+            repaint();
+        };
+        slider.onDragEnd = [this] {
+            dragging = false;
+            assistant.setMacro (macro, (float) slider.getValue(), true);
+        };
+        addAndMakeVisible (slider);
+    }
+
+    void update (float value, float resetValue, bool enabled)
+    {
+        slider.setDoubleClickReturnValue (true, resetValue);
+        setEnabled (enabled);
+        if (! dragging && std::abs ((float) slider.getValue() - value) > 1.0e-4f)
+        {
+            updating = true;
+            slider.setValue (value, juce::dontSendNotification);
+            updating = false;
+            repaint();
+        }
+    }
+
+    juce::String valueText() const
+    {
+        const auto& info = ps::assist::macroInfo (macro);
+        const float v = (float) slider.getValue();
+        const juce::String unit (info.unit);
+        if (macro == Macro::Tilt)
+            return (v > 0.05f ? "+" : "") + juce::String (v, 1) + " dB";
+        if (macro >= Macro::WidthLow && macro <= Macro::WidthHigh)
+            return (v > 0.5f ? "+" : "") + juce::String (juce::roundToInt (v));
+        if (macro == Macro::Loudness)
+            return juce::String (v, 1);
+        return juce::String (juce::roundToInt (v)) + (unit.isNotEmpty() ? " " + unit : juce::String());
+    }
+
+    juce::String caption;
+    bool vertical = false;
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& info = ps::assist::macroInfo (macro);
+        g.setColour (isEnabled() ? Col::textDim : Col::textFaint);
+        g.setFont (font (11.5f, 600));
+        const auto name = caption.isNotEmpty() ? caption : juce::String (info.name);
+        if (slider.getSliderStyle() == juce::Slider::LinearHorizontal)
+        {
+            auto r = getLocalBounds().removeFromTop (16);
+            g.drawText (name, r, juce::Justification::centredLeft, false);
+            g.setColour (isEnabled() ? Col::text : Col::textFaint);
+            g.drawText (valueText(), r, juce::Justification::centredRight, false);
+        }
+        else
+        {
+            auto r = getLocalBounds();
+            g.drawText (name, r.removeFromBottom (16), juce::Justification::centred, false);
+            g.setColour (isEnabled() ? Col::text : Col::textFaint);
+            g.setFont (font (vertical ? 11.0f : 12.5f, 600));
+            g.drawText (valueText(), r.removeFromBottom (16), juce::Justification::centred, false);
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        if (slider.getSliderStyle() == juce::Slider::LinearHorizontal)
+            slider.setBounds (r.withTrimmedTop (14).reduced (-2, 0));
+        else
+            slider.setBounds (r.withTrimmedBottom (34));
+    }
+
+private:
+    Assistant& assistant;
+    Macro macro;
+    LeftClickOnly<juce::Slider> slider;
+    bool dragging = false, updating = false;
+};
+
+//==============================================================================
+// Plain slider for a setting (Custom page): name, value text, onChange.
+class SettingSlider final : public juce::Component
+{
+public:
+    SettingSlider (juce::String n, double lo, double hi, double step, std::function<juce::String (double)> fmt)
+        : name (std::move (n)), format (std::move (fmt))
+    {
+        slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        slider.setRange (lo, hi, step);
+        slider.setWantsKeyboardFocus (false);
+        slider.setMouseClickGrabsKeyboardFocus (false);
+        slider.onValueChange = [this] { repaint(); if (onChange != nullptr) onChange (slider.getValue()); };
+        addAndMakeVisible (slider);
+    }
+
+    std::function<void (double)> onChange;
+
+    void setValue (double v)
+    {
+        if (std::abs (slider.getValue() - v) > 1.0e-6)
+            slider.setValue (v, juce::dontSendNotification);
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().removeFromTop (16);
+        g.setFont (font (11.5f, 600));
+        g.setColour (isEnabled() ? Col::textDim : Col::textFaint);
+        g.drawText (name, r, juce::Justification::centredLeft, false);
+        g.setColour (isEnabled() ? Col::text : Col::textFaint);
+        g.drawText (format (slider.getValue()), r, juce::Justification::centredRight, false);
+    }
+
+    void resized() override { slider.setBounds (getLocalBounds().withTrimmedTop (14).reduced (-2, 0)); }
+
+private:
+    juce::String name;
+    std::function<juce::String (double)> format;
+    LeftClickOnly<juce::Slider> slider;
+};
+
+// The target's tonal-balance band (with the track's own balance when known), Low / Low-Mid / High-Mid / High.
+void drawTargetBand (juce::Graphics& g, juce::Rectangle<float> r, ps::ToneTarget target,
+                     const ps::assist::ReferenceTarget* ref, const ps::Curve& track)
+{
+    g.setColour (Col::background.darker (0.15f));
+    g.fillRoundedRectangle (r, 6.0f);
+    auto plot = r.reduced (8.0f, 10.0f).withTrimmedBottom (14.0f);
+    const float edges[] { 250.0f, 2000.0f, 8000.0f };
+    const char* names[] { "Low", "Low-Mid", "High-Mid", "High" };
+    float last = plot.getX();
+    for (int i = 0; i < 4; ++i)
+    {
+        const float x = i < 3 ? xForHz (plot, edges[i]) : plot.getRight();
+        if (i < 3)
+        {
+            g.setColour (Col::outline.withAlpha (0.6f));
+            g.fillRect (juce::Rectangle<float> (x, plot.getY(), 1.0f, plot.getHeight() + 14.0f));
+        }
+        g.setColour (Col::textSubtle);
+        g.setFont (font (10.5f, 600));
+        g.drawText (names[i], juce::Rectangle<float> (last, plot.getBottom() + 1.0f, x - last, 14.0f), juce::Justification::centred, false);
+        last = x;
+    }
+
+    // y: +-12 dB around the curve's mean over 100 Hz .. 5.6 kHz
+    auto yFor = [&] (double db) { return plot.getCentreY() - (float) (db / 12.0) * plot.getHeight() * 0.5f; };
+    auto curveDb = [&] (double hz, double* tol) {
+        if (ref != nullptr && ref->valid)
+        {
+            if (tol != nullptr)
+                *tol = 2.0;
+            return (double) ps::assist::curveAt (ref->octaveDb, hz);
+        }
+        return ps::toneTargetDb (target, hz, tol);
+    };
+
+    juce::Path upper, lower, line;
+    const int n = 96;
+    for (int i = 0; i <= n; ++i)
+    {
+        const double hz = kLoMinHz * std::pow (kHiMaxHz / kLoMinHz, (double) i / n);
+        double tol = 0.0;
+        const double db = curveDb (hz, &tol);
+        const float x = xForHz (plot, hz);
+        if (i == 0)
+        {
+            upper.startNewSubPath (x, yFor (db + tol));
+            line.startNewSubPath (x, yFor (db));
+        }
+        else
+        {
+            upper.lineTo (x, yFor (db + tol));
+            line.lineTo (x, yFor (db));
+        }
+    }
+    for (int i = n; i >= 0; --i)
+    {
+        const double hz = kLoMinHz * std::pow (kHiMaxHz / kLoMinHz, (double) i / n);
+        double tol = 0.0;
+        const double db = curveDb (hz, &tol);
+        upper.lineTo (xForHz (plot, hz), yFor (db - tol));
+    }
+    upper.closeSubPath();
+    g.saveState();
+    g.reduceClipRegion (plot.toNearestInt());
+    g.setColour (Col::info.withAlpha (0.22f));
+    g.fillPath (upper);
+    g.setColour (Col::info.withAlpha (0.9f));
+    g.strokePath (line, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    // the track (relative to pink, 0 mean over 100 Hz .. 5.6 kHz: the same reference level as the target curves)
+    juce::Path t;
+    bool started = false;
+    for (int i = 0; i < ps::kCurvePoints; ++i)
+    {
+        const float v = track[(size_t) i];
+        if (v <= ps::kNoValue || (v == 0.0f && i == 0))
+            continue;
+        const auto p = juce::Point<float> (xForHz (plot, ps::curveFrequency (i)), yFor (v));
+        if (! started)
+            t.startNewSubPath (p);
+        else
+            t.lineTo (p);
+        started = true;
+    }
+    if (started)
+    {
+        g.setColour (Col::input.withAlpha (0.8f));
+        g.strokePath (t, juce::PathStrokeType (1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    g.restoreState();
+}
+} // namespace
+
+//==============================================================================
+struct AssistantPanel::Impl
+{
+    Impl (AssistantPanel& o, EditorContext& c) : owner (o), ctx (c), proc (c.getProcessor()), assistant (proc.getAssistant())
+    {
+        quick.onClick = [this] { startQuick(); };
+        custom.onClick = [this] { page = Page::Custom; userPage = true; layout(); };
+
+        // Custom page
+        targets.onSelect = [this] (int profile) { setProfile (profile); };
+        targets.onAddReference = [this] { chooseReference(); };
+        targets.onRemoveReference = [this] { assistant.clearReference(); };
+        targets.onSelectReference = [this] { selectReference(); };
+        resultsTargets.onSelect = targets.onSelect;
+        resultsTargets.onSelectReference = targets.onSelectReference;
+        resultsTargets.onAddReference = targets.onAddReference;
+        resultsTargets.onRemoveReference = targets.onRemoveReference;
+
+        const std::pair<ps::ModuleType, const char*> modules[] {
+            { ps::ModuleType::Equalizer1, "EQ 1" }, { ps::ModuleType::Punch, "Punch" }, { ps::ModuleType::Imager, "Imager" },
+            { ps::ModuleType::Definition, "Definition" }, { ps::ModuleType::ToneBalance, "Tone Balance" },
+            { ps::ModuleType::DynamicEq, "Dynamic EQ" }, { ps::ModuleType::Exciter, "Exciter" },
+            { ps::ModuleType::LowContrast, "Low Contrast" } };
+        for (const auto& [type, name] : modules)
+        {
+            auto pill = std::make_unique<PillButton> (name);
+            pill->setTooltip (juce::String ("Let the Assistant use ") + name);
+            const auto t = type;
+            pill->onClick = [this, t] {
+                auto s = assistant.getSettings();
+                s.engine.allowedModules ^= (1u << (unsigned) t);
+                assistant.setSettings (s);
+            };
+            moduleTypes.push_back (type);
+            modulePills.push_back (std::move (pill));
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            const char* names[] { "Gentle", "Balanced", "Strong" };
+            intensity[(size_t) i].setText (names[i]);
+            intensity[(size_t) i].onClick = [this, i] {
+                auto s = assistant.getSettings();
+                s.engine.intensity = (ps::assist::Intensity) i;
+                assistant.setSettings (s);
+            };
+        }
+        useMax.setText ("Maximizer");
+        useMax.onClick = [this] { auto s = assistant.getSettings(); s.engine.useMaximizer = ! s.engine.useMaximizer; assistant.setSettings (s); };
+        autoLoud.setText ("Auto");
+        autoLoud.setTooltip ("Auto: the target's own loudness. Off: the value of the slider.");
+        autoLoud.onClick = [this] { auto s = assistant.getSettings(); s.engine.autoLoudness = ! s.engine.autoLoudness; assistant.setSettings (s); };
+        truePeak.setText ("True Peak");
+        truePeak.onClick = [this] { auto s = assistant.getSettings(); s.engine.truePeak = ! s.engine.truePeak; assistant.setSettings (s); };
+        loudness.onChange = [this] (double v) { auto s = assistant.getSettings(); s.engine.loudnessLufs = (float) v; s.engine.autoLoudness = false; assistant.setSettings (s); };
+        ceiling.onChange = [this] (double v) { auto s = assistant.getSettings(); s.engine.ceilingDb = (float) v; assistant.setSettings (s); };
+        seconds.onChange = [this] (double v) { auto s = assistant.getSettings(); s.analysisSeconds = (float) v; assistant.setSettings (s); };
+        back.setText ("Back");
+        back.onClick = [this] { page = assistant.getSuggestions().empty() ? Page::Start : Page::Results; userPage = page == Page::Start; layout(); };
+        start.setText ("Start listening");
+        start.setOn (true);
+        start.setFilledWhenOn (true);
+        start.onClick = [this] {
+            if (assistant.hasAnalysis())
+            {
+                assistant.rebuild();   // the same audio, the new targets
+                userPage = false;
+                page = Page::Results;
+                layout();
+            }
+            else
+            {
+                listen();
+            }
+        };
+
+        // Listen page
+        cancel.setText ("Cancel");
+        cancel.onClick = [this] { assistant.cancel(); userPage = false; page = assistant.getSuggestions().empty() ? Page::Start : Page::Results; layout(); };
+        fromFile.setText ("Analyse a file instead...");
+        fromFile.onClick = [this] { chooseFile(); };
+
+        // Results page
+        relearn.setText ("Relearn");
+        relearn.setTooltip ("Listen again (same targets) and rebuild the suggestions");
+        relearn.onClick = [this] { listen(); };
+        setup.setText ("Targets...");
+        setup.setTooltip ("Change the targets, loudness and modules the Assistant uses");
+        setup.onClick = [this] { page = Page::Custom; userPage = true; layout(); };
+        bypass.setText ("Bypass");
+        bypass.setTooltip ("Compare with the unprocessed track, level matched (hold the button)");
+        openChain.setText ("Open chain");
+        openChain.setTooltip ("Edit the modules of this chain");
+        openChain.onClick = [this] { ctx.select (kChainSelection); };
+        matched.setText ("Loudness matched");
+        matched.setTooltip ("Moving a macro keeps the master's loudness, so you hear the change and not a level jump");
+        matched.onClick = [this] { assistant.setLoudnessMatched (! assistant.isLoudnessMatched()); };
+
+        for (auto* comp : std::initializer_list<juce::Component*> { &quick, &custom, &targets, &resultsTargets })
+            owner.addChildComponent (comp);
+        for (auto& p : modulePills)
+            owner.addChildComponent (*p);
+        for (auto& p : intensity)
+            owner.addChildComponent (p);
+        for (auto* comp : std::initializer_list<juce::Component*> { &useMax, &autoLoud, &truePeak, &loudness, &ceiling, &seconds,
+                                                                &back, &start, &cancel, &fromFile, &relearn, &setup,
+                                                                &bypass, &openChain, &matched })
+            owner.addChildComponent (comp);
+
+        toneMatch = std::make_unique<MacroControl> (assistant, Macro::ToneMatch, juce::Slider::RotaryHorizontalVerticalDrag);
+        loudMacro = std::make_unique<MacroControl> (assistant, Macro::Loudness, juce::Slider::RotaryHorizontalVerticalDrag);
+        tilt = std::make_unique<MacroControl> (assistant, Macro::Tilt, juce::Slider::LinearHorizontal);
+        for (auto m : { Macro::Dynamics, Macro::Width, Macro::Compress, Macro::Definition, Macro::ToneBalance })
+            extras.push_back (std::make_unique<MacroControl> (assistant, m, juce::Slider::LinearHorizontal));
+        for (int b = 0; b < 4; ++b)
+        {
+            auto w = std::make_unique<MacroControl> (assistant, (Macro) ((int) Macro::WidthLow + b), juce::Slider::LinearVertical);
+            w->vertical = true;
+            widths.push_back (std::move (w));
+        }
+        toneMatch->caption = "Tone Match";
+        loudMacro->caption = "Loudness (LUFS)";
+        for (auto* comp : allMacros())
+            owner.addChildComponent (comp);
+    }
+
+    std::vector<MacroControl*> allMacros()
+    {
+        std::vector<MacroControl*> v { toneMatch.get(), loudMacro.get(), tilt.get() };
+        for (auto& e : extras)
+            v.push_back (e.get());
+        for (auto& w : widths)
+            v.push_back (w.get());
+        return v;
+    }
+
+    //==========================================================================
+    void startQuick()
+    {
+        auto s = assistant.getSettings();
+        s.engine.profile = -1;
+        s.engine.autoLoudness = true;
+        assistant.setSettings (s);
+        listen();
+    }
+
+    void listen()
+    {
+        assistant.startListening();
+        userPage = false;
+        page = Page::Listen;
+        layout();
+    }
+
+    void setProfile (int profile)
+    {
+        auto s = assistant.getSettings();
+        s.engine.profile = profile;
+        s.engine.useReference = false;   // a loaded reference stays in the list, the target is the profile now
+        assistant.setSettings (s, page == Page::Results);   // the results page rebuilds at once; Custom waits for Start
+    }
+
+    void selectReference()
+    {
+        auto s = assistant.getSettings();
+        s.engine.useReference = true;
+        assistant.setSettings (s, page == Page::Results);
+    }
+
+    void chooseFile()
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Analyse an audio file", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3");
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this, safe = juce::Component::SafePointer<AssistantPanel> (&owner)] (const juce::FileChooser& fc) {
+                                  if (safe == nullptr)
+                                      return;
+                                  const auto f = fc.getResult();
+                                  if (f.existsAsFile() && ! assistant.analyseFile (f))
+                                      ctx.notify ("That file could not be read");
+                                  userPage = false;
+                                  page = Page::Listen;
+                                  layout();
+                              });
+    }
+
+    void chooseReference()
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Reference track", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3");
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this, safe = juce::Component::SafePointer<AssistantPanel> (&owner)] (const juce::FileChooser& fc) {
+                                  if (safe == nullptr)
+                                      return;
+                                  const auto f = fc.getResult();
+                                  if (f.existsAsFile() && ! assistant.loadReferenceFile (f))
+                                      ctx.notify ("That reference file could not be read");
+                              });
+    }
+
+    //==========================================================================
+    Page wantedPage() const
+    {
+        if (userPage)
+            return page;
+        const auto ph = assistant.getPhase();
+        const bool hasCards = ! assistant.getSuggestions().empty();
+        if (ph == Assistant::Phase::Listening || (ph == Assistant::Phase::Analysing && ! hasCards))
+            return Page::Listen;
+        if (hasCards)
+            return Page::Results;
+        if (ph == Assistant::Phase::Failed)
+            return Page::Listen;
+        return Page::Start;
+    }
+
+    void tick()
+    {
+        // A listen or analysis that starts (from this page, a rebuild or elsewhere) takes the page back from a page the
+        // user picked.
+        const auto ph = assistant.getPhase();
+        if (ph != lastPhase)
+        {
+            if (ph == Assistant::Phase::Listening || ph == Assistant::Phase::Analysing)
+                userPage = userPage && page == Page::Custom && ph == Assistant::Phase::Analysing
+                           && ! assistant.getSuggestions().empty();   // a rebuild from the Custom page stays there
+            lastPhase = ph;
+        }
+
+        const auto p = wantedPage();
+        if (p != page)
+        {
+            page = p;
+            layout();
+        }
+
+        const auto s = assistant.getSettings();
+        const auto ref = assistant.getReference();
+        const auto refName = ref.valid ? juce::String (ref.name) : juce::String();
+        targets.set (s.engine.profile, assistant.getDetectedTarget(), refName, assistant.isLoadingReference(),
+                     s.engine.useReference);
+        resultsTargets.set (s.engine.profile, assistant.getDetectedTarget(), refName, assistant.isLoadingReference(),
+                            s.engine.useReference);
+
+        for (size_t i = 0; i < modulePills.size(); ++i)
+            modulePills[i]->setOn ((s.engine.allowedModules & (1u << (unsigned) moduleTypes[i])) != 0);
+        for (int i = 0; i < 3; ++i)
+            intensity[(size_t) i].setOn ((int) s.engine.intensity == i);
+        useMax.setOn (s.engine.useMaximizer);
+        autoLoud.setOn (s.engine.autoLoudness);
+        truePeak.setOn (s.engine.truePeak);
+        loudness.setValue (s.engine.loudnessLufs);
+        loudness.setAlpha (s.engine.autoLoudness ? 0.5f : 1.0f);
+        ceiling.setValue (s.engine.ceilingDb);
+        seconds.setValue (s.analysisSeconds);
+        matched.setOn (assistant.isLoudnessMatched());
+        start.setText (assistant.hasAnalysis() ? "Rebuild" : "Start listening");
+        start.setTooltip (assistant.hasAnalysis() ? "Build the suggestions again from the audio already heard, with these targets"
+                                                  : "Listen to the track and build the suggestions");
+
+        // Bypass: held = global bypass with classic gain match (monitoring parameters, never in the history); the
+        // previous bypass / gain match / match mode come back on release.
+        const bool held = bypass.isMouseButtonDown();
+        if (held != bypassHeld)
+        {
+            bypassHeld = held;
+            if (held)
+            {
+                monitorBefore = { proc.getParameterValue ("io.bypass"), proc.getParameterValue ("io.gainMatch"),
+                                  proc.getParameterValue ("io.gainMatchModern") };
+                proc.setParameterValue ("io.gainMatchModern", 0.0f);
+                proc.setParameterValue ("io.gainMatch", 1.0f);
+                proc.setParameterValue ("io.bypass", 1.0f);
+            }
+            else
+            {
+                restoreMonitoring();
+            }
+        }
+        bypass.setOn (held);
+
+        // Cards
+        const auto cards = assistant.getSuggestions();
+        const int applied = assistant.getAppliedIndex();
+        if (cards.size() != cardButtons.size())
+        {
+            cardButtons.clear();
+            for (size_t i = 0; i < cards.size(); ++i)
+            {
+                auto b = std::make_unique<CardButton>();
+                b->onClick = [this, i] { assistant.apply ((int) i); };
+                owner.addChildComponent (*b);
+                cardButtons.push_back (std::move (b));
+            }
+            layout();
+        }
+        for (size_t i = 0; i < cards.size(); ++i)
+            cardButtons[i]->set (cards[i], (int) i == applied);
+
+        // Macros
+        const bool haveBase = applied >= 0 && applied < (int) cards.size();
+        const auto m = assistant.getMacros();
+        const auto order = proc.getChainOrder();
+        auto has = [&] (ps::ModuleType t) { return std::find (order.begin(), order.end(), t) != order.end(); };
+        auto enabledFor = [&] (Macro k) {
+            if (! haveBase)
+                return false;
+            switch (k)
+            {
+                case Macro::ToneMatch: case Macro::Tilt: return has (ps::ModuleType::Equalizer1);
+                case Macro::Dynamics: return has (ps::ModuleType::Punch);
+                case Macro::Width: case Macro::WidthLow: case Macro::WidthLowMid: case Macro::WidthHighMid:
+                case Macro::WidthHigh: return has (ps::ModuleType::Imager);
+                case Macro::Definition: return has (ps::ModuleType::Definition);
+                case Macro::ToneBalance: return has (ps::ModuleType::ToneBalance);
+                case Macro::Loudness: return has (ps::ModuleType::Maximizer);
+                case Macro::Compress: case Macro::Count: default: return true;
+            }
+        };
+        for (auto* c : allMacros())
+        {
+            const auto k = macroOf (c);
+            const float reset = haveBase ? cards[(size_t) applied].macros[(size_t) k] : 0.0f;
+            c->update (m[(size_t) k], reset, enabledFor (k));
+        }
+
+        // Tone display data
+        bandTarget = haveBase ? cards[(size_t) applied].target : assistant.getDetectedTarget();
+        bandRef = ref;
+        bandUsesRef = haveBase && ref.valid && cards[(size_t) applied].name == "Match reference";
+        trackCurve = assistant.getTrackCurve();
+        status = assistant.getStatusText();
+        progress = assistant.getProgress();
+        working = assistant.isWorking() || assistant.getPhase() == Assistant::Phase::Listening;
+        inputLufs = assistant.getInputLufs();
+        outputLufs = proc.getChain().getIoMeters().outputShortTermLufs.load();
+        owner.repaint();
+    }
+
+    Macro macroOf (MacroControl* c) const
+    {
+        if (c == toneMatch.get()) return Macro::ToneMatch;
+        if (c == loudMacro.get()) return Macro::Loudness;
+        if (c == tilt.get()) return Macro::Tilt;
+        const Macro extraOrder[] { Macro::Dynamics, Macro::Width, Macro::Compress, Macro::Definition, Macro::ToneBalance };
+        for (size_t i = 0; i < extras.size(); ++i)
+            if (extras[i].get() == c)
+                return extraOrder[i];
+        for (size_t i = 0; i < widths.size(); ++i)
+            if (widths[i].get() == c)
+                return (Macro) ((int) Macro::WidthLow + (int) i);
+        return Macro::ToneMatch;
+    }
+
+    //==========================================================================
+    void layout()
+    {
+        for (auto* c : owner.getChildren())
+            c->setVisible (false);
+
+        auto r = owner.getLocalBounds().reduced (14);
+        titleArea = r.removeFromTop (30);
+        r.removeFromTop (8);
+
+        if (page == Page::Start)
+        {
+            auto row = r.withSizeKeepingCentre (juce::jmin (r.getWidth(), 860), juce::jmin (r.getHeight(), 190));
+            const int w = (row.getWidth() - 40) / 2;
+            quick.setBounds (row.removeFromLeft (w));
+            custom.setBounds (row.removeFromRight (w));
+            quick.setVisible (true);
+            custom.setVisible (true);
+        }
+        else if (page == Page::Custom)
+        {
+            auto left = r.removeFromLeft (juce::jlimit (200, 280, r.getWidth() / 3));
+            targets.setBounds (left);
+            targets.setVisible (true);
+            r.removeFromLeft (14);
+            auto bottom = r.removeFromBottom (32);
+            start.setBounds (bottom.removeFromRight (150));
+            bottom.removeFromRight (10);
+            back.setBounds (bottom.removeFromRight (90));
+            start.setVisible (true);
+            back.setVisible (true);
+            r.removeFromBottom (10);
+            customArea = r;
+
+            auto col = r.reduced (14, 10);
+            col.removeFromTop (24);   // "Processing"
+            auto pills = col.removeFromTop (60);
+            const int pw = (pills.getWidth() - 3 * 8) / 4;
+            for (size_t i = 0; i < modulePills.size(); ++i)
+            {
+                const int rowI = (int) i / 4, colI = (int) i % 4;
+                modulePills[i]->setBounds (pills.getX() + colI * (pw + 8), pills.getY() + rowI * 30, pw, 26);
+                modulePills[i]->setVisible (true);
+            }
+            col.removeFromTop (14);
+            col.removeFromTop (20);   // "Intensity"
+            auto irow = col.removeFromTop (26);
+            const int iw = (irow.getWidth() - 16) / 3;
+            for (auto& p : intensity)
+            {
+                p.setBounds (irow.removeFromLeft (iw));
+                irow.removeFromLeft (8);
+                p.setVisible (true);
+            }
+            col.removeFromTop (16);
+            col.removeFromTop (20);   // "Loudness"
+            auto lrow = col.removeFromTop (26);
+            useMax.setBounds (lrow.removeFromLeft (110));
+            lrow.removeFromLeft (8);
+            autoLoud.setBounds (lrow.removeFromLeft (70));
+            lrow.removeFromLeft (8);
+            truePeak.setBounds (lrow.removeFromLeft (100));
+            for (auto* c : std::initializer_list<juce::Component*> { &useMax, &autoLoud, &truePeak })
+                c->setVisible (true);
+            col.removeFromTop (8);
+            auto srow = col.removeFromTop (36);
+            const int sw = (srow.getWidth() - 20) / 2;
+            loudness.setBounds (srow.removeFromLeft (sw));
+            ceiling.setBounds (srow.removeFromRight (sw));
+            col.removeFromTop (12);
+            seconds.setBounds (col.removeFromTop (36).withWidth (sw));
+            for (auto* c : std::initializer_list<juce::Component*> { &loudness, &ceiling, &seconds })
+                c->setVisible (true);
+        }
+        else if (page == Page::Listen)
+        {
+            listenArea = r;
+            auto bottom = r.removeFromBottom (32).withSizeKeepingCentre (360, 30);
+            cancel.setBounds (bottom.removeFromLeft (110));
+            fromFile.setBounds (bottom.removeFromRight (230));
+            cancel.setVisible (true);
+            fromFile.setVisible (true);
+        }
+        else
+        {
+            // Results
+            auto top = titleArea;
+            openChain.setBounds (top.removeFromRight (104).withSizeKeepingCentre (104, 26));
+            top.removeFromRight (8);
+            bypass.setBounds (top.removeFromRight (80).withSizeKeepingCentre (80, 26));
+            top.removeFromRight (8);
+            relearn.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 26));
+            top.removeFromRight (8);
+            setup.setBounds (top.removeFromRight (90).withSizeKeepingCentre (90, 26));
+            for (auto* c : std::initializer_list<juce::Component*> { &openChain, &bypass, &relearn, &setup })
+                c->setVisible (true);
+
+            auto cardsRow = r.removeFromTop (68);
+            if (! cardButtons.empty())
+            {
+                const int n = (int) cardButtons.size();
+                const int w = (cardsRow.getWidth() - (n - 1) * 8) / n;
+                for (auto& b : cardButtons)
+                {
+                    b->setBounds (cardsRow.removeFromLeft (w));
+                    cardsRow.removeFromLeft (8);
+                    b->setVisible (true);
+                }
+            }
+            r.removeFromTop (10);
+
+            auto left = r.removeFromLeft (juce::jlimit (170, 230, r.getWidth() / 5));
+            resultsTargets.setBounds (left);
+            resultsTargets.setVisible (true);
+            r.removeFromLeft (10);
+
+            auto right = r.removeFromRight (juce::jlimit (200, 260, r.getWidth() / 3));
+            extrasArea = right;
+            auto ex = right.reduced (12, 10);
+            ex.removeFromTop (22);   // "Macros"
+            matched.setBounds (ex.removeFromBottom (26));
+            matched.setVisible (true);
+            ex.removeFromBottom (8);
+            auto widthRow = ex.removeFromBottom (juce::jmin (120, ex.getHeight() / 3));
+            widthArea = widthRow;
+            widthRow.removeFromTop (18);   // "Band widths"
+            const int ww = widthRow.getWidth() / 4;
+            for (auto& w : widths)
+            {
+                w->setBounds (widthRow.removeFromLeft (ww));
+                w->setVisible (true);
+            }
+            const int eh = juce::jmin (44, ex.getHeight() / (int) extras.size());
+            for (auto& e : extras)
+            {
+                e->setBounds (ex.removeFromTop (eh).withTrimmedBottom (eh - 34 > 0 ? eh - 34 : 0));
+                e->setVisible (true);
+            }
+
+            r.removeFromRight (10);
+            const int toneH = r.getHeight() * 55 / 100;
+            toneArea = r.removeFromTop (toneH);
+            r.removeFromTop (10);
+            loudArea = r;
+
+            auto tone = toneArea.reduced (12, 10);
+            tone.removeFromTop (22);
+            auto knob = tone.removeFromLeft (juce::jmin (130, tone.getWidth() / 3));
+            toneMatch->setBounds (knob.removeFromTop (juce::jmin (knob.getHeight() - 40, 124)));
+            tilt->setBounds (knob.removeFromBottom (36));
+            tone.removeFromLeft (10);
+            bandArea = tone;
+
+            auto loud = loudArea.reduced (12, 10);
+            loud.removeFromTop (22);
+            loudMacro->setBounds (loud.removeFromLeft (juce::jmin (130, loud.getWidth() / 3)));
+            loudReadout = loud.reduced (10, 0);
+            for (auto* c : { toneMatch.get(), tilt.get(), loudMacro.get() })
+                c->setVisible (true);
+        }
+        owner.repaint();
+    }
+
+    void paint (juce::Graphics& g)
+    {
+        drawPanel (g, owner.getLocalBounds().toFloat());
+        g.setFont (font (15.0f, 700));
+        g.setColour (Col::text);
+        const juce::String title = page == Page::Start ? "Assistant" : page == Page::Custom ? "Assistant: targets"
+                                 : page == Page::Listen ? "Assistant: listening" : "Assistant";
+        g.drawText (title, titleArea, juce::Justification::centredLeft, false);
+
+        if (page == Page::Start)
+        {
+            g.setFont (font (12.5f));
+            g.setColour (Col::textDim);
+            g.drawText ("Builds a complete, editable master chain from what it hears. Pick how you want to start.",
+                        quick.getBounds().getUnion (custom.getBounds()).translated (0, -40).withHeight (24),
+                        juce::Justification::centred, false);
+        }
+        else if (page == Page::Custom)
+        {
+            drawPanel (g, customArea.toFloat());
+            auto col = customArea.reduced (14, 10);
+            drawSectionTitle (g, "PROCESSING", col.removeFromTop (24));
+            col.removeFromTop (74);
+            drawSectionTitle (g, "INTENSITY", col.removeFromTop (20));
+            col.removeFromTop (42);
+            drawSectionTitle (g, "LOUDNESS", col.removeFromTop (20));
+        }
+        else if (page == Page::Listen)
+        {
+            paintListen (g);
+        }
+        else
+        {
+            paintResults (g);
+        }
+    }
+
+    void paintListen (juce::Graphics& g)
+    {
+        auto r = listenArea.toFloat();
+        const auto ph = assistant.getPhase();
+        const juce::String headline = ph == Assistant::Phase::Analysing ? "Analysing..."
+                                    : ph == Assistant::Phase::Failed ? "Something went wrong"
+                                    : "Play the loudest part of your track";
+        g.setFont (font (20.0f, 600));
+        g.setColour (Col::text);
+        g.drawText (headline, r.removeFromTop (r.getHeight() * 0.3f), juce::Justification::centredBottom, false);
+
+        const auto ringArea = r.removeFromTop (r.getHeight() * 0.6f).withSizeKeepingCentre (110.0f, 110.0f);
+        const auto c = ringArea.getCentre();
+        const float t = (float) (juce::Time::getMillisecondCounter() % 4000u) / 4000.0f;
+        g.setGradientFill (juce::ColourGradient (Col::accent.withAlpha (0.35f), c.x, c.y, juce::Colours::transparentBlack,
+                                                 c.x + 60.0f, c.y, true));
+        g.fillEllipse (ringArea.expanded (6.0f + 4.0f * std::sin (t * juce::MathConstants<float>::twoPi)));
+        g.setColour (Col::background);
+        g.fillEllipse (ringArea.reduced (14.0f));
+        juce::Path track, value;
+        track.addCentredArc (c.x, c.y, 48.0f, 48.0f, 0.0f, 0.0f, juce::MathConstants<float>::twoPi, true);
+        g.setColour (Col::outline);
+        g.strokePath (track, juce::PathStrokeType (4.0f));
+        if (progress > 0.001f)
+        {
+            value.addCentredArc (c.x, c.y, 48.0f, 48.0f, 0.0f, 0.0f, juce::MathConstants<float>::twoPi * juce::jlimit (0.0f, 1.0f, progress), true);
+            g.setColour (Col::accent);
+            g.strokePath (value, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setFont (font (13.0f));
+        g.setColour (Col::textDim);
+        g.drawText (status.isNotEmpty() ? status : juce::String ("Ready to listen..."), r.removeFromTop (30.0f),
+                    juce::Justification::centred, false);
+    }
+
+    void paintResults (juce::Graphics& g)
+    {
+        for (const auto& a : { toneArea, loudArea, extrasArea })
+            drawPanel (g, a.toFloat());
+        drawSectionTitle (g, "TONE", toneArea.reduced (12, 8).removeFromTop (18));
+        drawSectionTitle (g, "LOUDNESS", loudArea.reduced (12, 8).removeFromTop (18));
+        drawSectionTitle (g, "MACROS", extrasArea.reduced (12, 8).removeFromTop (18));
+        drawSectionTitle (g, "BAND WIDTHS", widthArea.withHeight (16));
+
+        drawTargetBand (g, bandArea.toFloat(), bandTarget, bandUsesRef ? &bandRef : nullptr, trackCurve);
+        g.setFont (font (10.5f, 600));
+        g.setColour (Col::info);
+        g.drawText (bandUsesRef ? "Reference" : juce::String (ps::assist::targetName (bandTarget)) + " target",
+                    bandArea.reduced (10, 6).removeFromTop (14), juce::Justification::topRight, false);
+        g.setColour (Col::input);
+        g.drawText ("Your track", bandArea.reduced (10, 6).removeFromTop (14).translated (0, 14), juce::Justification::topRight, false);
+
+        auto r = loudReadout.toFloat();
+        auto line = [&] (const juce::String& label, const juce::String& value, juce::Colour c) {
+            auto row = r.removeFromTop (24.0f);
+            g.setFont (font (12.0f));
+            g.setColour (Col::textDim);
+            g.drawText (label, row, juce::Justification::centredLeft, false);
+            g.setFont (font (13.0f, 600));
+            g.setColour (c);
+            g.drawText (value, row, juce::Justification::centredRight, false);
+        };
+        const auto m = assistant.getMacros();
+        line ("Target", lufsText (m[(int) Macro::Loudness]), Col::text);
+        line ("Your track (heard)", lufsText (inputLufs), Col::input);
+        line ("Output now (short-term)", lufsText (outputLufs), Col::output);
+        r.removeFromTop (6.0f);
+        g.setFont (font (11.0f));
+        g.setColour (Col::textSubtle);
+        g.drawFittedText (status, r.removeFromTop (34.0f).toNearestInt(), juce::Justification::topLeft, 2, 0.9f);
+
+        if (working)
+        {
+            auto bar = loudReadout.toFloat().removeFromBottom (4.0f);
+            g.setColour (Col::outline);
+            g.fillRoundedRectangle (bar, 2.0f);
+            g.setColour (Col::accent);
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.02f, 1.0f, progress)), 2.0f);
+        }
+    }
+
+    AssistantPanel& owner;
+    EditorContext& ctx;
+    PureSheenProcessor& proc;
+    Assistant& assistant;
+    Page page = Page::Start;
+    bool userPage = false;
+    Assistant::Phase lastPhase = Assistant::Phase::Idle;
+
+    StartCard quick { "Quick", "Listen and build a master.", "One click, detected target.", Col::info };
+    StartCard custom { "Custom", "Choose the target, loudness", "and modules first.", Col::sideChannel };
+    TargetList targets, resultsTargets;
+    std::vector<std::unique_ptr<PillButton>> modulePills;
+    std::vector<ps::ModuleType> moduleTypes;
+    std::array<PillButton, 3> intensity;
+    PillButton useMax, autoLoud, truePeak, back, start, cancel, fromFile, relearn, setup, bypass, openChain, matched;
+    SettingSlider loudness { "Loudness target", -20.0, -5.0, 0.5, [] (double v) { return juce::String (v, 1) + " LUFS"; } };
+    SettingSlider ceiling { "Output level", -3.0, 0.0, 0.1, [] (double v) { return juce::String (v, 1) + " dB"; } };
+    SettingSlider seconds { "Analysis time", 5.0, 30.0, 1.0, [] (double v) { return juce::String (juce::roundToInt (v)) + " s"; } };
+    std::vector<std::unique_ptr<CardButton>> cardButtons;
+    std::unique_ptr<MacroControl> toneMatch, loudMacro, tilt;
+    std::vector<std::unique_ptr<MacroControl>> extras, widths;
+    std::unique_ptr<juce::FileChooser> chooser;
+
+    juce::Rectangle<int> titleArea, customArea, listenArea, toneArea, loudArea, extrasArea, widthArea, bandArea, loudReadout;
+    ps::ToneTarget bandTarget = ps::ToneTarget::Balanced;
+    ps::assist::ReferenceTarget bandRef;
+    bool bandUsesRef = false, working = false, bypassHeld = false;
+    std::array<float, 3> monitorBefore {};   // io.bypass, io.gainMatch, io.gainMatchModern before Compare
+
+    void restoreMonitoring()
+    {
+        proc.setParameterValue ("io.bypass", monitorBefore[0]);
+        proc.setParameterValue ("io.gainMatchModern", monitorBefore[2]);
+        proc.setParameterValue ("io.gainMatch", monitorBefore[1]);
+    }
+    ps::Curve trackCurve {};
+    juce::String status;
+    float progress = 0.0f, inputLufs = ps::kNoValue, outputLufs = ps::kNoValue;
+};
+
+//==============================================================================
+AssistantPanel::AssistantPanel (EditorContext& c) : impl (std::make_unique<Impl> (*this, c))
+{
+    setTitle ("Assistant");
+}
+
+AssistantPanel::~AssistantPanel()
+{
+    // Never leave the host bypassed when the page closes while the compare button is held.
+    if (impl->bypassHeld)
+        impl->restoreMonitoring();
+}
+
+void AssistantPanel::tick() { impl->tick(); }
+
+void AssistantPanel::showPage (Page p)
+{
+    impl->page = p;
+    impl->userPage = true;
+    impl->layout();
+}
+
+AssistantPanel::Page AssistantPanel::getPage() const noexcept { return impl->page; }
+void AssistantPanel::paint (juce::Graphics& g) { impl->paint (g); }
+void AssistantPanel::resized() { impl->layout(); }
+} // namespace ps::ui

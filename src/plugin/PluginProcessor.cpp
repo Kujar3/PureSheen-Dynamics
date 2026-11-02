@@ -2,6 +2,7 @@
 
 #include "dsp/Maximizer.h"
 #include "plugin/FactoryPresets.h"
+#include "plugin/Assistant.h"      // (phase 3) the Assistant: capture, suggestions, macros, state child
 #include "plugin/MatchEqState.h"   // (phase 2) Match EQ state child, spectrum undo, reference-file loader
 #include "plugin/PluginState.h"
 #include "plugin/Presets.h"
@@ -201,7 +202,8 @@ struct SmoothedSpectrum
 
 //==============================================================================
 struct PureSheenProcessor::Impl final : private juce::Timer,
-                                        private juce::AudioProcessorParameter::Listener
+                                        private juce::AudioProcessorParameter::Listener,
+                                        public psplug::AssistantHost
 {
     explicit Impl (PureSheenProcessor& p)
         : owner (p), apvts (p, nullptr, "PARAMS", createLayout())
@@ -231,6 +233,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         matchEq = std::make_unique<psplug::MatchEqState> (chain);
         matchEq->historyReset (history);
         // ----
+        assistant = std::make_unique<psplug::Assistant> (*this);
 
         startTimerHz (30);
     }
@@ -296,6 +299,60 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // ---- Match EQ (MatchEqState.cpp): spectra in the state / snapshots / presets, spectrum undo, file loader.
     // Declared after `chain`, so it (and its loader thread) is destroyed first.
     std::unique_ptr<psplug::MatchEqState> matchEq;
+    // (phase 3) The Assistant (declared after `chain`: destroyed first, its worker joined).
+    std::unique_ptr<psplug::Assistant> assistant;
+
+    // AssistantHost
+    std::vector<float> currentValues() const override { return capture().values; }
+    std::vector<ps::ModuleType> currentOrder() const override { return chain.getOrder(); }
+    void assistantChanged() override { owner.sendChangeMessage(); }
+
+    bool applyAssistantChain (const std::vector<float>& target, const std::vector<ps::ModuleType>& order,
+                              const juce::String& description) override
+    {
+        if (target.size() != params.size() || stateBeforeImport != nullptr)
+            return false;
+        const juce::ScopedLock editSl (editLock);
+        matchEqHousekeeping();
+        commitGesture (true);
+
+        juce::MemoryBlock previousState;
+        owner.getStateInformation (previousState);
+        const juce::ScopedValueSetter<const juce::MemoryBlock*> saveGuard (stateBeforeImport, &previousState);
+
+        applyValues (target, [] (int i) { return psplug::isInPresetScope (i, -1); });
+        if (order != chain.getOrder())
+            setOrder (order);
+        record (description);
+        owner.sendChangeMessage();
+        return true;
+    }
+
+    // A macro drag: the intermediate edits are unrecorded and the release records one step. While the drag is in
+    // progress the housekeeping records nothing else (Match EQ, Maximizer learn, host gestures, the Assistant's own
+    // results), so no other step captures an intermediate position; a drag whose release never came ends after 3 s.
+    bool assistantDragActive = false;
+    double assistantDragMs = 0.0;
+    static constexpr double kAssistantDragTimeoutMs = 3000.0;
+
+    void applyAssistantEdit (const std::vector<std::pair<int, float>>& changes, const std::vector<ps::ModuleType>& order,
+                             const juce::String& recordDescription) override
+    {
+        const juce::ScopedLock editSl (editLock);
+        if (! assistantDragActive)
+            commitGesture (true);
+        assistantDragActive = recordDescription.isEmpty();
+        assistantDragMs = nowMs();
+        const bool was = applying.exchange (true);
+        for (const auto& [i, v] : changes)
+            if (i >= 0 && i < (int) params.size() && ! psplug::isMonitoringParam (i))
+                setParam (i, v);
+        applying.store (was);
+        if (order != chain.getOrder())
+            setOrder (order);
+        if (recordDescription.isNotEmpty())
+            record (recordDescription);
+    }
 
     // A spectrum change is an undo step even when no parameter changed.
     void recordMatchEq (const juce::String& description)
@@ -498,8 +555,19 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     void housekeeping (bool force)
     {
         const juce::ScopedLock sl (editLock);
+        if (assistantDragActive)
+        {
+            if (nowMs() - assistantDragMs < kAssistantDragTimeoutMs)
+            {
+                updateLatency();
+                return;
+            }
+            assistantDragActive = false;
+            record ("Assistant: macro");
+        }
         matchEqHousekeeping();   // Match EQ: finished file loads, capture stops, clears
         commitGesture (force);
+        assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
         updateLatency();
 
         if (maxLearnActive)
@@ -612,6 +680,7 @@ void PureSheenProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     d.prepared = true;
     setLatencySamples (d.chain.getLatencySamples());
+    d.assistant->prepare (sampleRate);
 }
 
 void PureSheenProcessor::releaseResources() {}
@@ -651,6 +720,7 @@ void PureSheenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     // Hosts may exceed the announced block size: process in chunks the chain was prepared for.
     float* const* channels = buffer.getArrayOfWritePointers();
     const int total = buffer.getNumSamples();
+    d.assistant->pushAudio (channels[0], channels[1], total);   // the Assistant hears the unprocessed input
     for (int start = 0; start < total; start += d.maxBlock)
     {
         float* chunk[2] { channels[0] + start, channels[1] + start };
@@ -720,6 +790,7 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
     }
 
     state.appendChild (d.matchEq->createStateTree(), nullptr);   // Match EQ: "MatchEq" child
+    state.appendChild (d.assistant->createStateTree(), nullptr); // Assistant: "Assistant" child
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
@@ -777,6 +848,8 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
     d.setOrder (chainTree.isValid() ? psplug::chainFromTree (chainTree) : psplug::defaultChain());
     // Match EQ: the spectra (a state without the child, e.g. 0.1.x, clears them)
     d.matchEq->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("MatchEq") : juce::ValueTree());
+    // Assistant: its cards and targets (a state without the child resets it)
+    d.assistant->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("Assistant") : juce::ValueTree());
 
     {
         const juce::ScopedLock sl (d.extrasLock);
@@ -1538,3 +1611,5 @@ bool PureSheenProcessor::applyImportedPreset (int scope, const std::vector<float
 }
 float PureSheenProcessor::getMatchReferenceFileProgress() const { return impl->matchEq->getFileProgress(); }
 juce::String PureSheenProcessor::getMatchReferenceFileError() const { return impl->matchEq->getFileError(); }
+
+psplug::Assistant& PureSheenProcessor::getAssistant() noexcept { return *impl->assistant; }

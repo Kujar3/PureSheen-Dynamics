@@ -7,7 +7,10 @@
 #include "ui/BassScope.h"          // ui-lowend block
 #include "ui/LowEndWidgets.h"      // ui-lowend block
 #include "ui/LowRegionDisplay.h"   // ui-lowend block
+#include "plugin/Assistant.h"                       // assistant block
 #include "plugin/PluginProcessor.h"
+#include "ui/AssistantPanel.h"                       // assistant block
+#include "ui/EditorContext.h"                        // assistant block
 #include "plugin/import/XmlPresetImport.h"   // importer block
 #include "ui/Controls.h"                      // importer block (MenuChip)
 #include "ui/ChainStrip.h"
@@ -363,6 +366,104 @@ int runSnapshot (const juce::File& outputDir)
 
     // 01: default chain
     ok &= writePng (*editor, file ("01_default_1180x720"));
+
+    // ---- BEGIN assistant (phase 3): the Assistant page (start, custom, listening, results at three sizes), a real
+    //      listen of the synthetic song, the default card applied as one step, a macro drag as one step.
+    // Set PURESHEEN_SNAPSHOT_ONLY=assistant to stop after this block.
+    {
+        juce::MemoryBlock stateBefore;
+        proc.getStateInformation (stateBefore);
+        auto& assistant = proc.getAssistant();
+        auto settings = assistant.getSettings();
+        settings.analysisSeconds = 6.0f;
+        assistant.setSettings (settings);
+
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule (ps::ui::kAssistantSelection);
+        rig.play (*editor, 4);
+        ok &= writePng (*editor, file ("15_assistant_start_1180x720"));
+
+        auto* page = findChild<ps::ui::AssistantPanel> (*editor);
+        ok &= page != nullptr;
+        if (page != nullptr)
+        {
+            page->showPage (ps::ui::AssistantPanel::Page::Custom);
+            rig.play (*editor, 2);
+            ok &= writePng (*editor, file ("15_assistant_custom_1180x720"));
+            editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+            rig.play (*editor, 2);
+            ok &= writePng (*editor, file ("15_assistant_custom_980x600"));
+            editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        }
+
+        const int stepsBefore = (int) proc.getHistory().size();
+        assistant.startListening();
+        rig.play (*editor, 90);   // 3 s of the song
+        proc.flushPendingChanges (false);
+        ok &= writePng (*editor, file ("15_assistant_listening_1180x720"));
+
+        // The rest of the listen, then the analysis on the worker (the processor's housekeeping collects the results)
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        while ((assistant.getPhase() != psplug::Assistant::Phase::Ready || assistant.isWorking())
+               && juce::Time::getMillisecondCounterHiRes() - t0 < 180000.0)
+        {
+            rig.play (*editor, 3);
+            proc.flushPendingChanges (false);
+            pumpMessages (5);
+        }
+        const auto seconds = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0;
+        const bool ready = assistant.getPhase() == psplug::Assistant::Phase::Ready && assistant.getAppliedIndex() == 0;
+        std::cout << (ready ? "assistant: listened, analysed and applied the default card in "
+                            : "FAILED: assistant did not finish in ") << juce::String (seconds, 1) << " s ("
+                  << assistant.getSuggestions().size() << " cards, " << assistant.getStatusText() << ")\n";
+        ok &= ready;
+        const auto history = proc.getHistory();
+        const bool oneStep = (int) history.size() == stepsBefore + 1 && history.back().description.startsWith ("Assistant: ");
+        std::cout << (oneStep ? "assistant: the applied card is one undo step: " : "FAILED: assistant apply steps: ")
+                  << history.back().description << "\n";
+        ok &= oneStep;
+
+        struct ShotSize { int w, h; const char* name; };
+        const ShotSize sizes[] = { { 980, 600, "980x600" }, { 1180, 720, "1180x720" }, { 1800, 1100, "1800x1100" } };
+        for (const auto& sz : sizes)
+        {
+            editor->setSize (sz.w, sz.h);
+            rig.play (*editor, 20);
+            ok &= writePng (*editor, file (juce::String ("15_assistant_results_") + sz.name));
+        }
+
+        // A macro drag (three moves, released on the last) is one undo step and keeps the loudness target.
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        const int before = (int) proc.getHistory().size();
+        const float target = proc.getParameterValue ("max.learnTarget");
+        assistant.setMacro (ps::assist::Macro::Width, 60.0f, false);
+        assistant.setMacro (ps::assist::Macro::Width, 70.0f, false);
+        assistant.setMacro (ps::assist::Macro::Width, 80.0f, true);
+        proc.flushPendingChanges (true);
+        const bool macroStep = (int) proc.getHistory().size() == before + 1
+                               && std::abs (proc.getParameterValue ("img.amount") - 80.0f) < 0.01f
+                               && std::abs (proc.getParameterValue ("max.learnTarget") - target) < 0.01f;
+        std::cout << (macroStep ? "assistant: a macro drag is one undo step: " : "FAILED: assistant macro drag: ")
+                  << proc.getHistory().back().description << "\n";
+        ok &= macroStep;
+        rig.play (*editor, 10);
+        ok &= writePng (*editor, file ("15_assistant_macro_1180x720"));
+
+        editor->selectModule (ps::ui::kChainSelection);
+        rig.play (*editor, 4);
+        ok &= writePng (*editor, file ("15_assistant_chain_1180x720"));
+
+        proc.setStateInformation (stateBefore.getData(), (int) stateBefore.getSize());
+        editor->selectModule ((int) ps::ModuleType::Equalizer1);
+        rig.play (*editor, 4);
+
+        if (juce::SystemStats::getEnvironmentVariable ("PURESHEEN_SNAPSHOT_ONLY", {}) == "assistant")
+        {
+            std::cout << (ok ? "snapshots OK (assistant only)\n" : "snapshots FAILED\n");
+            return ok ? 0 : 1;
+        }
+    }
+    // ---- END assistant
 
     // ---- BEGIN importer: "Import preset (.xml)..." in the header preset list and a module's preset menu, and the
     //      result notes (header notice pill, panel header hint) at 980x600 and 1180x720.

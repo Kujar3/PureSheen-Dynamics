@@ -503,6 +503,11 @@ std::unique_ptr<Module> makeModule (ModuleType type)
 }
 } // namespace
 
+std::unique_ptr<Module> createModule (ModuleType type)
+{
+    return makeModule (type);
+}
+
 //==============================================================================
 struct Chain::Impl
 {

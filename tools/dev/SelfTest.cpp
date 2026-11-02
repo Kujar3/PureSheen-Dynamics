@@ -4,6 +4,7 @@
 #include "dsp/Maximizer.h"
 #include "dsp/TransientSplit.h"
 #include "dsp/BassShaper.h"
+#include "plugin/Assistant.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/MatchEqState.h"
 #include "plugin/PluginProcessor.h"
@@ -2423,6 +2424,196 @@ void testPanelGestures()
     pb->removeListener (&b);
 }
 
+//==============================================================================
+// (phase 3) The Assistant: an allocation-free capture, the analysis on the worker, the default card applied as one undo
+// step, macro drags as one step, undo restoring macro positions, loudness matching, the state child round trip, and
+// an old state (without the child) resetting it.
+bool waitForAssistant (Host& h, double seconds)
+{
+    auto& a = h.proc.getAssistant();
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    while (juce::Time::getMillisecondCounterHiRes() - t0 < seconds * 1000.0)
+    {
+        h.proc.flushPendingChanges (false);
+        if (a.getPhase() == psplug::Assistant::Phase::Ready && ! a.isWorking())
+            return true;
+        if (a.getPhase() == psplug::Assistant::Phase::Failed)
+            return false;
+        juce::Thread::sleep (20);
+    }
+    return false;
+}
+
+void testAssistant()
+{
+    std::cout << "\n-- Assistant\n";
+    using psplug::Assistant;
+    using ps::assist::Macro;
+
+    Host h;
+    h.prepare();
+    auto& a = h.proc.getAssistant();
+    auto settings = a.getSettings();
+    settings.analysisSeconds = 5.0f;
+    a.setSettings (settings);
+
+    // Silence does not count: the capture waits for playing audio.
+    a.startListening();
+    h.stream ((long long) kRate, {});
+    check (a.getPhase() == Assistant::Phase::Listening && a.getProgress() == 0.0f,
+           "assistant: silence is not counted while listening");
+
+    const auto before = psdev::getAllocationCounts();
+    h.stream ((long long) (5.5 * kRate), musicLikeInput (0.25f), { 512, 100, 1, 1024, 63 });
+    const auto after = psdev::getAllocationCounts();
+    check (after.allocations == before.allocations && after.frees == before.frees,
+           "realtime: the Assistant's capture while listening is allocation free");
+
+    const int stepsBefore = (int) h.proc.getHistory().size();
+    const bool ready = waitForAssistant (h, 240.0);
+    check (ready && a.getAppliedIndex() == 0 && a.getSuggestions().size() >= 5,
+           "assistant: listen, analyse, the default card applied",
+           str ((int) a.getPhase(), " / ", a.getSuggestions().size(), " cards / ", a.getStatusText()));
+    if (! ready)
+        return;
+
+    const auto history = h.proc.getHistory();
+    check ((int) history.size() == stepsBefore + 1 && history.back().description.startsWith ("Assistant: Suggested"),
+           "assistant: the applied card is one undo step", history.back().description.toStdString());
+
+    const std::vector<ps::ModuleType> expectedOrder { ps::ModuleType::Equalizer1, ps::ModuleType::Punch, ps::ModuleType::Imager,
+                                                      ps::ModuleType::Definition, ps::ModuleType::ToneBalance,
+                                                      ps::ModuleType::DynamicEq, ps::ModuleType::Maximizer };
+    check (h.proc.getChainOrder() == expectedOrder, "assistant: the default card builds the reference-like chain");
+
+    const auto card = a.getSuggestions().front();
+    bool same = true;
+    for (size_t i = 0; i < card.values.size(); ++i)
+        if (psplug::isInPresetScope ((int) i, -1)
+            && ! psplug::sameValue ((int) i, h.proc.getParameterValue (ps::paramSpecs()[i].id), card.values[i]))
+            same = false;
+    check (same, "assistant: every value of the applied card reached the parameters");
+    check (card.loudnessMeasured && card.tablesReady, "assistant: the default card's gain and loudness tables are measured");
+
+    // A macro drag is one step; undo brings the macro position back (positions are read from the parameters).
+    const float widthBase = a.getMacros()[(size_t) Macro::Width];
+    const int steps = (int) h.proc.getHistory().size();
+    a.setMacro (Macro::Width, 60.0f, false);
+    a.setMacro (Macro::Width, 70.0f, false);
+    h.proc.flushPendingChanges (true);
+    const bool noStepYet = (int) h.proc.getHistory().size() == steps;
+    a.setMacro (Macro::Width, 75.0f, true);
+    h.proc.flushPendingChanges (true);
+    check (noStepYet && (int) h.proc.getHistory().size() == steps + 1 && std::abs (h.get ("img.amount") - 75.0f) < 0.01f,
+           "assistant: a macro drag is one undo step", h.proc.getHistory().back().description.toStdString());
+    h.proc.undo();
+    check (std::abs (a.getMacros()[(size_t) Macro::Width] - widthBase) < 0.01f, "assistant: undo restores the macro position");
+    h.proc.redo();
+
+    // Loudness matching: a tone-match move corrects the Maximizer gain (on) or leaves it alone (off).
+    const float gain0 = h.get ("max.gain");
+    a.setLoudnessMatched (false);
+    a.setMacro (Macro::ToneMatch, 180.0f, true);
+    const float gainOff = h.get ("max.gain");
+    a.setMacro (Macro::ToneMatch, 100.0f, true);
+    a.setLoudnessMatched (true);
+    a.setMacro (Macro::ToneMatch, 180.0f, true);
+    const float gainOn = h.get ("max.gain");
+    a.setMacro (Macro::ToneMatch, 100.0f, true);
+    check (std::abs (gainOff - gain0) < 0.01f && std::abs (gainOn - gain0) > 0.01f && std::abs (h.get ("max.gain") - gain0) < 0.05f,
+           "assistant: loudness matching corrects the Maximizer gain only when on",
+           str (gain0, " / off ", gainOff, " / on ", gainOn, " / back ", h.get ("max.gain")));
+
+    // Compress inserts a glue Dynamics before Tone Balance and Loudness moves the target.
+    a.setMacro (Macro::Compress, 50.0f, true);
+    const auto order = h.proc.getChainOrder();
+    const auto dyn = std::find (order.begin(), order.end(), ps::ModuleType::Dynamics);
+    check (dyn != order.end() && dyn + 1 != order.end() && *(dyn + 1) == ps::ModuleType::ToneBalance
+               && std::abs (a.getMacros()[(size_t) Macro::Compress] - 50.0f) < 0.5f,
+           "assistant: Compress inserts a glue Dynamics before Tone Balance");
+    const float target0 = h.get ("max.learnTarget");
+    a.setMacro (Macro::Loudness, target0 + 1.0f, true);
+    check (std::abs (h.get ("max.learnTarget") - target0 - 1.0f) < 0.01f && h.get ("max.gain") > gain0,
+           "assistant: the Loudness macro raises the target and the gain");
+
+    // Another card = one step; the state child round-trips.
+    const int steps2 = (int) h.proc.getHistory().size();
+    check (a.apply (1) && (int) h.proc.getHistory().size() == steps2 + 1 && a.getAppliedIndex() == 1,
+           "assistant: applying another card is one undo step");
+
+    juce::MemoryBlock state;
+    h.proc.getStateInformation (state);
+    Host h2;
+    h2.prepare();
+    h2.proc.setStateInformation (state.getData(), (int) state.getSize());
+    auto& a2 = h2.proc.getAssistant();
+    const auto cards1 = a.getSuggestions(), cards2 = a2.getSuggestions();
+    bool cardsSame = cards2.size() == cards1.size() && a2.getAppliedIndex() == 1;
+    for (size_t k = 0; cardsSame && k < cards1.size(); ++k)
+    {
+        const auto& x = cards1[k];
+        const auto& y = cards2[k];
+        cardsSame = x.name == y.name && x.order == y.order && x.tablesReady == y.tablesReady;
+        for (size_t i = 0; cardsSame && i < x.values.size(); ++i)
+            cardsSame = psplug::sameValue ((int) i, x.values[i], y.values[i]);
+    }
+    const auto m1 = a.getMacros(), m2 = a2.getMacros();
+    bool macrosSame = true;
+    for (int k = 0; k < ps::assist::kNumMacros; ++k)
+        macrosSame = macrosSame && std::abs (m1[(size_t) k] - m2[(size_t) k]) < 0.05f;
+    check (cardsSame && macrosSame && a2.getPhase() == Assistant::Phase::Ready,
+           "assistant: the state child round-trips (cards, applied card, macro positions)");
+
+    // An older state without the child resets the Assistant.
+    auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), (int) state.getSize());
+    if (xml != nullptr)
+        if (auto* child = xml->getChildByName ("Assistant"))
+            xml->removeChildElement (child, true);
+    juce::MemoryBlock old;
+    if (xml != nullptr)
+        juce::AudioProcessor::copyXmlToBinary (*xml, old);
+    h2.proc.setStateInformation (old.getData(), (int) old.getSize());
+    check (a2.getSuggestions().empty() && a2.getPhase() == Assistant::Phase::Idle && a2.getAppliedIndex() == -1,
+           "assistant: a state without the Assistant child resets it");
+
+    // A host restoring from another thread: queued, saves meanwhile return the restored tree, the next tick applies it.
+    std::thread loader ([&] { h2.proc.setStateInformation (state.getData(), (int) state.getSize()); });
+    loader.join();
+    juce::MemoryBlock during;
+    h2.proc.getStateInformation (during);
+    const auto duringXml = juce::AudioProcessor::getXmlFromBinary (during.getData(), (int) during.getSize());
+    const auto* duringChild = duringXml != nullptr ? duringXml->getChildByName ("Assistant") : nullptr;
+    const bool queued = a2.getSuggestions().empty() && duringChild != nullptr && duringChild->getNumChildElements() > 0;
+    h2.proc.flushPendingChanges (false);
+    check (queued && a2.getSuggestions().size() == cards1.size(),
+           "assistant: a restore from another thread is applied at the next tick (saves meanwhile keep it)");
+
+    // Malformed numbers (NaN / inf) fall back to defaults; a listen still works afterwards.
+    juce::ValueTree bad ("Assistant");
+    bad.setProperty ("version", 1, nullptr);
+    bad.setProperty ("seconds", "nan", nullptr);
+    bad.setProperty ("loudness", "inf", nullptr);
+    bad.setProperty ("rmsDb", "nan", nullptr);
+    a2.restoreStateTree (bad);
+    const auto badSettings = a2.getSettings();
+    check (std::isfinite (badSettings.analysisSeconds) && badSettings.analysisSeconds >= Assistant::kMinSeconds
+               && std::isfinite (badSettings.engine.loudnessLufs),
+           "assistant: non-finite numbers in a state fall back to defaults");
+
+    // Cancel and listen again at once (the capture buffer is replaced while the audio thread runs).
+    for (int i = 0; i < 20; ++i)
+    {
+        a2.startListening();
+        h2.stream (300, musicLikeInput (0.25f), { 64, 7, 128 });
+        a2.cancel();
+    }
+    a2.startListening();
+    h2.stream ((long long) kRate, musicLikeInput (0.25f));
+    check (a2.getPhase() == Assistant::Phase::Listening && a2.getProgress() > 0.1f,
+           "assistant: listening again right after a cancel captures audio");
+    a2.cancel();
+}
+
 void testThreads()
 {
     std::cout << "\n-- Threads\n";
@@ -2511,6 +2702,7 @@ int runSelfTest()
     testBassScopeFeed();
     testPromptLifetime();
     testThreads();
+    testAssistant();
 
     std::cout << "\n-- Match EQ state, undo and file loader\n";
     const int matchFailures = psplug::runMatchEqStateTests();

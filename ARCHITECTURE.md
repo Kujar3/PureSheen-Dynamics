@@ -19,8 +19,8 @@ Later phases (enums are append-only, so they slot in):
 - Phase 2 (done, see "Phase 2" and "Status (phase 2 integration)" below): Dynamic EQ, Match EQ, Tone Balance,
   Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
 - Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
-- Phase 3: analog-style compressor / EQ / limiter / tape modules, a de-limiter, rule-based Assistant, Track
-  Referencing (from RefMatch), and one plug-in per module ("PureSheen EQ", "PureSheen Maximizer", ...)
+- Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (from RefMatch), analog-style
+  compressor / EQ / limiter / tape modules, a de-limiter, and one plug-in per module ("PureSheen EQ", ...)
 - Phase 4: MCP bridge
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
@@ -39,6 +39,9 @@ scripts/fetch_clap.bat, clap-juce-extensions-state-rescan.patch, install-plugin.
                           (adapted from RefMatch at the end of Core)
 src/core/                 measurement core copied from RefMatch (pure C++17): Common.h (dB helpers),
                           Loudness (BS.1770 M/S/I/LRA, realtime safe), TruePeak (4x), Fft (radix-2 forward)
+                          (phase 3) TrackAnalysis: RefMatch's whole-track analyser (profile, 1/3-octave curve, bands)
+src/assist/               (phase 3) the Assistant (pure C++17): AssistFeatures (analysis), AssistEngine + AssistProfiles
+                          (suggestions, macros, targets, detector), OfflineChain (loudness by offline render)
 src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests)
   Types.h/.cpp            ModuleType (+ moduleInfo), ChannelMode, CrossoverType, EqShape, MaximizerMode, ... enums
   Params.h, ParamTable.cpp  parameter table (ids, ranges, defaults) + typed param structs + read*Params
@@ -61,6 +64,7 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
   LowContrast, BassShaper .h/.cpp   one contract header + implementation per module
 src/plugin/               PluginProcessor.h/.cpp (+ PluginState, UndoHistory, Presets, FactoryPresets, MatchEqState;
                           MatchEqStateTests.cpp is compiled into the dev tool only)
+src/plugin/Assistant.*    (phase 3) the Assistant on the processor side: capture, worker, state child, macro edits
 src/plugin/import/        preset importer: ImportCommon / ImportEngine (pure C++, also in CoreTests), mapping tables
                           ImportMapEq / ImportMapCore / ImportMapPhase2, XmlPresetImport (JUCE side, file chooser)
 src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, ModulePanel, ModulePanels),
@@ -70,12 +74,14 @@ src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, M
                           MatchEqModel), ToneBalancePanel / DefinitionPanel / SmootherPanel (+ SpectralDisplay,
                           SpectralWidgets, SpectralCommon), PunchPanel (+ PunchViews), LowContrastPanel (+
                           LowRegionDisplay), BassShaperPanel (+ BassScope), LowEndWidgets
+                          (phase 3) AssistantPanel (the Assistant page), the header's Assistant | Chain switch
 tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators);
                           ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
                           AllocationTracking), snapshot <dir> (editor PNGs), render <in.wav> <out.wav> (--preset,
                           --module-preset, --chain, --import, id=value), memory <rate> [ts] [editor] (private bytes),
-                          import / importkey / importtest (ImportTool.cpp, see "Preset importer")
+                          import / importkey / importtest (ImportTool.cpp, see "Preset importer"),
+                          assist (AssistTool.cpp: features, suggestions, renders of a card)
 tools/audio/              make_test_mix.py, check_clicks.py, render_presets.sh (Core), render_phase2.py (phase 2)
 resources/fonts           Inter 400/600/700 (PureSheenBinary::Inter400_ttf ...)
 third_party/              JUCE 8.0.16, clap-juce-extensions (gitignored; copied from RefMatch)
@@ -436,3 +442,69 @@ power switch, confirmed enum tables and writer-120000 defaults. CoreTests 517 te
 cases); selftest 236 passed, 0 failed; importtest all passed (incl. 54 local check saves compared); corpus over the
 same 706 files: identical per-file counts (the corpus never stores the power switch), 48353 parameters now set from
 foreign defaults (was 47338).
+
+## Assistant (phase 3)
+
+One feature for both "build me a master" and quick mastering with a few macros. The header's sparkle switch
+(Assistant | Chain) shows the Assistant page in the module-panel area (EditorContext selection kAssistantSelection;
+kChainSelection returns to the module selected before); the chain strip and the I/O panel stay visible.
+
+**Flow.**
+- Start page: Quick (listen now, detected target) or Custom: target list (Auto, a reference track, the 36 tone
+  targets), the modules the Assistant may use, intensity (Gentle / Balanced / Strong), Maximizer on / off, loudness
+  (Auto = the target's), output level, true peak, analysis time (5-30 s, default 8).
+- Listen: `PureSheenProcessor::processBlock` hands every input block to `psplug::Assistant::pushAudio` (before the
+  chain: the Assistant hears the unprocessed mix). While armed, blocks above -70 dBFS are copied into a buffer the
+  message thread allocated (atomic pointer + busy flag, no locks, no allocation; the selftest checks it). "Analyse a
+  file" takes the loudest part of a file instead.
+- Analyse (worker thread): `ps::assist::analyse` (TrackProfile + a 1/6-octave mid / side STFT grid + the four
+  processing bands 120 / 2k / 10k), `buildSuggestions`, the default card's Maximizer gain (`refineLoudness`), which is
+  applied at once as ONE undo step ("Assistant: Suggested (Rock)", the importer's transaction path), then the other
+  cards' gains and every card's loudness-match tables. Results reach the message thread through the processor's 30 Hz
+  housekeeping (`Assistant::tick`).
+- Results: the cards (Suggested = the reference-like default, or Match reference when a reference is loaded; Gentle,
+  Loud, Warm, Bright & Wide, Punchy), the target list (click = rebuild from the kept audio and apply the new default),
+  Tone (Tone Match, Tilt, the target band with the track's own balance), Loudness, the macros, Relearn, Bypass (held:
+  global bypass with classic gain match), Open chain.
+
+**Default card** (fitted black-box to the reference assistant's choices on seven test tracks; method and numbers at
+the top of AssistEngine.cpp / AssistProfiles.cpp): chain EQ 1 > Punch > Imager > Definition > Tone Balance > Dynamic
+EQ > Maximizer; the tone target from an example-based detector; an EQ leaning toward the target (+-1.8 dB, shelves +
+up to four broad bells); Punch / Imager band settings from the per-band crest / width (both split at 120 / 2k / 10k);
+a Dynamic EQ on the low-mid and presence resonances; Definition and Tone Balance at 25 %; the target's Maximizer
+settings and loudness, the gain measured by an offline render of the captured audio (`OfflineChain`: only the
+card's modules, built with `ps::createModule`, Stereo, set A). Intensity scales the amounts (0.6 / 1 / 1.5).
+
+**Macros** map absolutely onto module controls and are read back from the parameters (so undo, snapshots and hand
+edits keep them right): Tone Match = EQ 1 Amount, Tilt = two Baxandall shelves on EQ 1 bands 6 / 7, Dynamics Match =
+Punch Amount, Width Match = Imager Amount, band widths = offsets on the card's Imager widths, Compress = a one-band
+glue Dynamics inserted before Tone Balance on first use, the Definition / Tone Balance amounts, Loudness = the
+Maximizer target (gain along the measured slope). A drag writes only that macro's parameters (unrecorded while
+dragging) and is one undo step on release. Loudness matched (default on): the Maximizer gain also moves by minus the
+pre-Maximizer loudness change, interpolated from per-macro tables measured at five positions.
+
+**Reference hook.** `ps::assist::ReferenceTarget` (tonal balance relative to pink, width per processing band,
+integrated loudness, PLR, name) is all the engine needs from a reference. The Assistant fills it from a file now
+(`loadReferenceFile`, on its own thread); Track Referencing will call `Assistant::setReference` with the selected
+reference, built by the same analysis (`TrackAnalysis`).
+
+**State.** Child "Assistant" (version 1) of the plug-in state: settings, loudness matching, the reference target, the
+cards (values stored sparse, against our defaults), the applied card, the detected target, the track's balance curve.
+Built on the message thread and cached, so a host save from another thread copies it safely; a restore from another
+thread is queued for the next tick (saves meanwhile return the restored tree). Jobs and reference loads carry a
+generation: results of a superseded one are dropped. Not part of undo,
+snapshots or presets; a state without it (older versions) resets the Assistant. The captured audio is not saved, so
+after reopening a project new targets need a new listen. No automatable parameters were added (the 841-entry table and
+its fingerprint are unchanged).
+
+**Verification** (build-assist): CoreTests "ta." (the analyser's RefMatch checks) and "assist." (features, engine,
+macros, offline loudness); selftest "-- Assistant" (allocation-free capture, the default card as one step, macro drags
+as one step, undo restoring macro positions, loudness matching on / off, the Compress insert, the state round trip, an
+old state); snapshots `15_assistant_*` (start, custom, listening, results at 980x600 / 1180x720 / 1800x1100, a macro,
+back to the chain), including a real listen of the snapshot song. The measurement against the reference on the seven
+test tracks is kept in private notes (the same chain on all seven, loudness within 0.7 LU, band balance 0.86 dB rms).
+
+Known limits: the target detector has seven labelled examples (more renders improve it); the Punch band amounts are
+the weakest rule; Dynamic EQ frequencies come from resonance peaks, not the reference's fixed grid; Tilt shares EQ 1's
+Amount (Tone Match scales it too); every card's loudness tables take a few seconds each on a worker thread (the cards
+and macros work meanwhile, unmatched until their tables arrive).

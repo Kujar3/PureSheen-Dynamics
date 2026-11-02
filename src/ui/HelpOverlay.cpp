@@ -65,6 +65,8 @@ struct HelpOverlay::Impl
         };
 
         tips = {
+            "**Assistant** - the sparkle switch in the header. It listens to your track, builds a complete chain and gives "
+            "you a few macros (tone, dynamics, width, loudness) that keep the loudness steady while you move them.",
             "**Undo and History** - every change is listed; click an entry to go back to that point.",
             "**A B C D** - store up to four versions of your master and click between them to compare.",
             "**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to reset, right-click to type a value.",
