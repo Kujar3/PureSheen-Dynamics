@@ -29,7 +29,7 @@
 // n - N + D: a lookahead of D at no extra latency.
 //
 // Choices where the contract leaves room (documented here, rule 10 of ARCHITECTURE.md):
-// - The constants (kModes, kTaperOct, kBands, kXoverOct) are fitted to renders of the reference (bass bursts of
+// - The constants (kModes, region ramps, kBands, kXoverOct) are fitted to renders of the reference (bass bursts of
 //   10 .. 300 ms at 50 .. 400 Hz, kicks; Punchy / Smooth at +-50 and +100). The fit harness simulates this structure.
 // - Detector power (Stereo / T/S) = (eL + eR) / 2 of the squared quadrature envelopes (a mono signal reads like its
 //   Mid in M/S). The quadrature pair keeps a steady bass tone ripple-free (no gain modulation, no distortion).
@@ -109,9 +109,10 @@ inline double smoothTo (double v, double target, double a) noexcept
     return std::abs (target - v) < 1.0e-9 ? target : v;
 }
 
-// Region taper: raised cosine over kTaperOct octaves outside each edge (log f). Fitted (the reference still lifts a
-// 400 Hz burst by ~38 % of the region gain with the region ending at 250 Hz).
-constexpr double kTaperOct = 1.1;
+// Region weight: ramps linear in frequency, 0 at 0.8 x low to 1 at 2 x low, and 1 at 0.5 x high to 0 at 2 x high;
+// W = their product (measured: the reference's region gain on pink noise, default 20..250 Hz: W 0.21 at 20 Hz, 0.95
+// at 40, 0.92 at 150, 0.66 at 250, 0.25 at 400, 0 at 500; a 60..120 Hz region acts from ~40 to ~200 Hz).
+constexpr double kLowRampFrom = 0.8, kLowRampTo = 2.0, kHighRampFrom = 0.5, kHighRampTo = 2.0;
 // The region is split into kBands bands equally spaced in log f (cosine^2 crossfades kXoverOct wide, sum = 1); each
 // band has its own detector and gain (a kick's pitch sweep reaches the lowest band late, so its lift lasts longer).
 constexpr int kBands = 4;
@@ -120,19 +121,21 @@ constexpr double kXoverOct = 0.9;
 // Per-mode constants of the gain law (times in ms). Per band: r = one-pole (rms) of the envelope power, fast F and slow
 // S follow r (attack / release), gDb = k x c x clamp (10 log10 ((F + e) / (S + e)), lo, hi) (negative c: x neg, plus
 // off x |c|), smoothed (tg), minus m x its one-pole (tm), applied D ms ahead.
-// Fitted (round 8) to the reference's gain traces on bass bursts (10 .. 300 ms, 50 .. 400 Hz) and kicks at Punchy /
-// Smooth +100 / +50 / -50: Punchy is a tight clamp (+-1 dB of F / S) times a large k, so a note's first ~20 ms get a
-// flat lift until S catches up, followed by a dip (m) at ~60-90 ms. Smooth's negative side (off) is set by the
-// test-track renders (a sustain part at -49.6 in T/S): on music the reference lowers the region there, although its
-// steady test bursts at -50 rise ~0.7 dB; open until renders of real material settle it.
+// Fitted (round 9) to the reference's gain traces on bass bursts (10 .. 300 ms, 50 .. 400 Hz) at Punchy / Smooth +100
+// / +50 / -50 and on real kicks, an 808 and a kick + bass loop at +-100 together: Punchy is a tight clamp times a large
+// k, so a note's first ~20-40 ms get a flat lift that builds from the onset (short lookahead: the reference does not
+// lift a kick's click), followed by a dip (m) at ~60-90 ms. Smooth's negative side (off) is set by the test-track
+// renders (a sustain part at -49.6 in T/S): there the music needs the region lower, while in Stereo the reference's
+// negative contrast lifts by ~1-2 dB (fit: off +2.5). The gap is our transient / sustain split (the reference counts
+// much more as transient), not this module.
 struct ModeSpec
 {
     double rms, fa, fr, sa, sr, k, lo, hi, tg, tm, m, d, neg, off, epsDb;
 };
 constexpr ModeSpec kModes[2] {
-    //  rms   fa     fr      sa     sr     k       lo      hi      tg     tm     m      D      neg    off    epsDb
-    { 1.0,  0.685, 0.294,  21.3,  37.85, 7.104, -0.968,  0.856, 0.999, 20.82, 0.893, 10.07, 0.488,  1.23, -40.7 },  // Punchy
-    { 3.66, 2.73,  14.35,  4.48,  19.09, -0.921, -11.86, 10.68, 3.15,  2.74,  0.340,  0.0,  0.5,  -2.25, -84.9 },  // Smooth
+    //  rms  fa  fr  sa  sr  k  lo  hi  tg  tm  m  D  neg  off  epsDb
+    { 1.0, 0.804, 0.349, 8.39, 18.3, 3.65, -1.68, 0.509, 0.999, 45.9, 0.713, 4.62, 0.554, 1.87, -78.5 },  // Punchy
+    { 5.41, 2.83, 15.6, 2.77, 19.4, -0.987, -17.3, 11.0, 2.33, 3.98, 0.453, 0.0, 0.719, -1.5, -111.0 },  // Smooth
 };
 
 struct ModeCoeffs
@@ -256,7 +259,7 @@ struct LowContrast::Impl
         hop = fftSize / 4;
         numBins = fftSize / 2 + 1;
         binHz = sampleRate / (double) fftSize;
-        kW = std::min (numBins, (int) std::ceil (kMaxRegionHz * std::exp2 (kTaperOct) / binHz) + 1);
+        kW = std::min (numBins, (int) std::ceil (kMaxRegionHz * kHighRampTo / binHz) + 1);
 
         fft = std::make_unique<Fft> (orderOf (fftSize));
         window.resize ((size_t) fftSize);
@@ -387,12 +390,10 @@ struct LowContrast::Impl
 
     double regionWeight (double lf) const noexcept
     {
-        double t = 0.0;
-        if (lf < lowLog2)
-            t = (lowLog2 - lf) / kTaperOct;
-        else if (lf > highLog2)
-            t = (lf - highLog2) / kTaperOct;
-        return t >= 1.0 ? 0.0 : (t <= 0.0 ? 1.0 : 0.5 * (1.0 + std::cos (kPi * t)));
+        const double f = std::exp2 (lf), lo = std::exp2 (lowLog2), hi = std::exp2 (highLog2);
+        const double wl = std::clamp ((f - kLowRampFrom * lo) / ((kLowRampTo - kLowRampFrom) * lo), 0.0, 1.0);
+        const double wh = std::clamp ((kHighRampTo * hi - f) / ((kHighRampTo - kHighRampFrom) * hi), 0.0, 1.0);
+        return wl * wh;
     }
 
     double edgeLog2 (int j) const noexcept { return lowLog2 + (highLog2 - lowLog2) * (double) j / (double) kBands; }
@@ -426,7 +427,7 @@ struct LowContrast::Impl
         for (int band = 0; band < kBands; ++band)
         {
             const double lo = band == 0 ? lowLog2 : edgeLog2 (band);
-            const double hi = band == kBands - 1 ? highLog2 + 0.5 * kTaperOct : edgeLog2 (band + 1);
+            const double hi = band == kBands - 1 ? highLog2 + std::log2 (0.5 * (kHighRampFrom + kHighRampTo)) : edgeLog2 (band + 1);
             hp[band].set (std::exp2 (lo), 0.70710678, sampleRate, true);
             lp1[band].set (std::exp2 (hi), 0.54119610, sampleRate, false);
             lp2[band].set (std::exp2 (hi), 1.30656296, sampleRate, false);

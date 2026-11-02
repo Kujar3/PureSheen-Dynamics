@@ -12,12 +12,12 @@
 //
 //   y = x delayed by N  +  sum_b (g_b - 1) xb_b       (every g_b exactly 1 -> bit-exact delayed input)
 // Region bands: xb_b = ISTFT (W W_b X), N = 4096 at 44.1 / 48 kHz, 8192 at 88.2 / 96, 16384 above, hop N / 4, periodic
-// Hann analysis and synthesis (linear phase). W: 1 inside [low, high], raised cosine to 0 over 1.1 octaves outside
-// (log f; edges glide 50 ms); W_b: 4 bands equally spaced in log f inside the region, cosine^2 crossfades 0.9 octave
-// wide, sum 1. Latency = N exactly (93 ms at 44.1 kHz) for any block size, constant.
+// Hann analysis and synthesis (linear phase). W: ramps linear in frequency, 0 at 0.8 low to 1 at 2 low and 1 at
+// 0.5 high to 0 at 2 high, multiplied (as the reference's region; edges glide 50 ms); W_b: 4 bands equally spaced in
+// log f inside the region, cosine^2 crossfades 0.9 octave wide, sum 1. Latency = N exactly (93 ms at 44.1 kHz) for any block size, constant.
 // Gains (per band; Stereo / T/S: one detector on (eL + eR) / 2 and the same gains for both; M/S: per channel and set):
-//   1. detector band: Butterworth high pass (2nd order) and low pass (4th order) at the band's edges, on the
-//      undelayed input; e = squared quadrature envelope (ripple-free on steady tones)
+//   1. detector band: Butterworth high pass (2nd order) and low pass (4th order) at the band's edges (the top band's
+//      at 1.25 high, where W = 0.5), on the undelayed input; e = squared quadrature envelope (ripple-free on steady tones)
 //   2. r = one-pole of e; fast F and slow S follow r with their own attack / release (per mode)
 //   3. gDb = k c clamp (10 log10 ((F + eps) / (S + eps)), lo, hi) (c = contrast / 100, glides 50 ms; negative c:
 //      x neg, plus off |c|), one-pole smoothed, minus m x its slower one-pole (the dip after an onset lift)
