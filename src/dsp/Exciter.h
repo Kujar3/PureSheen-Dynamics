@@ -5,7 +5,9 @@
 #include <memory>
 
 // Multiband harmonic Exciter (reference-suite parity, seven saturation models). Owner: dsp-stereo. Implementation: Exciter.cpp.
-//   - per band: wet = HP14 (curve_mode,drive (band)), out = dry * (1 - mix) + wet * mix; no level compensation
+//   - per band: wet = HP14 (curve_mode,drive (band)), out = dry * (1 - mix) + wet * mix; no level compensation;
+//     a band at drive 0 passes untouched (no wet filters; Triode +0.3 dB next to a driven band); Triode's low pass
+//     acts after the mix; in bands above a crossover, Triode's intermodulation below ~50 Hz is cut by 10 dB
 //   - models (static curves measured from the reference at drive 20 / 50 / 100 %, see Exciter.cpp):
 //       Analog     asymmetric soft curve: mostly 2nd harmonic, clips at full drive
 //       Retro      symmetric hard-ish clipper (odd harmonics), the level drops on loud input

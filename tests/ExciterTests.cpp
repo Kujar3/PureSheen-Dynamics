@@ -791,3 +791,56 @@ TEST_CASE ("exc. reset preserves the latest topology without another setParams")
     CHECK_EQ (m.getLatencySamples(), 0);
     CHECK (maxDelayedDiff (impulse.l, input.l, 0) == 0.0);
 }
+
+TEST_CASE ("exc. Triode: a band at drive 0 passes as is, intermodulation under a higher band is cut")
+{
+    // The reference's T/S test-track preset (Triode, two bands at 230 Hz, only band 2 driven): band 1 passes at
+    // +0.3 dB with no high-pass phase, and band 2's difference tones below ~50 Hz are ~10 dB under a static curve's.
+    auto make = [] (Values& v, int bands)
+    {
+        v.set ("exc.bands", (float) bands);
+        v.set ("exc.xover1", 230.0f);
+        v.set ("exc.xoverType", (float) CrossoverType::Digital);
+        for (int b = 1; b <= 2; ++b)
+            v.band (b, "mode", (float) ExciterMode::Triode);
+        v.band (bands, "drive", 50.0f);
+    };
+    {
+        Exciter m;
+        m.prepare (kSr, 512);
+        Values v;
+        make (v, 2);
+        std::vector<float> x = pstest::sine (60.0, -20.0, 2.0, kSr);
+        const auto hi = pstest::sine (1000.0, -20.0, 2.0, kSr);
+        for (size_t i = 0; i < x.size(); ++i)
+            x[i] += hi[i];
+        const auto out = run (m, v, dual (x), 512);
+        const size_t lat = (size_t) m.getLatencySamples();
+        const cd got = pstest::toneOf (out.l, 24000 + lat, 48000, 60.0, kSr) * std::polar (1.0, 2.0 * kPi * 60.0 * (double) lat / kSr);
+        const cd want = pstest::toneOf (x, 24000, 48000, 60.0, kSr);
+        const double gainDb = pstest::dbOf (std::abs (got) / std::abs (want));
+        const double phaseDeg = std::arg (got / want) * 180.0 / kPi;
+        note ("exc. Triode drive-0 band next to a driven band: 60 Hz gain (dB)", gainDb);
+        note ("exc. Triode drive-0 band next to a driven band: 60 Hz phase (deg)", phaseDeg);
+        CHECK (std::abs (gainDb - 0.3) < 0.05);
+        CHECK (std::abs (phaseDeg) < 0.5);
+    }
+    double diffTone[2] {};
+    for (int bands : { 1, 2 })
+    {
+        Exciter m;
+        m.prepare (kSr, 512);
+        Values v;
+        make (v, bands);
+        std::vector<float> x = pstest::sine (1000.0, -12.0, 2.0, kSr);
+        const auto b2 = pstest::sine (1040.0, -12.0, 2.0, kSr);
+        for (size_t i = 0; i < x.size(); ++i)
+            x[i] += b2[i];
+        const auto out = run (m, v, dual (x), 512);
+        diffTone[bands - 1] = std::abs (pstest::toneOf (out.l, 24000 + (size_t) m.getLatencySamples(), 48000, 40.0, kSr));
+    }
+    const double cutDb = pstest::dbOf (diffTone[1] / diffTone[0]);
+    note ("exc. Triode 40 Hz difference tone, band above 230 Hz vs one band (dB)", cutDb);
+    CHECK (cutDb < -5.0);
+    CHECK (cutDb > -9.0);
+}

@@ -22,12 +22,18 @@
 // Structure (per band b, per channel):
 //   D_b   = OS_down ( f (OS_up (band_b)) - OS_up (band_b) )        harmonics + level change only ("difference" path)
 //   dry_b = band_b delayed by the oversampler latency (so dry and wet are sample aligned)
-//   wet_b = HP14 (dry_b + D_b)                                      (= HP14 (f (band_b)) where the oversampler is flat)
-//   out   = sum_b solo_b [ (1 - mix_b) dry_b ] + PostShelf ( sum_b solo_b mix_b wet_b )
+//   wet_b = LP (HP14 (dry_b + D_b))                                 (= HP14 (f (band_b)) where the oversampler is flat)
+//   out   = sum_b solo_b [ (1 - mix_b) LP (dry_b) ] + PostShelf ( sum_b solo_b mix_b wet_b )
 // Computing f(u) - u in the oversampled domain and adding it to the delayed band keeps the dry part bit-exact (drive 0
-// is exactly transparent, nothing above 0.45 fs is lost) and the nonlinearity still runs at 4x. Each band's wet signal
-// dry + D goes through the reference's per-model wet filters while the band is processed: a first-order high pass at
-// 14.1 Hz (Triode 18.5, Dual Triode 20; it also removes the DC of the asymmetric curves) and, for Triode, a low pass.
+// is exactly transparent, nothing above 0.45 fs is lost) and the nonlinearity still runs at 4x. While a band drives,
+// its wet signal dry + D goes through the reference's per-model wet filters: a first-order high pass at 14.1 Hz
+// (Triode 18.5, Dual Triode 20; it also removes the DC of the asymmetric curves) and, for Triode, a low pass that also
+// acts on the band's dry share (it sits after the mix: the T/S test-track preset at mix 75 matches only that way).
+// A band at drive 0 skips the wet filters (the reference passes it untouched: no high-pass phase on the lows, no low
+// pass); next to a driven band, a Triode band at drive 0 passes at +0.3 dB (measured, T/S preset and steady noise).
+// In a band above a crossover, the harmonics below ~50 Hz are intermodulation (the band holds nothing there); the
+// reference keeps about a third of the amplitude a static curve makes, so D goes through a -10 dB low shelf at 50 Hz
+// there (Triode, measured: test-track slices 01 / 02 and test slice S, incoherent power at 20-60 / 60-150 Hz).
 // When a band stops driving, the oversampler is flushed with silence (no state is cut mid-signal).
 //
 // Curves: measured from the reference (out/importer/tools/gen_exc.py, tone test, one band, mix 100 %): the static
@@ -78,6 +84,8 @@ namespace
     constexpr double kWetHighPassHz[] { 14.1, 14.1, 14.1, 14.1, 14.1, 18.5, 20.0 };
     constexpr double kTriodeLowPass1Hz = 7834.0, kTriodeLowPass2Hz = 13611.0, kTriodeLowPass2Q = 1.17;
     constexpr double kWetFilterRampMs = 20.0;
+    constexpr double kTriodeIdleGainDb = 0.3;                        // a Triode band at drive 0 in a driving Exciter
+    constexpr double kIntermodShelfHz = 50.0, kIntermodShelfDb = -10.0;   // on D, Triode bands above a crossover
     constexpr double kTwoPi = 6.283185307179586;
 
 #include "dsp/ExciterCurves.inc"
@@ -195,7 +203,10 @@ namespace
 
         SmoothedBiquad hp;           // the wet high pass (on dry + D), per model
         Biquad lp1, lp2;             // Triode's wet low pass, blended in by lpMix
+        Biquad dryLp1, dryLp2;       // the same low pass on the band's dry share
         LinearSmoother lpMix;
+        LinearSmoother driving;      // 1 while the band drives (wet filters on), 0 at drive 0 (the band passes as is)
+        Biquad intermod;             // low shelf on D (bands above a crossover)
         double hpHz = 0.0;
         bool nlRunning = false;
         double meterPower = 0.0;
@@ -290,7 +301,11 @@ struct ExciterEngine
                 cs.hp.snapToTarget();
                 cs.lp1.setCoeffs (design::lowPass1 (sr, std::min (kTriodeLowPass1Hz, 0.45 * sr)));
                 cs.lp2.setCoeffs (design::lowPass (sr, std::min (kTriodeLowPass2Hz, 0.45 * sr), kTriodeLowPass2Q));
+                cs.dryLp1.setCoeffs (cs.lp1.getCoeffs());
+                cs.dryLp2.setCoeffs (cs.lp2.getCoeffs());
+                cs.intermod.setCoeffs (design::lowShelf (sr, kIntermodShelfHz, 0.7071067811865476, kIntermodShelfDb));
                 cs.lpMix.prepare (sr, kWetFilterRampMs);
+                cs.driving.prepare (sr, kWetFilterRampMs);
             }
             band.solo.prepare (sr, kSoloRampMs);
         }
@@ -499,9 +514,13 @@ struct ExciterEngine
         cs.hp.reset();
         cs.lp1.reset();
         cs.lp2.reset();
+        cs.dryLp1.reset();
+        cs.dryLp2.reset();
+        cs.intermod.reset();
         cs.levelPower = cs.shortPower = 0.0;
         cs.corrGain = 1.0;
         cs.lpMix.snap (cs.wantedMode == ExciterMode::Triode ? 1.0f : 0.0f);
+        cs.driving.snap (cs.driveTarget > 0.0f ? 1.0f : 0.0f);
     }
 
     static void finishFade (ChanState& cs) noexcept
@@ -687,8 +706,9 @@ struct ExciterEngine
         }
 
         // the wet path's filters act on the whole wet signal dry + D, as in the reference (per model; a model change
-        // glides them over 20 ms); they run for as long as the band is processed (the module's neutral fade covers
-        // switching them in and out)
+        // glides them over 20 ms), and Triode's low pass also on the dry share; they run for as long as the band is
+        // processed and are blended in by `driving` (a band at drive 0 passes untouched; drive changes glide 20 ms).
+        // Afterwards diffBuf holds the band's wet signal and dry[c] its (filtered) dry share.
         for (int c = 0; c < 2; ++c)
         {
             auto& cs = band.ch[c];
@@ -698,9 +718,13 @@ struct ExciterEngine
                 cs.hpHz = kWetHighPassHz[m];
                 cs.hp.setTarget (design::highPass1 (sr, cs.hpHz));
             }
-            cs.lpMix.setTarget (cs.wantedMode == ExciterMode::Triode ? 1.0f : 0.0f);
+            const bool triode = cs.wantedMode == ExciterMode::Triode;
+            cs.lpMix.setTarget (triode ? 1.0f : 0.0f);
+            cs.driving.setTarget (cs.driveTarget > 0.0f ? 1.0f : 0.0f);
+            const double idleGain = triode ? std::pow (10.0, kTriodeIdleGainDb / 20.0) - 1.0 : 0.0;
+            const bool intermod = b > 0 && triode;
             float* d = diffBuf[c].data();
-            const float* x = dry[c];
+            float* x = dry[c];
             const double shortCoef = 1.0 - std::exp (-1.0 / (kLevelShortMs * 0.001 * sr));
             const double holdDecay = std::exp (-1.0 / (kLevelHoldMs * 0.001 * sr));
             const double corrCoef = 1.0 - std::exp (-1.0 / (kLevelCorrSmoothMs * 0.001 * sr));
@@ -712,10 +736,15 @@ struct ExciterEngine
                 cs.levelPower = std::max (cs.shortPower, cs.levelPower * holdDecay);
                 const double corr = std::pow (10.0, levelCorrDb (m, corrDrive, cs.levelPower) / 20.0);
                 cs.corrGain += corrCoef * (corr - cs.corrGain);
-                double w = (xd + (double) d[i]) * cs.corrGain;
-                const double lp = cs.lp2.processSample (cs.lp1.processSample (w));
-                w += (double) cs.lpMix.next() * (lp - w);
-                d[i] = (float) (cs.hp.processSample (w) - xd);
+                const double on = (double) cs.driving.next();
+                const double lpOn = on * (double) cs.lpMix.next();
+                const double harm = intermod ? cs.intermod.processSample ((double) d[i]) : (double) d[i];
+                double w = (xd + harm) * cs.corrGain;
+                w += lpOn * (cs.lp2.processSample (cs.lp1.processSample (w)) - w);
+                w += on * (cs.hp.processSample (w) - w);
+                const double idle = (1.0 - on) * idleGain * xd;
+                d[i] = (float) (w + idle);
+                x[i] = (float) (xd + lpOn * (cs.dryLp2.processSample (cs.dryLp1.processSample (xd)) - xd) + idle);
             }
         }
 
@@ -730,8 +759,8 @@ struct ExciterEngine
             const double d0 = (double) dry[0][i], d1 = (double) dry[1][i];
             dryAcc[0][(size_t) i] += g * (1.0 - m0) * d0;
             dryAcc[1][(size_t) i] += g * (1.0 - m1) * d1;
-            wetAcc[0][(size_t) i] += g * m0 * (d0 + (double) diffBuf[0][(size_t) i]);
-            wetAcc[1][(size_t) i] += g * m1 * (d1 + (double) diffBuf[1][(size_t) i]);
+            wetAcc[0][(size_t) i] += g * m0 * (double) diffBuf[0][(size_t) i];
+            wetAcc[1][(size_t) i] += g * m1 * (double) diffBuf[1][(size_t) i];
         }
     }
 
