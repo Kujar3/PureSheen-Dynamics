@@ -76,6 +76,11 @@ private:
 // 0.4 / 0.2 / 0.1 / 0.05 ms, hold 0.8 / 0.5 / 0.4 / 0.4 ms, release, stereo independence (sustain amount for the two
 // low bands, transient amount for the two high bands). Measured from the reference's test-track renders
 // (private fitting scripts).
+// Steady highs (a tone or a pad whose 20 ms peak envelope has stayed under 1.6 x its RMS for 100 ms) making less than
+// 50 % of the peak: a bass-made over comes out of the two bands < 1 kHz alone, through a smooth low path (3 ms
+// lookahead attack, 20 ms release, at most -14 dB per band; the core takes the rest), so the highs keep their level
+// with no gain ripple. Measured on the reference's bass bursts over a steady tone (max5.py / max6.py); music with
+// dense highs never has highs that steady, so it limits as before.
 class MultibandStage
 {
 public:
@@ -120,6 +125,17 @@ private:
     std::array<double, kBands> independenceNow {};
     double controlStep = 1.0;
     double hiPeak[2] {}, allPeak[2] {}, kPeakRelease = 0.0;   // the gate's peak envelopes
+    double hiPower[2] {}, kPower = 0.0;                        // the steady gate: power of the bands > 1 kHz
+    long long steadyRun[2] {}, steadyMin = 0;                  // ... how long their crest has been low
+
+    // the smooth low path (the two bands < 1 kHz): reductions, window, release, box
+    static constexpr int kLowBands = 2;
+    std::array<std::array<std::vector<double>, 2>, kLowBands> lowRedRing;
+    std::array<std::array<MaxDeque, 2>, kLowBands> lowWindowMax;
+    std::array<std::array<BoxAverage, 2>, kLowBands> lowBox;
+    std::array<std::array<double, 3>, kLowBands> lowRelease {};
+    int lowAttack = 1;
+    double kLowRelease = 0.0;
     Settings settings;
 };
 

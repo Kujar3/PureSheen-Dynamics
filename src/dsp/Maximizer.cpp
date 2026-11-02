@@ -33,7 +33,8 @@
 //                   Clipping, Crisp (the plain core), Balanced, Pumping (a slow stage that calms sustained bass)
 //     Spectral    : SpectralStage (critical-band groups, water-filling) + LimiterCore 2.5 ms with the Smooth core
 //     Multiband   : MultibandStage (4 linear-phase bands; on material with sparse highs it takes the peaks out of the
-//                   low / mid bands, sharing by contribution) + LimiterCore 2.5 ms with the Aggressive core
+//                   low / mid bands, sharing by contribution; under steady highs bass-made peaks go through a smooth
+//                   path in the bands < 1 kHz alone) + LimiterCore 2.5 ms with the Aggressive core
 //   Every mode is fitted to renders of the reference (applySettings). The reference's spectral algorithm matched a
 //   broadband core on the fitting material, so its band stage currently takes no share of the reduction (it stays in
 //   the pipeline: constant latency; a share can come back with more reference material).

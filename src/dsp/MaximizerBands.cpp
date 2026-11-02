@@ -12,6 +12,14 @@ namespace
     constexpr double kGateShare = 0.15;    // the stage acts while the bands > 1 kHz make < 15 % of the recent peak
     constexpr double kGatePeakMs = 20.0;   // release of the gate's peak envelopes
     constexpr double kSharePower = 1.5;    // excess shared in proportion to contribution^1.5
+    // ... and the steady-highs low path (fitted on the reference's bass-burst renders, black box)
+    constexpr double kSteadyShare = 0.5;   // it acts while the bands > 1 kHz make < 50 % of the peak,
+    constexpr double kSteadyCrest = 1.6;   // their peak envelope has stayed < 1.6 x their RMS (a tone: 1.41)
+    constexpr double kSteadyMinMs = 100.0; // for at least 100 ms
+    constexpr double kSteadyPowerMs = 25.0;
+    constexpr double kLowAttackMs = 3.0;   // low path: lookahead attack, no hold, release
+    constexpr double kLowReleaseMs = 20.0;
+    constexpr double kLowCap = 0.8;        // a band gives up at most 80 % of its contribution (-14 dB)
 }
 namespace
 {
@@ -432,6 +440,18 @@ void MultibandStage::prepare (double sampleRate)
             box[(size_t) b][(size_t) c].setLength (attack[(size_t) b]);
         }
     }
+    kPower = chargeCoeff (msToSamples (kSteadyPowerMs, sr));
+    steadyMin = (long long) std::lround (msToSamples (kSteadyMinMs, sr));
+    lowAttack = std::clamp ((int) std::lround (msToSamples (kLowAttackMs, sr)), 1, lookahead);
+    kLowRelease = decayCoeff (msToSamples (kLowReleaseMs, sr));
+    for (int b = 0; b < kLowBands; ++b)
+        for (int c = 0; c < 2; ++c)
+        {
+            lowRedRing[(size_t) b][(size_t) c].assign ((size_t) ringSize, 0.0);
+            lowWindowMax[(size_t) b][(size_t) c].prepare (lowAttack + 8);
+            lowBox[(size_t) b][(size_t) c].prepare (lowAttack);
+            lowBox[(size_t) b][(size_t) c].setLength (lowAttack);
+        }
     for (int c = 0; c < 2; ++c)
     {
         inputDelay[(size_t) c].prepare (splitLatency + 1);
@@ -468,7 +488,18 @@ void MultibandStage::reset() noexcept
         }
         release[(size_t) b].fill (0.0);
     }
-    hiPeak[0] = hiPeak[1] = allPeak[0] = allPeak[1] = 0.0;
+    for (int b = 0; b < kLowBands; ++b)
+    {
+        for (int c = 0; c < 2; ++c)
+        {
+            std::fill (lowRedRing[(size_t) b][(size_t) c].begin(), lowRedRing[(size_t) b][(size_t) c].end(), 0.0);
+            lowWindowMax[(size_t) b][(size_t) c].reset();
+            lowBox[(size_t) b][(size_t) c].reset();
+        }
+        lowRelease[(size_t) b].fill (0.0);
+    }
+    hiPeak[0] = hiPeak[1] = allPeak[0] = allPeak[1] = hiPower[0] = hiPower[1] = 0.0;
+    steadyRun[0] = steadyRun[1] = 0;
     t = 0;
 }
 
@@ -514,10 +545,42 @@ void MultibandStage::process (const float* const* in, float* const* out, const d
                 bandRing[(size_t) b][(size_t) c][(size_t) (idx & ringMask)] = (float) bands[b];
 
             double red[kBands] { 0.0, 0.0, 0.0, 0.0 };
+            double lowRed[kLowBands] { 0.0, 0.0 };
             const double a = std::abs (xd);
-            hiPeak[c] = std::max (std::abs (bands[2] + bands[3]), hiPeak[c] * kPeakRelease);
+            const double hi = bands[2] + bands[3];
+            hiPeak[c] = std::max (std::abs (hi), hiPeak[c] * kPeakRelease);
             allPeak[c] = std::max (a, allPeak[c] * kPeakRelease);
-            if (a > th && hiPeak[c] < kGateShare * allPeak[c])
+            hiPower[c] += (hi * hi - hiPower[c]) * kPower;
+            const bool sparse = hiPeak[c] < kGateShare * allPeak[c];
+            if (hiPeak[c] * hiPeak[c] < kSteadyCrest * kSteadyCrest * hiPower[c])
+                ++steadyRun[c];
+            else
+                steadyRun[c] = 0;
+            const bool steady = ! sparse && hiPeak[c] < kSteadyShare * allPeak[c] && steadyRun[c] >= steadyMin;
+            if (a > th && steady)
+            {
+                // steady highs (a tone, a pad) under a bass-made peak: the excess comes out of the bands < 1 kHz
+                // alone, shared by contribution^1.5, through the smooth low path (no gain ripple on the highs; the
+                // core takes what the 80 % cap leaves)
+                const double sgn = xd < 0.0 ? -1.0 : 1.0;
+                double contrib[kLowBands], w[kLowBands], wsum = 0.0;
+                for (int b = 0; b < kLowBands; ++b)
+                {
+                    contrib[b] = bands[b] * sgn;
+                    w[b] = contrib[b] > 0.0 ? std::pow (contrib[b], kSharePower) : 0.0;
+                    wsum += w[b];
+                }
+                const double excess = a - th;
+                for (int b = 0; b < kLowBands; ++b)
+                    if (w[b] > 0.0)
+                    {
+                        const double share = std::min (kLowCap * contrib[b], excess * w[b] / wsum);
+                        lowRed[b] = settings.amount * std::log (contrib[b] / (contrib[b] - share));
+                    }
+            }
+            for (int b = 0; b < kLowBands; ++b)
+                lowRedRing[(size_t) b][(size_t) c][(size_t) (idx & ringMask)] = lowRed[b];
+            if (a > th && sparse)
             {
                 // share the excess among the bands that make the peak, in proportion to contribution^1.5 (no band
                 // gives up more than 90 % of its contribution; the core takes what is left)
@@ -566,6 +629,32 @@ void MultibandStage::process (const float* const* in, float* const* out, const d
             {
                 const double g = si * rel[(size_t) c] + (1.0 - si) * rel[2];
                 gains[b][c] = box[(size_t) b][(size_t) c].process (g > 0.0 ? std::exp (-g) : 1.0);
+            }
+        }
+        // the smooth low path: a window of the attack length, release, box; the band keeps the lower of both gains
+        for (int b = 0; b < kLowBands; ++b)
+        {
+            const int A = lowAttack;
+            const long long k = idx - (lookahead - A + 1);
+            const long long oldest = k - A + 1;
+            double dm[2];
+            for (int c = 0; c < 2; ++c)
+            {
+                auto& wm = lowWindowMax[(size_t) b][(size_t) c];
+                wm.push (k, lowRedRing[(size_t) b][(size_t) c][(size_t) (k & ringMask)]);
+                wm.dropOlderThan (oldest);
+                dm[c] = wm.max();
+            }
+            auto& rel = lowRelease[(size_t) b];
+            const double kr = kLowRelease;
+            rel[0] = std::max (dm[0], rel[0] * kr);
+            rel[1] = std::max (dm[1], rel[1] * kr);
+            rel[2] = std::max (std::max (dm[0], dm[1]), rel[2] * kr);
+            const double si = independenceNow[(size_t) b];
+            for (int c = 0; c < 2; ++c)
+            {
+                const double g = si * rel[(size_t) c] + (1.0 - si) * rel[2];
+                gains[b][c] = std::min (gains[b][c], lowBox[(size_t) b][(size_t) c].process (g > 0.0 ? std::exp (-g) : 1.0));
             }
         }
 

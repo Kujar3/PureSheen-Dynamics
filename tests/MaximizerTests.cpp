@@ -1525,13 +1525,15 @@ TEST_CASE ("max. stereo independence: linked ducks the quiet channel, independen
     CHECK (half < -2.0 && half > -4.0);
 }
 
-TEST_CASE ("max. multiband: bass-made peaks leave sparse highs alone; dense highs limit like the broadband core")
+TEST_CASE ("max. multiband: bass-made peaks leave sparse or steady highs alone; dense highs limit like the broadband core")
 {
-    // 60 Hz 6 dB over the ceiling plus a 5 kHz tone: quiet (sparse highs, the band stage acts and takes the peaks out of
-    // the low band) or loud (dense highs, the stage stays out and the core limits broadband). The 5 kHz tone's change
-    // in Multiband vs the broadband Aggressive core.
+    // 60 Hz over the ceiling plus a 5 kHz tone: quiet (sparse highs, the band stage acts and takes the peaks out of the
+    // low band), louder but steady (the smooth low path takes them out of the bands < 1 kHz) or louder with noise on
+    // top (dense highs, the stage stays out and the core limits broadband). The 5 kHz tone's change in Multiband vs the
+    // broadband Aggressive core.
     const double sr = 48000.0;
-    auto highChangeDb = [&] (MaximizerMode mode, double highAmp)
+    const Stereo noise = whiteNoise (1.5, sr, 17);
+    auto highChangeDb = [&] (MaximizerMode mode, double bassAmp, double highAmp, double noiseAmp)
     {
         Rig rig (sr);
         rig.set ("max.mode", (float) mode);
@@ -1541,16 +1543,24 @@ TEST_CASE ("max. multiband: bass-made peaks leave sparse highs alone; dense high
         for (size_t i = 0; i < s.size(); ++i)
         {
             const double t = (double) i / sr;
-            s.l[i] = s.r[i] = (float) (2.0 * std::sin (2.0 * kPi * 60.0 * t) + highAmp * std::sin (2.0 * kPi * 5000.0 * t));
+            s.l[i] = s.r[i] = (float) (bassAmp * std::sin (2.0 * kPi * 60.0 * t) + highAmp * std::sin (2.0 * kPi * 5000.0 * t)
+                                       + noiseAmp * noise.l[i]);
         }
         rig.run (s);
         return dbOfLin (std::abs (pstest::toneOf (s.l, (size_t) sr, 24000, 5000.0, sr))) - dbOfLin (highAmp);
     };
-    const double sparseMb = highChangeDb (MaximizerMode::Multiband, 0.05), sparseAg = highChangeDb (MaximizerMode::Aggressive, 0.05);
-    const double denseMb = highChangeDb (MaximizerMode::Multiband, 0.6), denseAg = highChangeDb (MaximizerMode::Aggressive, 0.6);
+    const double sparseMb = highChangeDb (MaximizerMode::Multiband, 2.0, 0.05, 0.0);
+    const double sparseAg = highChangeDb (MaximizerMode::Aggressive, 2.0, 0.05, 0.0);
+    const double steadyMb = highChangeDb (MaximizerMode::Multiband, 1.6, 0.6, 0.0);
+    const double steadyAg = highChangeDb (MaximizerMode::Aggressive, 1.6, 0.6, 0.0);
+    const double denseMb = highChangeDb (MaximizerMode::Multiband, 2.0, 0.6, 0.3);
+    const double denseAg = highChangeDb (MaximizerMode::Aggressive, 2.0, 0.6, 0.3);
     std::cout << "    5 kHz change, sparse highs: Multiband " << fmt (sparseMb) << " dB, Aggressive " << fmt (sparseAg)
+              << " dB; steady highs: Multiband " << fmt (steadyMb) << " dB, Aggressive " << fmt (steadyAg)
               << " dB; dense highs: Multiband " << fmt (denseMb) << " dB, Aggressive " << fmt (denseAg) << " dB\n";
     CHECK (sparseMb > sparseAg + 1.0);
+    CHECK (steadyMb > -0.3);
+    CHECK (steadyAg < -1.0);
     CHECK (std::abs (denseMb - denseAg) < 1.0);
 }
 
