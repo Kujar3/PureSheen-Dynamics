@@ -674,7 +674,9 @@ TEST_CASE ("tbal. shape corrects a bass excess and stays power neutral on severa
                 note ("  40-100 Hz excess vs 1 kHz, input (dB)", inExcess);
                 note ("  40-100 Hz excess vs 1 kHz, output (dB)", excess);
                 CHECK (inExcess > 6.0);
-                CHECK (excess < 2.5);
+                // 0.8 x 0.875 of 7.4 dB leaves ~2.2; the detector's 0.3 s attack reads the narrow bass bands of noise
+                // a little high (~0.4 dB)
+                CHECK (excess < 2.75);
             }
         }
 }
@@ -911,17 +913,28 @@ TEST_CASE ("tbal. cut sensitivity: resonance over the target, neighbours untouch
 
 TEST_CASE ("tbal. speed sets the time constant of the correction")
 {
-    // a +6 dB high shelf at 3 kHz switches on at 8 s; time for the 8 kHz correction (relative to 500 Hz) to reach 63 %
-    struct Case { float speed; double lo, hi; };
-    for (const Case c : { Case { 0.0f, 2.5, 8.0 }, Case { 50.0f, 0.49 * 0.65, 0.49 * 1.35 }, Case { 100.0f, 0.0, 0.12 } })
+    // a +6 dB high shelf at 3 kHz switches on at 8 s and off again later; time for the 8 kHz correction (relative to
+    // 500 Hz) to reach 63 % of its change. The rise of the band is read with min (0.3 s, tauS) at every Speed (the
+    // reference's attack); the fall back to plain pink follows Speed.
+    struct Case { float speed; double onLo, onHi, offLo, offHi; };
+    for (const Case c : { Case { 0.0f, 0.15, 0.6, 2.5, 10.0 }, Case { 50.0f, 0.15, 0.6, 0.3, 1.5 },
+                          Case { 100.0f, 0.0, 0.12, 0.0, 0.25 } })
     {
         Rig rig;
         rig.common (ToneTarget::Flat, ToneBalanceMode::Shape, 100.0f);
         rig.setBoth ("speed", c.speed);
         const size_t onset = (size_t) (8.0 * kSr);
-        const double total = c.speed == 0.0f ? 30.0 : 14.0;
-        const Buf srcL = filtered (pink (total, 91u), rbj (2, 3000.0, 6.0, 0.7, kSr), onset);
-        const Buf srcR = filtered (pink (total, 92u), rbj (2, 3000.0, 6.0, 0.7, kSr), onset);
+        const double onFor = c.speed == 0.0f ? 14.0 : 8.0, total = 8.0 + 2.0 * onFor;
+        const size_t offset = onset + (size_t) (onFor * kSr);
+        auto make = [&] (std::uint32_t seed)
+        {
+            const Buf x = pink (total, seed);
+            Buf y = filtered (x, rbj (2, 3000.0, 6.0, 0.7, kSr), onset);
+            for (size_t i = offset; i < y.size(); ++i)
+                y[i] = x[i];
+            return y;
+        };
+        const Buf srcL = make (91u), srcR = make (92u);
         Buf l = srcL, r = srcR;
         const int lat = rig.tb.getLatencySamples();
         std::vector<std::pair<double, double>> track;
@@ -934,27 +947,36 @@ TEST_CASE ("tbal. speed sets the time constant of the correction")
                 before = g;
             track.push_back ({ t, g });
         });
-        const double end = total - 8.0;
         double fin = 0.0;
         int nf = 0;
         for (auto& p : track)
-            if (p.first > end - 2.1 && p.first <= end - 0.1)
+            if (p.first > onFor - 2.1 && p.first <= onFor - 0.1)
             {
                 fin += p.second;
                 ++nf;
             }
         fin /= std::max (nf, 1);
-        double t63 = -1.0;
+        double tOn = -1.0, tOff = -1.0;
         for (auto& p : track)
             if (p.first > 0.0 && p.second - before <= 0.63 * (fin - before))
             {
-                t63 = p.first;
+                tOn = p.first;
+                break;
+            }
+        for (auto& p : track)
+            if (p.first > onFor && p.second - fin >= 0.63 * (before - fin))
+            {
+                tOff = p.first - onFor;
                 break;
             }
         note ("Speed " + std::to_string ((int) c.speed) + ": final correction at 8 kHz (dB)", fin);
-        note ("  time to 63 % (s)", t63);
-        CHECK (fin < -3.0);
-        CHECK (t63 >= c.lo && t63 <= c.hi);
+        note ("  time to 63 % after the shelf comes on (s)", tOn);
+        note ("  time to 63 % after it goes off (s)", tOff);
+        // the 0.3 s attack reads noise bands a little above their power mean, the narrow ones most (500 Hz here),
+        // so Speed 0 lands ~0.4 dB short of the faster settings on noise
+        CHECK (fin < -2.5);
+        CHECK (tOn >= c.onLo && tOn <= c.onHi);
+        CHECK (tOff >= c.offLo && tOff <= c.offHi);
     }
 }
 

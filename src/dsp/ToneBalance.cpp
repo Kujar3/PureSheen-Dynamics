@@ -24,8 +24,11 @@
 //   is excluded. The octave width of a band is the weighted sum of its bins' exact octave spans, so pink noise
 //   measures flat in every band (also the merged low ones).
 // - Shape / Boost detector S: a one-pole on band power (tauS), in dB afterwards (measured: the reference's Shape on
-//   music matches a power average better than a dB average, which under-reads peaky bands). Cut: F (tauC) and the
-//   1.5 s reference are one-poles on band power too (peak-leaning in dB, which suits a cut detector).
+//   music matches a power average better than a dB average, which under-reads peaky bands). A rising band attacks with
+//   min (0.3 s, tauS): on sparse, dynamic material the reference reads a band at its recent loud moments (an acoustic
+//   slice's highs, 8 dB of level spread, got ~+1.7 dB from the reference where a symmetric average gave +5); on steady
+//   noise it reads the narrowest bands ~0.4 dB high at Speed 0 (less at faster Speeds). Cut: F (tauC) and the 1.5 s
+//   reference are one-poles on band power too (peak-leaning in dB, which suits a cut detector).
 //   Every detector uses a growing memory after reset (coefficient min (a, n / (n + 1)) for the n-th measured frame), so
 //   the first estimate is an average, not a single noisy frame; the correction also fades in over 300 ms after reset.
 // - All three detectors (Shape / Boost S at tauS, Cut F at tauC, Cut reference S at 1.5 s) always run, so a mode change
@@ -50,9 +53,12 @@
 //   jumping 6 dB is far more often a noise peak than a hit); from an onset the detector attacks at once for 3 hops
 //   (it takes L whenever L is above it, so a hit rising over two frames is caught completely) and, in Shape, boosts
 //   are frozen for those 3 hops.
-// - Ballistics run separately on the boost part (rise <= 1 dB / hop, release one-pole) and the cut part (attack at once,
-//   release one-pole); the applied curve is their sum. Values within 1e-5 dB of a zero target snap to exactly 0, so
-//   after Amount returns to 0 the module nulls bit-exactly again (the engine then skips the synthesis).
+// - Ballistics run separately on the boost part (rise <= 1 dB / hop, fall 50 ms x (1 kHz / f)^1.5, at most the
+//   release) and the cut part (attack at once, release one-pole); the applied curve is their sum. The frequency law of
+//   the boost's fall is measured: the reference pulls a treble boost back within a frame of a loud strum but keeps a
+//   bass boost through kicks (a fast fall at every frequency lost 1-2 dB of match on rock and on test slice S).
+//   Values within 1e-5 dB of a zero target snap to exactly 0, so after Amount returns to 0 the module nulls
+//   bit-exactly again (the engine then skips the synthesis).
 // - Continuous controls are smoothed per hop (Amount: linear 50 ms ramp; the others a 50 ms one-pole), so automation
 //   moves the target curve continuously; the 75 %-overlap synthesis crossfades every hop's curve.
 // - The Flat target is exactly 0 dB at all frequencies (ToneTargets.cpp).
@@ -80,6 +86,14 @@ constexpr double kParamSmoothSec = 0.05;
 constexpr double kWarmSec = 0.3;
 constexpr double kGlideTauSec = 0.08, kGlideMinSec = 0.3;
 constexpr double kCutRefTauSec = 1.5;
+// Shape / Boost detector attack: a band whose level rises is read within ~0.3 s (min with tauS); the fall keeps tauS.
+// Measured: the reference drops a band's correction within ~0.3 s of the band getting louder at every Speed, and
+// gives it back at the Speed's pace (test-track slices and level steps).
+constexpr double kAttackSec = 0.3;
+// A boost shrinks with 50 ms x (1 kHz / f)^1.5 (clamped to 1/16 .. 16 x, at most the release max (2 hops, tauS / 2)):
+// the reference pulls a high boost back at once when the band gets loud (its gain on an acoustic slice's highs falls
+// 5 dB within ~0.3 s of a strum) but keeps a bass boost through kicks.
+constexpr double kBoostDropSec = 0.05, kBoostDropExp = 1.5;
 constexpr double kPreAverageSec = 0.05;   // power pre-average of S: min (50 ms, tauS / 2)
 constexpr double kOffsetLoHz = 100.0, kOffsetHiHz = 5600.0;
 
@@ -143,6 +157,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
     int nb = 0;
     std::vector<double> bandLog2;
     std::vector<float> bandHz, bandWidthOct, bandRegion;   // bandRegion: 3 per band (low, mid, high basis)
+    std::vector<float> bandBoostDrop;                             // boost fall time per band (kBoostDropSec law), s
     std::vector<uint8_t> bandInOffset;                            // 100 Hz .. 5.6 kHz
     // measurement: each bin contributes to up to two bands
     std::vector<int> binBandA, binBandB;
@@ -207,6 +222,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         bandWidthOct.assign ((size_t) nb, 0.0f);
         bandRegion.assign ((size_t) nb * 3, 0.0f);
         bandInOffset.assign ((size_t) nb, 0);
+        bandBoostDrop.assign ((size_t) nb, 0.0f);
         for (int b = 0; b < nb; ++b)
         {
             const double f = centres[(size_t) b];
@@ -219,6 +235,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             bandRegion[(size_t) b * 3 + 1] = (float) (sLow * (1.0 - sHigh));
             bandRegion[(size_t) b * 3 + 2] = (float) sHigh;
             bandInOffset[(size_t) b] = (uint8_t) (f >= kOffsetLoHz && f <= kOffsetHiHz ? 1 : 0);
+            bandBoostDrop[(size_t) b] = (float) (kBoostDropSec * std::clamp (std::pow (1000.0 / f, kBoostDropExp), 1.0 / 16.0, 16.0));
         }
 
         // measurement weights (triangles in log f, mirrored virtual neighbours at both ends)
@@ -460,6 +477,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         const double tauS = 4.0 * std::pow (60.0 / 4000.0, lane.speed / 100.0);
         const double tauC = 0.4 * std::pow (5.0 / 400.0, lane.cutSpeed / 100.0);
         const double aS = std::exp (-hopSec / tauS);
+        const double aA = std::exp (-hopSec / std::min (kAttackSec, tauS));
         const double aPresence = std::exp (-hopSec / std::clamp (tauS, 0.1, 0.5));
         const double aP = std::exp (-hopSec / std::min (kPreAverageSec, 0.5 * tauS));
         const double aSlow = std::exp (-hopSec / kCutRefTauSec);
@@ -515,7 +533,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     const bool onset = lane.onset[i] != 0 && ((b > 0 && lane.onset[i - 1] != 0)
                                                               || (b + 1 < nb && lane.onset[i + 1] != 0));
                     const double grow = (double) n / (double) (n + 1);
-                    const double eS = std::min (aS, grow), eSlow = std::min (aSlow, grow),
+                    const double eS = std::min (aS, grow), eA = std::min (aA, grow), eSlow = std::min (aSlow, grow),
                                  eF = std::min (aF, grow);
                     if (onset)
                         lane.freeze[i] = 3;
@@ -528,7 +546,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     }
                     else
                     {
-                        lane.sPow[i] = (float) (p + ((double) lane.sPow[i] - p) * eS);
+                        lane.sPow[i] = (float) (p + ((double) lane.sPow[i] - p) * (p > (double) lane.sPow[i] ? eA : eS));
                         lane.sLev[i] = (float) powToDb ((double) lane.sPow[i] / width);
                     }
                     lane.slowPow[i] = (float) (p + ((double) lane.slowPow[i] - p) * eSlow);
@@ -780,7 +798,8 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             }
             else
             {
-                gb = cb + (gb - cb) * aRel;
+                const double tDrop = std::min ((double) bandBoostDrop[i], std::max (2.0 * hopSec, cutMode ? tauC : 0.5 * tauS));
+                gb = cb + (gb - cb) * std::exp (-hopSec / tDrop);
                 if (std::abs (gb - cb) < kSnapDb)
                     gb = cb;
             }

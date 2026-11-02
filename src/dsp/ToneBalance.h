@@ -14,9 +14,10 @@
 //   1. L (b) = octave-density band level (Stereo / T/S: power sum of L + R minus 3 dB), gated (below -80 dBFS density
 //      or more than 60 dB under the loudest band: hold, no detection)
 //   2. time smoothing (one-pole on band power, per-hop coefficient): Shape / Boost tauS = 4000 ms x (60 / 4000)^(speed / 100)
-//      (0 = 4 s, 50 = 490 ms, 100 = 60 ms) -> S (b); Cut: fast F (b) with tauC = 400 ms x (5 / 400)^(cutSpeed / 100)
-//      plus S (b) at 1.5 s. Tame Transients: bands with L - S > 6 dB (Cut: L - F) attack at once (Cut: the cut lands
-//      in the onset's frame); in Shape boosts are frozen for 3 hops in flagged bands
+//      (0 = 4 s, 50 = 490 ms, 100 = 60 ms) -> S (b), attacking with min (0.3 s, tauS) where the band rises; Cut: fast
+//      F (b) with tauC = 400 ms x (5 / 400)^(cutSpeed / 100) plus S (b) at 1.5 s. Tame Transients: bands with
+//      L - S > 6 dB (Cut: L - F) attack at once (Cut: the cut lands in the onset's frame); in Shape boosts are frozen
+//      for 3 hops in flagged bands
 //   3. target T (b) = toneTargetDb (target, f_b); level offset o = octave-width weighted mean of S - T over
 //      100 Hz .. 5.6 kHz (gated bands excluded); deviation D = T + o - S (positive = needs a boost)
 //   4. Shape: C = 0.8 D' with a 0.5 dB soft dead band, D' = (T - mean T) - 0.875 (S - mean S) (offset-band means;
@@ -29,8 +30,9 @@
 //   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P)
 //   8. C = amount / 100 x clamp (C, -12, +9) (at most +9 dB boost); no boost in bands more than 40 dB under the
 //      frame's band maximum
-//   9. ballistics on the final curve: boosts rise at most 1 dB per hop; release toward 0 with max (2 hops, tauS / 2)
-//      (Cut: tauC); cut attacks per hop. Mode / target changes glide the final curve (80 ms one-pole for 300 ms)
+//   9. ballistics on the final curve: boosts rise at most 1 dB per hop and fall with min (50 ms x clamp ((1 kHz / f)^1.5,
+//      1/16, 16), max (2 hops, tauS / 2)); cuts attack per hop and release toward 0 with max (2 hops, tauS / 2) (Cut:
+//      tauC). Mode / target changes glide the final curve (80 ms one-pole for 300 ms)
 //  10. band -> bin gains (linear in log f between band centres), residual synthesis
 // Stereo / T/S: one curve for both channels (power-sum detector). M/S: Mid with set A, Side with set B.
 // Neutral: Amount 0 (the default) -> exact null against the input delayed by N.
@@ -45,8 +47,9 @@
 // Measured behaviour (tests/ToneBalanceTests.cpp, 48 kHz, Amount 100, defaults unless noted):
 //   - Shape, Flat, pink noise with a +6 dB one-octave bell at 2 kHz: the output bump is <= 3 dB at Smoothing 50
 //     (2.8 measured) and <= 2 dB at Smoothing 0 (1.8); the correction reaches 63 % of its final value 0.5 .. 1.5 tauS
-//     after the bump appears (0.69 s at tauS 0.49 s).
-//   - Speed: 63 % time of a level step 4.6 s at Speed 0, 0.53 s at 50, 75 ms at 100.
+//     after the bump appears (0.28 s at tauS 0.49 s: the bump's rise is read with the 0.3 s attack).
+//   - Speed: 63 % time after a +6 dB high shelf goes off 5.6 s at Speed 0, 0.79 s at 50, 0.11 s at 100; after it
+//     comes on 0.34 / 0.21 / 0.03 s (the attack).
 //   - Shape is power neutral within 0.5 dB (unweighted output power; K-weighted loudness falls where highs are cut,
 //     like the reference). The solve uses each bin's interpolated dB gain before conversion to power.
 //   - Flat target on pink noise: every 1/3-octave band within +-0.75 dB (0.35).
