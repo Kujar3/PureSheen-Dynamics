@@ -11,7 +11,8 @@
 // Engine: residual STFT (SpectralEngine.h), N = 2048 at 44.1 / 48 kHz (x2 at 88.2 / 96, x4 above), hop N / 4;
 // latency N (42.7 ms at 48 kHz), constant. Band grid: 1/12 octave from 20 Hz to min (20 kHz, 0.45 fs), at least 2
 // bins per band (narrower low bands merged). Per hop, per lane:
-//   1. L (b) = octave-density band level (Stereo / T/S: power sum of L + R minus 3 dB), gated (below -80 dBFS density
+//   1. L (b) = octave-density band level (Stereo / T/S: power sum of L + R minus 3 dB; Shape / Boost read the larger
+//      of it and the level through 12 dB / octave power skirts, the Cut detectors narrow), gated (below -80 dBFS density
 //      or more than 60 dB under the loudest band: hold, no detection)
 //   2. time smoothing (one-pole on band power, per-hop coefficient): Shape / Boost tauS = 4000 ms x (60 / 4000)^(speed / 100)
 //      (0 = 4 s, 50 = 490 ms, 100 = 60 ms) -> S (b), attacking with min (0.3 s, tauS) where the band rises; Cut: fast
@@ -24,11 +25,14 @@
 //      = D on pink): the target's shape is corrected 80 %, a measured deviation from pink 70 % (as the reference).
 //      Boost: C = max (0, (T + o - tol) - S). Cut: reference R = T + o + (tol + 10 dB) (1 - sens / 100)^1.5,
 //      excess E = F - R, C = -0.8 softknee (E, 3 dB), cuts only
-//   5. frequency smoothing (Shape / Boost): Gaussian over log2 f, sigma = 0.08 x (1.5 / 0.08)^(smooth / 100) octaves;
+//   5. frequency smoothing (Shape / Boost, of C limited to [-12, cap / amount]): Gaussian over log2 f,
+//      sigma = 0.08 x (1.5 / 0.08)^(smooth / 100) octaves;
 //      Cut: [0.25 0.5 0.25] across bands
 //   6. region amounts: C x mix of low / mid / high % with 1/3-octave raised-cosine crossfades at 100 Hz and 5.6 kHz
-//   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P)
-//   8. C = amount / 100 x C, limited to -12 x amount / 100 and +9 x (amount / 100)^0.82 dB (measured: +5.1 at 50);
+//   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P), solved without
+//      the boost cap of step 8 (so capped boosts lose power, as the reference does on white noise)
+//   8. C = amount / 100 x C, limited to -12 x amount / 100 and +9 x (amount / 100)^0.84 dB (measured: +5.1 at 50,
+//      +2.7 at 25);
 //      boosts only in measured (ungated) bands
 //   9. ballistics on the final curve: boosts rise at most 1 dB per hop and fall with min (50 ms x clamp ((1 kHz / f)^1.5,
 //      1/16, 16), max (2 hops, tauS / 2)); cuts attack per hop and release toward 0 with max (2 hops, tauS / 2) (Cut:
@@ -45,8 +49,8 @@
 // Silent frames hold detector history while control ramps and gain releases continue, so edits during a pause
 // have settled when audio resumes.
 // Measured behaviour (tests/ToneBalanceTests.cpp, 48 kHz, Amount 100, defaults unless noted):
-//   - Shape, Flat, pink noise with a +6 dB one-octave bell at 2 kHz: the output bump is <= 3 dB at Smoothing 50
-//     (2.8 measured) and <= 2 dB at Smoothing 0 (1.8); the correction reaches 63 % of its final value 0.5 .. 1.5 tauS
+//   - Shape, Flat, pink noise with a +6 dB one-octave bell at 2 kHz: the output bump is <= 3.5 dB at Smoothing 50
+//     (3.5 measured) and <= 2.9 dB at Smoothing 0 (2.8); the correction reaches 63 % of its final value 0.5 .. 1.5 tauS
 //     after the bump appears (0.28 s at tauS 0.49 s: the bump's rise is read with the 0.3 s attack).
 //   - Speed: 63 % time after a +6 dB high shelf goes off 5.6 s at Speed 0, 0.79 s at 50, 0.11 s at 100; after it
 //     comes on 0.34 / 0.21 / 0.03 s (the attack).
@@ -73,7 +77,7 @@ double toneBalanceDisplayHz (int index) noexcept;
 // The UI draws the corridor with it; the phase 3 Assistant reuses it.
 double toneTargetDb (ToneTarget, double hz, double* tolDb = nullptr) noexcept;
 
-// Largest boost (dB) at amount = Amount / 100 (0..1): 9 x amount^0.82 (+9 at 100, +5.1 at 50, +2.9 at 25).
+// Largest boost (dB) at amount = Amount / 100 (0..1): 9 x amount^0.84 (+9 at 100, +5.0 at 50, +2.8 at 25).
 double toneBalanceMaxBoostDb (double amount) noexcept;
 
 struct ToneBalanceMeters

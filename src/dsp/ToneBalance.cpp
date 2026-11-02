@@ -23,6 +23,15 @@
 //   log f between neighbouring centres (a partition of unity; the end bands get a mirrored half triangle); the DC bin
 //   is excluded. The octave width of a band is the weighted sum of its bins' exact octave spans, so pink noise
 //   measures flat in every band (also the merged low ones).
+// - Shape / Boost reading: each band reads the larger of its own power and the power seen through skirts of
+//   12 dB / octave on both sides (a power-domain smoothing over log f, kSkirtDbPerOct) before the detector. Measured (Stab-Empty.wav, top octaves 24 .. 60 dB down
+//   above a raised-cosine edge at 4 .. 5.6 kHz): the reference's lift near the edge does not grow with the depth
+//   (+3.7 .. +4.2 dB at 6.3 kHz at Amount 100) and reaches its cap ~2/3 octave above the edge; narrow bands read the
+//   hole at its full depth and lift it from the edge on. Smooth spectra (pink, brown, white) read the same either way.
+//   Taking the larger of the two keeps peaks and dense music on the narrow reading (the skirted reading alone lost
+//   0.2 .. 0.4 dB of match on rock and test slice S; with the max they gain 0.5 .. 0.9).
+//   The gate and the Shape / Boost onsets use the skirted levels; the Cut detectors (F, the 1.5 s reference) and the
+//   Cut onsets keep the narrow bands (resonances).
 // - Shape / Boost detector S: a one-pole on band power (tauS), in dB afterwards (measured: the reference's Shape on
 //   music matches a power average better than a dB average, which under-reads peaky bands). A rising band attacks with
 //   min (0.3 s, tauS): on sparse, dynamic material the reference reads a band at its recent loud moments (an acoustic
@@ -45,9 +54,14 @@
 //   solve interpolates the final dB curve at each bin before converting to power gain, exactly as synthesis does;
 //   averaging endpoint power gains would overestimate energy.
 //   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / presence kinks.
-//   The limits scale with Amount: cuts -12 x Amount / 100 dB, boosts +9 x (Amount / 100)^0.82 dB
-//   (toneBalanceMaxBoostDb; measured: the reference's plateau on white noise is +9.0 dB at Amount 100 and +5.1 at 50,
-//   where a linear law gives 4.5).
+//   The limits scale with Amount: cuts -12 x Amount / 100 dB, boosts +9 x (Amount / 100)^0.84 dB
+//   (toneBalanceMaxBoostDb; measured: the reference's plateau on white noise is +9.0 dB at Amount 100, +5.1 at 50 and
+//   +2.7 at 25, where a linear law gives 4.5 / 2.25).
+// - Shape / Boost: the unscaled correction is limited to [-12, cap / amount] BEFORE the frequency smoothing (measured:
+//   a deep hole does not spill its deviation into the neighbouring octave; the reference's 4 kHz stays put while the
+//   top octaves go from -24 to -60 dB). The power-neutral shift is solved WITHOUT the boost cap, which applies
+//   afterwards: on white noise, whose bass boost is capped, the reference keeps the rest of the curve 1.5 .. 3 dB lower
+//   than a cap-aware solve would (the output loses power when boosts are capped).
 // - Boosts are scaled by a smoothed presence of the band (0 while it is gated): a gated band holds a level that may be
 //   stale (e.g. the leakage of a tone's onset). There is no "empty band" rule beyond the gate: the reference lifts
 //   bands 40-60 dB under the loudest one (dark lo-fi / ambient slices with a bright target got +4..6 dB more air from it
@@ -70,7 +84,7 @@ namespace ps
 {
 double toneBalanceMaxBoostDb (double amount) noexcept
 {
-    return amount > 0.0 ? 9.0 * std::pow (std::min (amount, 1.0), 0.82) : 0.0;
+    return amount > 0.0 ? 9.0 * std::pow (std::min (amount, 1.0), 0.84) : 0.0;
 }
 
 namespace
@@ -103,6 +117,7 @@ constexpr double kAttackSec = 0.3;
 constexpr double kBoostDropSec = 0.05, kBoostDropExp = 1.5;
 constexpr double kPreAverageSec = 0.05;   // power pre-average of S: min (50 ms, tauS / 2)
 constexpr double kOffsetLoHz = 100.0, kOffsetHiHz = 5600.0;
+constexpr double kSkirtDbPerOct = 12.0;   // Shape / Boost band reading: power skirts on both sides
 
 #if PS_TBAL_HAS_SSE_CSR
 struct ScopedFlushDenormals
@@ -166,6 +181,8 @@ struct ToneBalance::Impl final : SpectralEngine::Client
     std::vector<float> bandHz, bandWidthOct, bandRegion;   // bandRegion: 3 per band (low, mid, high basis)
     std::vector<float> bandBoostDrop;                             // boost fall time per band (kBoostDropSec law), s
     std::vector<uint8_t> bandInOffset;                            // 100 Hz .. 5.6 kHz
+    std::vector<float> skirtW;                                    // [b * nb + j]: weight of band j's density in band b
+    std::vector<float> skirtPow;                                  // scratch: skirted band powers of one lane
     // measurement: each bin contributes to up to two bands
     std::vector<int> binBandA, binBandB;
     std::vector<float> binWA, binWB;
@@ -314,6 +331,24 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                 t = 0.0f;
         for (int b = 0; b < nb; ++b)
             bandWidthOct[(size_t) b] = (float) std::max (width[(size_t) b], 1.0e-3);
+        // skirted reading: power_b = width_b sum_j w_j d_j / sum_j w_j (d: density), w_j = width_j 10^(-skirt |dlog2 f| / 10);
+        // the detector takes the larger of this and the band's own power
+        skirtW.assign ((size_t) nb * (size_t) nb, 0.0f);
+        skirtPow.assign ((size_t) nb, 0.0f);
+        for (int b = 0; b < nb; ++b)
+        {
+            float* row = skirtW.data() + (size_t) b * (size_t) nb;
+            double sum = 0.0;
+            for (int j = 0; j < nb; ++j)
+            {
+                const double d = std::abs (bandLog2[(size_t) j] - bandLog2[(size_t) b]);
+                const double w = (double) bandWidthOct[(size_t) j] * std::pow (10.0, -kSkirtDbPerOct * d / 10.0);
+                row[j] = (float) w;
+                sum += w;
+            }
+            for (int j = 0; j < nb; ++j)
+                row[j] = (float) ((double) row[j] * (double) bandWidthOct[(size_t) b] / (sum * (double) bandWidthOct[(size_t) j]));
+        }
 
         for (int i = 0; i < kToneDisplayPoints; ++i)
         {
@@ -497,9 +532,16 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         {
             // 1. measurement and gate
             double lmax = -1.0e9;
+            // the Shape / Boost reading through the skirts (skirtPow); the Cut detectors use lane.power
             for (int b = 0; b < nb; ++b)
             {
-                const double l = powToDb ((double) lane.power[(size_t) b] / (double) bandWidthOct[(size_t) b]);
+                const float* row = skirtW.data() + (size_t) b * (size_t) nb;
+                double ps = 0.0;
+                for (int j = 0; j < nb; ++j)
+                    ps += (double) row[j] * (double) lane.power[(size_t) j];
+                ps = std::max (ps, (double) lane.power[(size_t) b]);
+                skirtPow[(size_t) b] = (float) ps;
+                const double l = powToDb (ps / (double) bandWidthOct[(size_t) b]);
                 lane.tmp[(size_t) b] = (float) l;
                 lmax = std::max (lmax, l);
             }
@@ -508,7 +550,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             for (int b = 0; b < nb; ++b)
             {
                 const auto i = (size_t) b;
-                const double l = lane.tmp[i];
+                const double l = cutMode ? powToDb ((double) lane.power[i] / (double) bandWidthOct[i]) : (double) lane.tmp[i];
                 const double ref = cutMode ? powToDb ((double) lane.fastPow[i] / (double) bandWidthOct[i])
                                            : (double) lane.sLev[i];
                 lane.onset[i] = (uint8_t) (tame && lane.count[i] != 0 && l - ref > kOnsetDb ? 1 : 0);
@@ -527,12 +569,13 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                 if (gated)
                     continue;
                 anyMeasured = true;
-                const double p = lane.power[i];
+                const double p = lane.power[i], pS = skirtPow[i];
                 const double width = bandWidthOct[i];
                 const int n = lane.count[i];
                 if (n == 0)
                 {
-                    lane.sPow[i] = lane.slowPow[i] = lane.fastPow[i] = (float) p;
+                    lane.slowPow[i] = lane.fastPow[i] = (float) p;
+                    lane.sPow[i] = (float) pS;
                     lane.sLev[i] = (float) l;
                 }
                 else
@@ -548,12 +591,12 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     const bool attack = tame && lane.freeze[i] > 0;
                     if (attack && ! cutMode && l > (double) lane.sLev[i])
                     {
-                        lane.sPow[i] = (float) std::max (p, (double) lane.sPow[i]);
+                        lane.sPow[i] = (float) std::max (pS, (double) lane.sPow[i]);
                         lane.sLev[i] = (float) l;
                     }
                     else
                     {
-                        lane.sPow[i] = (float) (p + ((double) lane.sPow[i] - p) * (p > (double) lane.sPow[i] ? eA : eS));
+                        lane.sPow[i] = (float) (pS + ((double) lane.sPow[i] - pS) * (pS > (double) lane.sPow[i] ? eA : eS));
                         lane.sLev[i] = (float) powToDb ((double) lane.sPow[i] / width);
                     }
                     lane.slowPow[i] = (float) (p + ((double) lane.slowPow[i] - p) * eSlow);
@@ -654,7 +697,15 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             lane.c[i] = (float) c;
         }
 
-        // 5. frequency smoothing
+        // the boost cap (and the pre-Amount limit at which it binds) for this hop
+        const double amount = lane.amount / 100.0 * lane.warm;
+        const double capBoost = toneBalanceMaxBoostDb (amount), capCut = kMaxCutDb * amount;
+        const double rawBoost = amount > 0.0 ? capBoost / amount : toneBalanceMaxBoostDb (1.0);
+
+        // 5. frequency smoothing (Shape / Boost: of the correction limited to [-12, rawBoost] first)
+        if (! cutMode)
+            for (auto& v : lane.c)
+                v = (float) std::clamp ((double) v, -kMaxCutDb, rawBoost);
         if (cutMode)
         {
             for (int b = 0; b < nb; ++b)
@@ -689,9 +740,6 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         // 6 + 8. region amounts, limits, Amount; the boost presence (0 in gated or never measured bands) goes into
         // lane.c, the region weight into lane.power (free after the measurement). The pre-Amount clamp is the
         // correction at which the boost cap binds (capBoost / amount), so the bracket of step 7 holds.
-        const double amount = lane.amount / 100.0 * lane.warm;
-        const double capBoost = toneBalanceMaxBoostDb (amount), capCut = kMaxCutDb * amount;
-        const double rawBoost = amount > 0.0 ? capBoost / amount : toneBalanceMaxBoostDb (1.0);
         const double rl = lane.low / 100.0, rm = lane.mid / 100.0, rh = lane.high / 100.0;
         for (int b = 0; b < nb; ++b)
         {
@@ -705,11 +753,12 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             lane.c[i] = lane.count[i] != 0 ? lane.presence[i] : 0.0f;
         }
 
-        // final value of band i for a loudness shift x: limits scaled by Amount, boost presence, mode sign
-        auto finalValue = [&] (size_t i, double x, double* slope) noexcept
+        // final value of band i for a loudness shift x: limits scaled by Amount, boost presence, mode sign (the power-
+        // neutral solve leaves the boost cap out: uncapped)
+        auto finalValue = [&] (size_t i, double x, double* slope, bool uncapped) noexcept
         {
             const double raw = (double) lane.tmp[i] - x * (double) lane.power[i];
-            double v = std::clamp (raw, -capCut, capBoost);
+            double v = std::clamp (raw, -capCut, uncapped ? std::max (raw, -capCut) : capBoost);
             double d = raw == v ? -(double) lane.power[i] : 0.0;
             if (v > 0.0)
             {
@@ -745,7 +794,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     for (int b = 0; b < nb; ++b)
                     {
                         const auto i = (size_t) b;
-                        lane.shiftGain[i] = finalValue (i, shift, &lane.shiftSlope[i]);
+                        lane.shiftGain[i] = finalValue (i, shift, &lane.shiftSlope[i], true);
                     }
                     double f = 0.0, fd = 0.0;
                     for (size_t k = 1; k < lane.loudAvg.size(); ++k)
@@ -784,7 +833,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             }
         }
         for (int b = 0; b < nb; ++b)
-            lane.tmp[(size_t) b] = (float) finalValue ((size_t) b, shift, nullptr);
+            lane.tmp[(size_t) b] = (float) finalValue ((size_t) b, shift, nullptr, false);
 
         // 9. ballistics and glide
         const bool freezeBoosts = tame && mode == ToneBalanceMode::Shape;

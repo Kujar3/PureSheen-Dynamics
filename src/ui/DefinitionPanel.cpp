@@ -187,7 +187,7 @@ struct DefinitionPanel::Impl
 
         metersValid = valid;
 
-        const float cap = 6.0f * processor.getParameterValue (setParamId (kType, s.set, "amount")) / 100.0f;
+        const float cap = (float) ps::definitionMaxGainDb (processor.getParameterValue (setParamId (kType, s.set, "amount")) / 100.0f);
         activity.setLimit (0, cap);
         activity.setLimit (1, -cap);
         activity.setNote (cap < 0.005f ? juce::String ("Amount 0: off") : "Limit +/-" + spectral::dbNumber (cap, false) + " dB");

@@ -66,6 +66,11 @@
 // leaves the integrated loudness within 0.02 LU (Amount 50: +2.8 dB). See tests/DefinitionTests.cpp for every number.
 namespace ps
 {
+double definitionMaxGainDb (double amount) noexcept
+{
+    return amount > 0.0 ? 6.0 * std::pow (std::min (amount, 1.0), 0.91) : 0.0;
+}
+
 namespace
 {
 #if PS_DEFN_HAS_SSE_CSR
@@ -87,7 +92,9 @@ constexpr double kFirstCentreHz = 250.0;
 constexpr double kTopHz = 20000.0;
 constexpr double kFade = 1.0 / 3.0;                     // octaves
 constexpr double kFloorLog2 = 8.228818690495881 - kFade; // log2 (300) - 1/3: exactly 0 below 238 Hz
-constexpr double kMaxDb = 6.0;
+constexpr double kMaxDb = 6.0;   // the limit at Amount 100; definitionMaxGainDb scales it as Amount^0.91 (measured:
+                                 // the reference's plateau on near-empty top octaves is +1.7 dB at Amount 25 and +6.0
+                                 // at 100, a linear law gives 1.5). The unscaled gain is limited where that cap binds.
 constexpr double kGateAbsDb = -80.0;
 constexpr double kGateRelDb = 60.0;
 constexpr double kDetectorMs = 10.0;
@@ -445,6 +452,8 @@ struct Definition::Impl final : SpectralEngine::Client
         }
 
         // 3. desired gains (unscaled), gated bands hold
+        const double lim = definitionMaxGainDb (A);
+        const double rawLim = A > 0.0 ? lim / A : kMaxDb;
         if (den > 0.0)
         {
             const double o = num / den;
@@ -454,12 +463,11 @@ struct Definition::Impl final : SpectralEngine::Client
                     continue;
                 const double line = lane.tilt * (bands[(size_t) b].log2Hz - 9.965784284662087);
                 const double D = line + o - lane.levelDb[(size_t) b];
-                lane.raw[(size_t) b] = std::clamp (0.6 * D, -kMaxDb, kMaxDb);
+                lane.raw[(size_t) b] = std::clamp (0.6 * D, -rawLim, rawLim);
             }
         }
 
         // smoothing over frequency, Amount
-        const double lim = kMaxDb * A;
         if (A <= 0.0)
         {
             std::fill (lane.target.begin(), lane.target.end(), 0.0);

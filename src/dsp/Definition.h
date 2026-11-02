@@ -13,8 +13,8 @@
 //   1. detector L (b): octave-density band level after a 10 ms power one-pole per band
 //   2. target line (b) = tilt x log2 (f_b / 1 kHz); offset o = octave-width weighted mean of L - line over the bands
 //      inside the region (gated bands excluded); D = line + o - L
-//   3. desired gain g* = amount / 100 x clamp (0.6 D, -6, +6) (at most +-6 dB at Amount 100), Gaussian smoothing over
-//      log2 f with sigma 1/6 octave
+//   3. desired gain g* = A x clamp (0.6 D, -L / A, +L / A), A = amount / 100, L = 6 x A^0.91 dB (+6 at Amount 100,
+//      +1.7 at 25, as measured), Gaussian smoothing over log2 f with sigma 1/6 octave
 //   4. loudness neutral: g* -= the K-weighted power-weighted mean dB change over the region (our choice: Definition
 //      redistributes energy instead of mostly brightening, so A/B comparisons stay fair)
 //   5. region mask: 1 inside [low, high], raised-cosine to 0 over 1/3 octave outside, exactly 0 below
@@ -28,6 +28,9 @@
 // T/S: the twin (getParamSet() == 1) reads set B for both channels (Module.h).
 namespace ps
 {
+// Largest boost / cut (dB) at amount = Amount / 100 (0..1): 6 x amount^0.91 (+6 at 100, +1.7 at 25).
+double definitionMaxGainDb (double amount) noexcept;
+
 inline constexpr int kDefinitionDisplayPoints = 64;
 double definitionDisplayHz (int index) noexcept;     // 64 log-spaced points 250 Hz .. 20 kHz
 

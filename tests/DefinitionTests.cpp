@@ -529,7 +529,7 @@ TEST_CASE ("defn. gain limits: never more than 6 dB (Amount 100) / 3 dB (Amount 
         double measured = 0.0;
         for (double fc : thirdOctaves (315.0, 16000.0))
             measured = std::max (measured, std::abs (pout.bandDb (fc, 1.0 / 6.0) - pin.bandDb (fc, 1.0 / 6.0)));
-        const double lim = amount > 60 ? 6.05 : 3.05;
+        const double lim = definitionMaxGainDb (amount / 100.0) + 0.05;
         note (amount > 60 ? "Amount 100: max boost (meter, every hop)" : "Amount 50: max boost (meter, every hop)", maxB);
         note ("  max cut (meter)", maxC);
         note ("  max |change| measured in 1/6-oct bands of the audio", measured);

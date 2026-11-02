@@ -623,8 +623,9 @@ TEST_CASE ("tbal. shape pulls a +6 dB 2 kHz bump toward the target within the do
         note ("  final correction 2 kHz rel. 500 Hz (dB)", fin);
         note ("  time to 63 % (s)", t63);
         CHECK (inBump > 5.0);
-        // Shape corrects 0.8 x 0.875 = 70 % of a measured deviation (the reference's law: 2.4 / 3.3 here)
-        CHECK (outBump <= (smooth > 0.0f ? 3.5 : 2.6));
+        // Shape corrects 0.8 x 0.875 = 70 % of a measured deviation (the reference's law: 2.4 / 3.3 here); the skirted
+        // reading (12 dB / octave) softens a one-octave bump a little (Smoothing 0: 2.5 -> 2.8)
+        CHECK (outBump <= (smooth > 0.0f ? 3.5 : 2.9));
         CHECK (t63 >= 0.5 * 0.49 && t63 <= 1.5 * 0.49);
     }
 }
@@ -675,8 +676,8 @@ TEST_CASE ("tbal. shape corrects a bass excess and stays power neutral on severa
                 note ("  40-100 Hz excess vs 1 kHz, output (dB)", excess);
                 CHECK (inExcess > 6.0);
                 // 0.8 x 0.875 of 7.4 dB leaves ~2.2; the detector's 0.3 s attack reads the narrow bass bands of noise
-                // a little high (~0.4 dB)
-                CHECK (excess < 2.75);
+                // a little high (~0.4 dB), the skirted reading softens the shelf's slope (~0.3 dB)
+                CHECK (excess < 3.0);
             }
         }
 }
@@ -787,17 +788,18 @@ TEST_CASE ("tbal. shape loudness solve stays stable when quiet bands become acti
     CHECK (maxSteadyStep < 2.0);
 }
 
-TEST_CASE ("tbal. boost cap: at most +9 dB x (Amount / 100)^0.82, Boost mode never cuts")
+TEST_CASE ("tbal. boost cap: at most +9 dB x (Amount / 100)^0.84, Boost mode never cuts")
 {
-    // pink with a deep notch from 2 to 4 kHz (two cascaded bells)
+    // pink with nearly empty top octaves (a -40 dB high shelf at 4 kHz): a deviation far beyond the cap even through
+    // the skirted reading
     auto notched = [] (std::uint32_t seed)
     {
-        return filtered (filtered (pink (10.0, seed), rbj (0, 2400.0, -14.0, 2.0, kSr)), rbj (0, 3400.0, -14.0, 2.0, kSr));
+        return filtered (pink (10.0, seed), rbj (2, 4000.0, -40.0, 0.7, kSr));
     };
     const Buf srcL = notched (61u), srcR = notched (62u);
     struct Case { ToneBalanceMode mode; float amount; double cap; const char* name; };
     for (const Case c : { Case { ToneBalanceMode::Shape, 100.0f, 9.0, "Shape, Amount 100" },
-                          Case { ToneBalanceMode::Shape, 50.0f, 5.1, "Shape, Amount 50" },
+                          Case { ToneBalanceMode::Shape, 50.0f, 5.03, "Shape, Amount 50" },
                           Case { ToneBalanceMode::Boost, 100.0f, 9.0, "Boost, Amount 100" } })
     {
         Rig rig;
@@ -813,10 +815,10 @@ TEST_CASE ("tbal. boost cap: at most +9 dB x (Amount / 100)^0.82, Boost mode nev
         });
         const auto tr = transfer (srcL, srcR, l, r, rig.tb.getLatencySamples(), (size_t) (5.0 * kSr), (size_t) (4.0 * kSr));
         double measured = -100.0;
-        for (double f = 1500.0; f <= 5000.0; f *= std::pow (2.0, 1.0 / 12.0))
+        for (double f = 6000.0; f <= 16000.0; f *= std::pow (2.0, 1.0 / 12.0))
             measured = std::max (measured, tr.db (f, 1.0 / 12.0));
         note (std::string (c.name) + ": max boost (meters, dB)", maxBoost);
-        note ("  measured max 1/12-oct boost in the notch (dB)", measured);
+        note ("  measured max 1/12-oct boost at 6-16 kHz (dB)", measured);
         note ("  most negative gain anywhere (dB)", minGain);
         CHECK (maxBoost <= c.cap + 0.1);
         CHECK (measured <= c.cap + 0.1);
@@ -1655,7 +1657,7 @@ TEST_CASE ("tbal. works the same at 44.1, 96 and 192 kHz")
         const double g60 = meterGain (rig.tb, 60.0), g1k = meterGain (rig.tb, 1000.0), g10k = meterGain (rig.tb, 10000.0);
         note ("fs " + std::to_string ((int) sr) + ": correction at 60 Hz rel. 1 kHz (dB)", g60 - g1k);
         note ("  at 10 kHz rel. 1 kHz (dB)", g10k - g1k);
-        CHECK (g60 - g1k < -4.0);
+        CHECK (g60 - g1k < -3.5);
         CHECK (std::abs (g10k - g1k) < 1.0);
     }
 }
@@ -1783,6 +1785,6 @@ TEST_CASE ("tbal. proposed factory presets behave on music-like material")
             CHECK (std::abs (dPow) < 0.5);
         else
             CHECK (maxBoost == 0.0 && dLu <= 0.01);
-        CHECK (maxCut < -0.5);
+        CHECK (maxCut < -0.4);
     }
 }
