@@ -15,8 +15,9 @@
 //   1. X (b) = band level (octave density, dB), band power integrated over max (5 ms, min (40 ms, 4 / bandwidth))
 //      (a stable estimate in the narrow low bands; about 2 hops at 3 kHz, 1 hop in the top octave)
 //   2-5. (measured: the reference's renders of pink / brown / white noise and music) the detector reads per-Hz level
-//      against an ABSOLUTE threshold that Amount moves: e = X' + 6.98 - 3.44 log2 (f_b / 1 kHz) - 0.173 tone log2
-//      (f_b / f_c) - T, T = -64.5 + (100 - amount) dB, f_c = the region's centre (+ tone = the cut moves down =
+//      against an ABSOLUTE threshold that Amount moves: e = X' + 6.98 - 3.44 log2 (f_b / 1 kHz) - s tone log2
+//      (f_b / f_c) - T, T = -64.5 + (100 - amount) dB, s = 0.173 + 0.0045 max (0, 80 - amount) (Tone acts more at
+//      lower Amounts), f_c = the region's centre (+ tone = the cut moves down =
 //      brighter); X' = 15 % the band's own density + 85 % the density around 1.5 octaves higher (Gaussian, sigma
 //      0.3 octave; pink reads unchanged, bright spectra higher, dark ones lower);
 //      GR* = -M tanh (r softknee (e, K) / M): Gentle r 0.534 K 2.5 M 18.1, Medium r 0.772 K 6 M 17.6, Strong r 1

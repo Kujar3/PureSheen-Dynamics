@@ -64,7 +64,8 @@ struct ScopedFlushDenormals {};
 
 // The gain computer, measured from the reference (out/importer/tools/spsfit.py, spsfit2.py: pink noise in level steps,
 // Amount 60..100, the three styles, tilt -100 / +50 / +100; fit rms 0.3..0.6 dB):
-//   e  = X' + 6.98 - 3.44 log2 (f / 1 kHz) - 0.173 tone log2 (f / f_c) - T,  T = -64.5 + (100 - amount) dB
+//   e  = X' + 6.98 - 3.44 log2 (f / 1 kHz) - s tone log2 (f / f_c) - T,  T = -64.5 + (100 - amount) dB,
+//   s = 0.173 + 0.0045 max (0, 80 - amount)
 //        (X: octave density re a full-scale sine per octave, so X + 6.98 is the level of pink noise of that density;
 //        the detector reads per-Hz level, 3.44 dB / octave below the octave density; f_c = the region's centre)
 //   X' = 10 log10 (0.15 x 10^(X / 10) + 0.85 x sum_k w_k 10^(X_k / 10)), w = a Gaussian in octaves (sigma 0.3)
@@ -90,6 +91,9 @@ ModeShape modeShape (SmootherMode m) noexcept
 }
 
 constexpr double kPinkOffsetDb = 6.98, kDetectorSlopeDb = 3.44, kToneSlopeDb = 0.173;
+// Tone acts more strongly at lower Amounts (renders at Amount 50, Tone +-100: the cut sits at the region's low / high
+// end, -4.5 dB on flat pink, which a 0.173 slope reaches only at Amount 80): slope + 0.0045 per % below 80.
+constexpr double kToneSlopePerPercentDb = 0.0045;
 constexpr double kThresholdAt100 = -64.5, kThresholdPerPercent = 1.0;
 constexpr double kLookUpOct = 1.5, kLookUpSigmaOct = 0.3, kLookUpShare = 0.85;   // detector spread (see above)
 constexpr double kMaskWidthOct = 1.3;
@@ -352,7 +356,7 @@ struct Smoother::Impl final : SpectralEngine::Client
         const ModeShape shape = modeShape (sp.mode);
         const double a = l.amount;
         const double threshold = kThresholdAt100 + (1.0 - a) * 100.0 * kThresholdPerPercent;
-        const double tilt = kToneSlopeDb * l.tone;
+        const double tilt = (kToneSlopeDb + kToneSlopePerPercentDb * std::max (0.0, 80.0 - 100.0 * a)) * l.tone;
         const double centreL2 = 0.5 * (l.lowL2 + l.highL2);
 
         // 1. band levels (integrated detector)
