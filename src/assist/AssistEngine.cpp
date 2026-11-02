@@ -9,16 +9,17 @@
 #include <cmath>
 #include <string>
 
-// The rules of the default suggestion (fitted black-box to the reference assistant's choices on seven test tracks;
-// numbers and method in the private notes, out/assistant):
+// The rules of the default suggestion (fitted black-box to the reference assistant's choices on seventeen test
+// tracks, features from the first 8 s it listens to; numbers and method in the private notes, out/assistant):
 //   - EQ 1: desired curve G = S tanh (k D / S), D = target - track (relative to pink, level-matched over 100 Hz ..
 //     5.6 kHz, Gaussian-smoothed over 0.5 octave), k = 0.25, S = 1.5 dB at Balanced. Fitted greedily with a low shelf
 //     (band 1), a high shelf (band 8) and up to four broad bells (bands 2-5, Q 0.3..1.1), gains within +-1.8 dB.
-//     (Reference EQ curves: 0.82 dB RMS from this rule, 1.15 dB RMS from no EQ.)
+//     (Reference EQ curves: 0.76 dB RMS from this rule, 1.15 dB RMS from no EQ; the rule was fitted on the first seven
+//     tracks and held on the other ten, so refitting it did not pay.)
 //   - Imager band b: width = clamp (g_b (T_b - W_b), -100, 100), W_b = the band's side / mid energy ratio in dB, T / g =
-//     (-17.75 dB, 5) narrowing only, (-6, 12), (-3.75, 15), (-3, 15); a reference track sets T_b to its own widths.
+//     (-21 dB, 4) narrowing only, (-5.5, 12), (-3.75, 9.5), (-1.5, 10.5); a reference track sets T_b to its own widths.
 //   - Punch band b: amount = clamp (g_b (T_b - C_b), -80, 80), C_b = the band's frame crest (p99 - p50 of 46 ms
-//     frames, dB), T / g = (8.5, 6), (5, 15), (7.5, 6), (12.5, 3).
+//     frames, dB), T / g = (7, 4.5), (3.75, 7.5), (8.5, 6.5), (11, 5).
 //   - Dynamic EQ: the reference's template (a -4 dB bell in the low-mids, two narrow -4 dB bells at the strongest
 //     resonances in 350 Hz .. 950 Hz and 1.3 .. 5.5 kHz, a -2 dB high shelf); thresholds = the input's sub-band level
 //     there + 10 / 7.5 / 10.5 / 10 dB.
@@ -332,8 +333,8 @@ void dynamicEq (std::vector<float>& v, const Analysis& a, float scale)
 
 void imager (std::vector<float>& v, const Analysis& a, const ReferenceTarget* ref, float scale)
 {
-    constexpr float T[kProcBands] { -17.75f, -6.0f, -3.75f, -3.0f };
-    constexpr float G[kProcBands] { 5.0f, 12.0f, 15.0f, 15.0f };
+    constexpr float T[kProcBands] { -21.0f, -5.5f, -3.75f, -1.5f };
+    constexpr float G[kProcBands] { 4.0f, 12.0f, 9.5f, 10.5f };
 
     set (v, "img.bands", 4.0f);
     set (v, "img.xoverType", 1.0f);
@@ -358,8 +359,8 @@ void imager (std::vector<float>& v, const Analysis& a, const ReferenceTarget* re
 
 void punch (std::vector<float>& v, const Analysis& a, float scale)
 {
-    constexpr float T[kProcBands] { 8.5f, 5.0f, 7.5f, 12.5f };
-    constexpr float G[kProcBands] { 6.0f, 15.0f, 6.0f, 3.0f };
+    constexpr float T[kProcBands] { 7.0f, 3.75f, 8.5f, 11.0f };
+    constexpr float G[kProcBands] { 4.5f, 7.5f, 6.5f, 5.0f };
 
     set (v, "pnch.bands", 4.0f);
     set (v, "pnch.xover1", 120.0f);
@@ -383,7 +384,7 @@ void maximizer (std::vector<float>& v, const Analysis& a, const Profile& p, cons
     set (v, "max.clip.mode", (float) p.clipMode);
     set (v, "max.clip.amount", p.clipAmount);
     set (v, "max.si.trans", p.stereoIndependence);
-    set (v, "max.si.sus", p.stereoIndependence);
+    set (v, "max.si.sus", p.stereoIndependenceSustain);
     set (v, "max.ceiling", s.ceilingDb);
     set (v, "max.truePeak", s.truePeak ? 1.0f : 0.0f);
     set (v, "max.learnTarget", lufs);

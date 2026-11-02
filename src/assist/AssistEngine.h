@@ -74,7 +74,8 @@ struct Profile
     bool clipOn = true;
     int clipMode = 1;
     float clipAmount = 10.0f;
-    float stereoIndependence = 100.0f;
+    float stereoIndependence = 100.0f;           // transient
+    float stereoIndependenceSustain = 100.0f;
     float definitionTilt = 0.0f;
 };
 const Profile& profileFor (ToneTarget) noexcept;

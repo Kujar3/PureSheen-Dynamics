@@ -192,6 +192,23 @@ TEST_CASE ("assist. a chosen profile, a loudness override and the module switche
     }
 }
 
+TEST_CASE ("assist. the measured hip-hop and reggae rows reach the Maximizer, transient and sustain links apart")
+{
+    auto c = contextFor (track (8.0));
+    c.settings.profile = (int) ps::ToneTarget::HipHop;
+    auto s = buildSuggestions (c).front();
+    CHECK_NEAR (s.loudnessLufs, -9.5f, 0.01f);
+    CHECK_EQ ((int) val (s.values, "max.mode"), (int) ps::MaximizerMode::Transparent);
+    CHECK_NEAR (val (s.values, "max.clip.amount"), 15.0f, 0.01f);
+    CHECK_NEAR (val (s.values, "defn.a.tilt"), -1.0f, 0.01f);
+
+    c.settings.profile = (int) ps::ToneTarget::Reggae;
+    s = buildSuggestions (c).front();
+    CHECK_EQ ((int) val (s.values, "max.mode"), (int) ps::MaximizerMode::Spectral);
+    CHECK_NEAR (val (s.values, "max.si.trans"), 42.0f, 0.01f);
+    CHECK_NEAR (val (s.values, "max.si.sus"), 0.0f, 0.01f);
+}
+
 TEST_CASE ("assist. a reference target makes Match reference the default with the reference's loudness")
 {
     auto c = contextFor (track (8.0));

@@ -6,15 +6,18 @@
 // Tone-target profiles and the target detector of the Assistant.
 //
 // Profiles: what a tone target brings besides its curve (loudness target and Maximizer settings, Definition tilt).
-// Five rows were measured on the reference's assistant (country, rock, jazz, pop and dance targets on seven test
-// tracks: the three tracks it gave the rock target got identical Maximizer settings, so these follow the target, not
-// the track). The other targets take the row of their family with our own loudness choice (louder for club / modern
-// pop styles, quieter for acoustic, cinematic and ambient styles).
+// Seven rows were measured on the reference's assistant (country, rock, jazz, pop, dance, hip-hop and reggae targets
+// on seventeen test tracks: every track it gave the same target got identical Maximizer settings and Definition tilt,
+// six of them for rock and five for dance, so these follow the target, not the track). The other targets take the row
+// of their family with our own loudness choice (louder for club / modern pop styles, quieter for acoustic, cinematic
+// and ambient styles). The reference only ever chose among the first eleven targets.
 //
 // Detector: nearest labelled example in a small, scaled feature space (detectorFeatures). The examples are our
-// analysis of seven test tracks, labelled with the target the reference's assistant chose for them. Seven examples
-// cannot generalise far (leave-one-out: 2 of 7), so the table is meant to grow with every new labelled render; the
-// user can always pick the target by hand.
+// analysis of the first 8 s of seventeen test tracks (the reference listens for 8 s), labelled with the target the
+// reference's assistant chose for them. Its choice does not follow the genre closely (lo-fi, ambient and country-pop
+// got the dance target, folk got rock), and none of the feature sets we tried predicts it from the other sixteen
+// examples better than about one in three, so the table reproduces the known cases and is meant to grow with every
+// new labelled render; the user can always pick the target by hand.
 namespace ps::assist
 {
 namespace
@@ -22,12 +25,15 @@ namespace
 using T = ToneTarget;
 using M = MaximizerMode;
 
-// loudness, mode, character, upward, clip on, clip mode, clip amount, stereo independence, Definition tilt
-constexpr Profile kCountry { -9.5f, M::Transparent, 2.8f, 2.2f, true, 1, 5.0f, 100.0f, 0.0f };     // measured
-constexpr Profile kRock { -8.5f, M::Transparent, 2.0f, 1.6f, true, 1, 10.0f, 100.0f, -0.5f };      // measured
-constexpr Profile kJazz { -12.5f, M::Spectral, 4.2f, 2.8f, false, 1, 0.0f, 100.0f, -3.0f };       // measured
-constexpr Profile kPop { -8.5f, M::Spectral, 2.5f, 2.6f, true, 0, 10.0f, 50.0f, 0.0f };          // measured
-constexpr Profile kEdm { -7.5f, M::Spectral, 2.0f, 2.7f, false, 1, 0.0f, 50.0f, 0.0f };          // measured
+// loudness, mode, character, upward, clip on, clip mode, clip amount, stereo independence (transient, sustain),
+// Definition tilt
+constexpr Profile kCountry { -9.5f, M::Transparent, 2.8f, 2.2f, true, 1, 5.0f, 100.0f, 100.0f, 0.0f };    // measured
+constexpr Profile kRock { -8.5f, M::Transparent, 2.0f, 1.6f, true, 1, 10.0f, 100.0f, 100.0f, -0.5f };     // measured
+constexpr Profile kJazz { -12.5f, M::Spectral, 4.2f, 2.8f, false, 1, 0.0f, 100.0f, 100.0f, -3.0f };      // measured
+constexpr Profile kPop { -8.5f, M::Spectral, 2.5f, 2.6f, true, 0, 10.0f, 50.0f, 50.0f, 0.0f };          // measured
+constexpr Profile kEdm { -7.5f, M::Spectral, 2.0f, 2.7f, false, 1, 0.0f, 50.0f, 50.0f, 0.0f };          // measured
+constexpr Profile kHipHop { -9.5f, M::Transparent, 2.0f, 2.3f, true, 0, 15.0f, 50.0f, 50.0f, -1.0f };   // measured
+constexpr Profile kReggae { -9.5f, M::Spectral, 3.3f, 2.5f, true, 1, 7.0f, 42.0f, 0.0f, -1.0f };        // measured
 
 constexpr Profile with (Profile p, float lufs) noexcept
 {
@@ -48,15 +54,15 @@ const Row kRows[(int) T::Count] {
     { "Country", kCountry },
     { "EDM", kEdm },
     { "Folk", with (kCountry, -10.5f) },
-    { "Hip-Hop", with (kEdm, -8.5f) },
+    { "Hip-Hop", kHipHop },
     { "Jazz", kJazz },
     { "Pop", kPop },
-    { "Reggae", with (kPop, -9.5f) },
+    { "Reggae", kReggae },
     { "R&B / Soul", with (kPop, -9.5f) },
     { "Rock", kRock },
     { "Alt Rock", kRock },
     { "Ambient", with (kJazz, -13.0f) },
-    { "Classic Hip-Hop", with (kEdm, -9.5f) },
+    { "Classic Hip-Hop", with (kHipHop, -10.0f) },
     { "Classic Rock", with (kRock, -9.5f) },
     { "Dance Pop", with (kPop, -8.0f) },
     { "Drum & Bass", kEdm },
@@ -74,9 +80,9 @@ const Row kRows[(int) T::Count] {
     { "Pop Country", with (kCountry, -9.0f) },
     { "Post-Rock", with (kRock, -10.0f) },
     { "Punk Rock", with (kRock, -8.0f) },
-    { "Reggaeton", with (kEdm, -8.0f) },
+    { "Reggaeton", with (kReggae, -8.5f) },
     { "Techno", kEdm },
-    { "Trap", with (kEdm, -8.0f) },
+    { "Trap", with (kHipHop, -8.5f) },
     { "Vocal Jazz", with (kJazz, -12.0f) },
     { "Flat", with (kCountry, -11.0f) },
 };
@@ -90,15 +96,25 @@ struct Example
     ToneTarget target;
 };
 
-// Our analysis of the test tracks (full 50 s slices), labelled with the reference assistant's choice.
+// Our analysis of the first 8 s of the test tracks, labelled with the reference assistant's choice.
 const Example kExamples[] {
-    { { -8.614f, -21.853f, -28.069f, -12.073f, 0.959f, 0.426f, 23.176f, 13.477f }, T::Country },   // acoustic
-    { { -3.544f, -7.255f, -16.660f, -9.391f, 0.956f, 0.405f, 4.395f, 10.093f }, T::Rock },         // pop-rock
-    { { 1.290f, -10.218f, -17.568f, -11.605f, 0.982f, 0.965f, 16.386f, 11.805f }, T::Rock },       // trap
-    { { -3.968f, -9.156f, -25.510f, -2.444f, 0.332f, 0.280f, 5.319f, 10.931f }, T::Jazz },         // orchestral
-    { { -2.511f, -26.013f, -28.621f, -12.345f, 0.999f, 0.677f, 17.683f, 12.010f }, T::Pop },       // jazz trio
-    { { 1.052f, -15.801f, -19.535f, -20.662f, 0.998f, 1.137f, 14.168f, 9.936f }, T::Edm },         // tech house
-    { { -4.009f, -4.062f, -15.516f, -5.084f, 0.701f, 0.377f, 3.480f, 10.278f }, T::Rock },         // metal
+    { { -11.258f, -20.520f, -24.288f, -13.221f, 0.959f, 0.470f, 21.528f, 13.232f }, T::Country },       // acoustic
+    { { -4.775f, -8.633f, -17.675f, -7.443f, 0.906f, 0.480f, 5.842f, 8.913f }, T::Rock },               // pop-rock
+    { { 0.928f, -10.682f, -19.102f, -11.052f, 0.978f, 0.838f, 16.108f, 11.103f }, T::Rock },            // trap
+    { { -7.397f, -11.535f, -35.291f, -3.120f, 0.408f, 0.278f, 3.832f, 10.677f }, T::Jazz },             // orchestral
+    { { -1.037f, -25.946f, -30.093f, -11.227f, 0.999f, 0.708f, 16.949f, 12.546f }, T::Pop },            // jazz trio
+    { { 4.457f, -14.188f, -17.816f, -29.349f, 1.000f, 1.600f, 17.670f, 8.551f }, T::Edm },              // tech house
+    { { -4.952f, -3.563f, -15.191f, -4.990f, 0.611f, 0.372f, 2.796f, 10.095f }, T::Rock },              // metal
+    { { -1.130f, -8.192f, -14.250f, -21.179f, 0.990f, 0.794f, 7.451f, 10.833f }, T::HipHop },           // boom bap
+    { { 0.718f, -13.966f, -19.441f, -12.663f, 0.992f, 0.521f, 14.838f, 9.860f }, T::Rock },             // R&B / soul
+    { { 0.614f, -22.474f, -48.135f, -19.982f, 1.000f, 0.537f, 30.583f, 13.319f }, T::Edm },             // lo-fi
+    { { 1.905f, -9.651f, -13.605f, -16.084f, 1.000f, 1.097f, 6.781f, 8.696f }, T::Edm },                // techno
+    { { -10.094f, -21.279f, -26.842f, -12.938f, 0.947f, 0.455f, 22.376f, 11.042f }, T::Rock },          // folk
+    { { 0.628f, -36.131f, -50.300f, -4.391f, 0.905f, 0.247f, 5.079f, 9.292f }, T::Edm },                // ambient
+    { { -4.062f, -4.088f, -16.173f, -7.689f, 0.997f, 0.361f, 2.451f, 8.658f }, T::Rock },               // drum & bass
+    { { 0.788f, -9.368f, -15.389f, -12.234f, 0.988f, 0.838f, 10.018f, 10.192f }, T::Reggae },           // reggaeton
+    { { -6.805f, -7.894f, -18.815f, -9.585f, 0.984f, 0.553f, 5.817f, 11.624f }, T::Edm },               // country-pop
+    { { -11.563f, -20.241f, -53.544f, -3.563f, 0.719f, 0.238f, 7.564f, 9.742f }, T::Jazz },             // solo piano
 };
 } // namespace
 

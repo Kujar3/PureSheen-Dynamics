@@ -467,7 +467,8 @@ kChainSelection returns to the module selected before); the chain strip and the 
   Tone (Tone Match, Tilt, the target band with the track's own balance), Loudness, the macros, Relearn, Bypass (held:
   global bypass with classic gain match), Open chain.
 
-**Default card** (fitted black-box to the reference assistant's choices on seven test tracks; method and numbers at
+**Default card** (fitted black-box to the reference assistant's choices on seventeen test tracks, features from the
+first 8 s it listens to; method and numbers at
 the top of AssistEngine.cpp / AssistProfiles.cpp): chain EQ 1 > Punch > Imager > Definition > Tone Balance > Dynamic
 EQ > Maximizer; the tone target from an example-based detector; an EQ leaning toward the target (+-1.8 dB, shelves +
 up to four broad bells); Punch / Imager band settings from the per-band crest / width (both split at 120 / 2k / 10k);
@@ -501,10 +502,15 @@ its fingerprint are unchanged).
 macros, offline loudness); selftest "-- Assistant" (allocation-free capture, the default card as one step, macro drags
 as one step, undo restoring macro positions, loudness matching on / off, the Compress insert, the state round trip, an
 old state); snapshots `15_assistant_*` (start, custom, listening, results at 980x600 / 1180x720 / 1800x1100, a macro,
-back to the chain), including a real listen of the snapshot song. The measurement against the reference on the seven
-test tracks is kept in private notes (the same chain on all seven, loudness within 0.7 LU, band balance 0.86 dB rms).
+back to the chain), including a real listen of the snapshot song. The measurement against the reference on the
+seventeen test tracks is kept in private notes: the same chain and target on all seventeen; our cards reach the target
+within 0.1 LU on what they heard, the reference's own renders land within 1.2 LU of its target, so whole-track loudness
+differs by up to 1.3 LU; band balance 1.46 dB rms, of which our modules give 1.11 dB with the reference's own settings
+(mostly the top octaves on dark and ambient material).
 
-Known limits: the target detector has seven labelled examples (more renders improve it); the Punch band amounts are
+Known limits: the reference's target choice does not follow the genre closely and none of our feature sets predicts
+it from the other examples better than about one in three (the detector reproduces the seventeen known cases; more
+renders improve it; the target list overrides it); the Punch band amounts are
 the weakest rule; Dynamic EQ frequencies come from resonance peaks, not the reference's fixed grid; Tilt shares EQ 1's
 Amount (Tone Match scales it too); every card's loudness tables take a few seconds each on a worker thread (the cards
 and macros work meanwhile, unmatched until their tables arrive).
