@@ -24,8 +24,8 @@
 // Character 0..10: attack/release scaling (0 = clip-like fastest .. 10 = very slow), in every mode.
 // Stereo Independence: amount of unlinked gain (0 = fully linked) separately for transient and sustained gain
 //   reduction.
-// Upward Compress: parallel-style upward compression of quiet passages, max gain upwardCompressDb, level-matched so
-//   0 dBFS peaks stay put.
+// Upward Compress: lifts passages by their PEAK level (after Gain): upwardCompressDb in full below ~-17 dBFS peak,
+//   fading to nothing at 0 dBFS (so 0 dBFS peaks stay put and limited material gets little lift).
 // Delta (handlesDelta): ProcessContext::deltaOut receives what the limiting stages removed / added (excluding Gain
 //   and Output Level), aligned with the output; the normal output is unchanged.
 // Learn Input Gain: startLearn() listens for 5 s of input (playing audio only), then publishes the gain that brings

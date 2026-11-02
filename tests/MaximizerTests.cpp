@@ -1604,7 +1604,8 @@ TEST_CASE ("max. upward compress lifts quiet passages and leaves loud ones; mete
     const double loudGain = dbOfLin (pstest::peakOf (s.l, lat + 72000 + 48000, 9600)) - dbOfLin (0.8);
     std::cout << "    upward 8 dB: quiet tone " << fmt (quietGain) << " dB, loud tone " << fmt (loudGain) << " dB\n";
     CHECK (std::abs (quietGain - 8.0) < 0.5);
-    CHECK (std::abs (loudGain) < 0.1);
+    // the lift follows the peak level: 8 x (-0.5 - (-1.94)) / 16 = 0.72 dB for a -1.94 dBFS peak (the reference's law)
+    CHECK (std::abs (loudGain - 0.72) < 0.15);
 
     Rig r2 (sr);
     r2.set ("max.upward", 8.0f);

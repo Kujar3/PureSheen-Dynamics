@@ -46,9 +46,14 @@
 // - Character 0..10 maps to attack / release of every stage (0 = clip-like, 10 = very slow); styles are presets of
 //   the same controls. Stereo Independence: Transient = the fast release stage and the Guard, Sustain = the slow stage
 //   and the spectral / low multiband bands.
-// - Upward Compress (our choice where the research is silent): linked RMS detector (10 ms attack / 150 ms release),
-//   lift = amount * clamp ((-12 dB - level) / 20 dB, 0, 1), faded out below -60 dB so noise floors are not raised;
-//   0 dBFS material gets no lift. Lift rises over 200 ms, falls over 20 ms.
+// - Upward Compress: a PEAK detector (linked: the louder channel's |x|; instant attack, 200 ms release),
+//   lift = amount * clamp ((-0.5 dBFS - peak level) / 16 dB, 0, 1), faded out below -60 dB so noise floors are not
+//   raised. Lift rises over 50 ms, falls over 20 ms. Measured (round 20, Up-Test.wav: steady noise, noise bursts and
+//   decaying tones at four levels, amount 3 / 6, gain +10 / +20): the lift follows the peak level, not the RMS (bursts
+//   with the RMS of steady noise get ~0.1 of its lift; with its peak, the same lift), full amount below ~-17 dBFS
+//   peak, none at 0 dBFS, linear in the amount. So dense, limited masters (peaks at the ceiling after their gain) get
+//   little lift and a quiet piano a lot. Fitted on six Assistant slices (Maximizer alone): match 156.5 -> 187.1 dB
+//   summed, none worse.
 // - Transient Emphasis: up to +8 dB on onsets (0.3 ms / 15 ms envelope against a 20 ms / 200 ms one), applied before
 //   the limiter, so the limiter's gain envelope and the soft clip shape the hits.
 // - Soft Clip: relative to the output level (onset -3 / -9 / -30 dB), residue form on 4x oversampled audio (linear
@@ -206,7 +211,7 @@ struct Maximizer::Impl
     RampD gain, ceiling;
     double upAmountDb = 0.0, upTargetDb = 0.0, upStep = 0.0;
     std::array<double, 2> upEnv {}, upLiftDb {};
-    double kUpAtt = 0.0, kUpRel = 0.0, kLiftUp = 0.0, kLiftDown = 0.0;
+    double kUpRel = 0.0, kLiftUp = 0.0, kLiftDown = 0.0;
     double emAmount = 0.0, emTarget = 0.0, emStep = 0.0;
     std::array<double, 2> emFast {}, emSlow {}, emBoostDb {};
     double kEmFastAtt = 0.0, kEmFastRel = 0.0, kEmSlowAtt = 0.0, kEmSlowRel = 0.0, kEmGainAtt = 0.0, kEmGainRel = 0.0;
@@ -312,9 +317,8 @@ struct Maximizer::Impl
         fadeLength = std::max (1, (int) std::lround (msToSamples (kFadeMs, sr)));
         upStep = 12.0 / std::max (1.0, msToSamples (50.0, sr));      // amount ramps: full range in 50 ms
         emStep = 1.0 / std::max (1.0, msToSamples (50.0, sr));
-        kUpAtt = chargeCoeff (msToSamples (10.0, sr));
-        kUpRel = chargeCoeff (msToSamples (150.0, sr));
-        kLiftUp = chargeCoeff (msToSamples (200.0, sr));
+        kUpRel = chargeCoeff (msToSamples (200.0, sr));
+        kLiftUp = chargeCoeff (msToSamples (50.0, sr));
         kLiftDown = chargeCoeff (msToSamples (20.0, sr));
         kEmFastAtt = chargeCoeff (msToSamples (0.3, sr));
         kEmFastRel = chargeCoeff (msToSamples (15.0, sr));
@@ -704,10 +708,10 @@ struct Maximizer::Impl
                 for (size_t c = 0; c < 2; ++c)
                 {
                     const double x = c == 0 ? x0 : x1;
-                    const double pw = domainUnlinked ? x * x : 0.5 * (x0 * x0 + x1 * x1);
-                    upEnv[c] += (pw - upEnv[c]) * (pw > upEnv[c] ? kUpAtt : kUpRel);
+                    const double pw = domainUnlinked ? x * x : std::max (x0 * x0, x1 * x1);   // peak (squared)
+                    upEnv[c] = pw > upEnv[c] ? pw : upEnv[c] + (pw - upEnv[c]) * kUpRel;
                     const double level = upEnv[c] > 1.0e-20 ? 10.0 * std::log10 (upEnv[c]) : -200.0;
-                    double lift = upAmountDb * std::clamp ((-12.0 - level) / 20.0, 0.0, 1.0);
+                    double lift = upAmountDb * std::clamp ((-0.5 - level) / 16.0, 0.0, 1.0);
                     lift *= std::clamp ((level + 80.0) / 20.0, 0.0, 1.0);
                     upLiftDb[c] += (lift - upLiftDb[c]) * (lift > upLiftDb[c] ? kLiftUp : kLiftDown);
                     if (upLiftDb[c] < 1.0e-9 && upAmountDb <= 0.0)
