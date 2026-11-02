@@ -124,10 +124,9 @@ constexpr double kXoverOct = 0.9;
 // Fitted (round 9) to the reference's gain traces on bass bursts (10 .. 300 ms, 50 .. 400 Hz) at Punchy / Smooth +100
 // / +50 / -50 and on real kicks, an 808 and a kick + bass loop at +-100 together: Punchy is a tight clamp times a large
 // k, so a note's first ~20-40 ms get a flat lift that builds from the onset (short lookahead: the reference does not
-// lift a kick's click), followed by a dip (m) at ~60-90 ms. Smooth's negative side (off) is set by the test-track
-// renders (a sustain part at -49.6 in T/S): there the music needs the region lower, while in Stereo the reference's
-// negative contrast lifts by ~1-2 dB (fit: off +2.5). The gap is our transient / sustain split (the reference counts
-// much more as transient), not this module.
+// lift a kick's click), followed by a dip (m) at ~60-90 ms. Smooth's negative side (off): the Stereo bursts fit +2.5
+// (negative contrast lifts ~1-2 dB); with the measured transient / sustain split the test-track renders (a sustain part
+// at -49.6 in T/S) want a little more, +3.75 is the joint choice (both better than the old -1.5).
 struct ModeSpec
 {
     double rms, fa, fr, sa, sr, k, lo, hi, tg, tm, m, d, neg, off, epsDb;
@@ -135,7 +134,7 @@ struct ModeSpec
 constexpr ModeSpec kModes[2] {
     //  rms  fa  fr  sa  sr  k  lo  hi  tg  tm  m  D  neg  off  epsDb
     { 1.0, 0.804, 0.349, 8.39, 18.3, 3.65, -1.68, 0.509, 0.999, 45.9, 0.713, 4.62, 0.554, 1.87, -78.5 },  // Punchy
-    { 5.41, 2.83, 15.6, 2.77, 19.4, -0.987, -17.3, 11.0, 2.33, 3.98, 0.453, 0.0, 0.719, -1.5, -111.0 },  // Smooth
+    { 5.41, 2.83, 15.6, 2.77, 19.4, -0.987, -17.3, 11.0, 2.33, 3.98, 0.453, 0.0, 0.719, 3.75, -111.0 },  // Smooth
 };
 
 struct ModeCoeffs

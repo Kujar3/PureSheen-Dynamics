@@ -161,11 +161,12 @@ The table is append-only: never rename, reorder or remove an entry once released
 
 Per module, like M/S: the slot splits its own input. `ps::TransientSplitter` (TransientSplit.h) gives a transient
 part T and a sustain part S, both stereo, with T + S == input delayed by L (S is computed as x_L - T: exact up to one
-float rounding, < -135 dBFS; bit-exact where the mask is 0). The mask is per band (complementary 4-band split at 120 /
-800 / 5000 Hz, no all-pass phase), stereo-linked (the image of T is kept), from the ratio of a fast and a slow
-envelope with a baseline tracker. Controls: `<prefix>.ts.sens` (0..100 %, default 50) and `<prefix>.ts.len`
-(5..100 ms, default 20), our own addition (the T/S popover behind the gear in the channel tabs). L = 64 samples per
-48 kHz family (1.33..1.45 ms).
+float rounding, < -135 dBFS; bit-exact where the mask is 0). One broadband gain mask per channel (the channels are
+split independently), measured on the reference: per-band detection (complementary 4-band split at 120 / 800 / 5000
+Hz) of fast vs slow band power, a per-band transient state that an onset sets and that decays over ~120 ms, combined
+as a power mean weighted by the bands' current power. Controls: `<prefix>.ts.sens` (0..100 %, default 50) and
+`<prefix>.ts.len` (5..100 ms, default 20), our own addition (the T/S popover behind the gear in the channel tabs);
+the defaults are the measured split. L = 0.206 ms (9 samples at 44.1 kHz, 10 at 48 kHz).
 
 Every type that offers T/S has a second instance (the "twin", `Chain::getModule (type, 1)`, `Module::getParamSet()
 == 1`): instance A processes T as Stereo with set A, the twin processes S as Stereo with set B; both get the same

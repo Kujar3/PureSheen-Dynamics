@@ -9,20 +9,23 @@
 // getLatencySamples() (S is computed as x_L - T, so the sum is exact up to one float rounding: < -135 dBFS for a
 // full-scale input, bit-exact wherever the mask is 0).
 //
-//   x --> detection bank (complementary 4-band split: low1 = LP 120 Hz (x), r1 = x - low1, low2 = LP 800 Hz (r1), ...,
-//         2nd-order Butterworth TPT state-variable low-passes, double; sum of the bands == x exactly, no all-pass phase)
-//         per band: linked power p = (l^2 + r^2) / 2, fast envelope F and slow envelope W (power one-poles)
-//         every 8 samples: d = 10 log10 (F / W) - baseline (a slow tracker that removes the steady F/W offset of
-//         noise-like material), silence-gated; mask target = smoothstep ((d - t0) / (t1 - t0))
-//         per sample: target interpolated, then a one-pole (rise 0.3 ms, fall 8 ms x band scale), snapped to 0 / 1
-//   x --> delay L --> audio bank (the same split) --> T = sum_b g_b * band_b (same g on L and R: the image is kept)
-//                                                     S = x_L - T
-// Band scales s = { 2.0, 1.25, 0.75, 0.5 } (low .. high); fast attack { 1.0, 0.5, 0.25, 0.15 } ms; slow attack = 3 x
-// length x s (tuned so a hit stays in T for about the length); release (both envelopes) = 2.5 x length x s.
-// Sensitivity s01 = sens / 100: t0 = 9 - 7.5 s01 dB,
-// t1 = t0 + 9 - 6 s01 dB (default 50 %: 5.25 / 11.25 dB). Sensitivity / length changes glide over ~50 ms (no reset).
-// Latency L = 64 samples x round (fs / 48 kHz) (minimum 64): 64 at 44.1 / 48 kHz, 128 at 88.2 / 96, 256 at 176.4 / 192;
-// constant per sample rate (the mask's 0.3 ms rise completes inside L, so an onset lands in T from its first sample).
+// One broadband gain mask per channel (the channels are independent): T = m (t) x_L, S = (1 - m (t)) x_L.
+//   x --> detection bank (complementary 4-band split at 120 / 800 / 5000 Hz: low1 = LP (x), r1 = x - low1,
+//         low2 = LP (r1), ...; 2nd-order Butterworth TPT state-variable low-passes, double) --> per band b:
+//         p = y_b^2, fast envelope F_b and slow envelope W_b (power one-poles, attack / release),
+//         r_b = 10 log10 ((F_b + e) / (W_b + e)) / span, h_b = max (r_b, h_b x release) (an onset sets the band's
+//         transient state, which then decays exponentially), c_b = clamp (h_b + f min (r_b, 0), 0, 1) (a falling
+//         level pulls it down sooner)
+//   mask m = (sum_b w_b c_b^k / sum_b w_b)^(1 / k), w_b = (F_b + e)^a   (a power mean weighted by the bands' current
+//         power: a hit in a loud band moves the whole signal, a hit in a quiet band only part of it)
+//   x --> delay L --> T = m x_L, S = x_L - T  (the mask reads L samples ahead)
+// The constants (.cpp) are fitted to the reference's measured masks (tone bursts, level steps, noise, drums, vocal,
+// guitar and four songs): a steady tone gets 0 (a low one a little: the detector ripples on bass), steady noise
+// ~0.2, an onset ~1 for ~50 ms, back to the steady value ~250 ms later; music ~0.3..0.5 on average.
+// Sensitivity (default 50 %) scales the dB span of the mapping (span x 2^((50 - sens) / 50): 100 % halves it);
+// length (default 20 ms) scales the release of the transient state (x length / 20). Both glide over ~50 ms.
+// Latency L = 0.206 ms rounded (9 / 10 samples at 44.1 / 48 kHz, 18 / 20 at 88.2 / 96, 36 / 40 at 176.4 / 192): constant per
+// sample rate. The band states and the mask run once per 8 samples (x rate family) and the mask is interpolated.
 // Realtime: prepare() allocates; reset / setParams / process do not. Deterministic, double-precision states, no
 // denormals (states are flushed).
 namespace ps
@@ -30,7 +33,7 @@ namespace ps
 class TransientSplitter
 {
 public:
-    // lookahead == false: L = 0 (test variant: the first ~0.5 ms of an attack stays in S).
+    // lookahead == false: L = 0 (test variant: the mask reacts L samples later).
     explicit TransientSplitter (bool lookahead = true) noexcept;
 
     void prepare (double sampleRate, int maxBlockSize);
@@ -47,12 +50,12 @@ public:
     static int latencyFor (double sampleRate) noexcept;
 
     // Meters (audio thread values of the last process call; the chain publishes them).
-    float getMaskActivity() const noexcept { return activity; }        // max over bands and samples of g (0..1)
+    float getMaskActivity() const noexcept { return activity; }        // max over channels and samples of m (0..1)
     double getLastTransientEnergy() const noexcept { return energyT; } // sum of T^2 over both channels
     double getLastInputEnergy() const noexcept { return energyX; }     // sum of x_L^2 over both channels
 
     static constexpr int kNumBands = 4;
-    float getBandMask (int band) const noexcept;                       // tests: current g of a band
+    float getMask (int channel) const noexcept;                        // tests: current m of a channel
 
 private:
     struct Svf
@@ -67,9 +70,7 @@ private:
 
     struct Band
     {
-        double fast = 0.0, slow = 0.0, baseline = 0.0;
-        double gain = 0.0, target = 0.0, targetStep = 0.0, interp = 0.0;
-        double fastAtt = 0.0, slowAtt = 0.0, release = 0.0, fall = 0.0;
+        double fast[2] {}, slow[2] {}, held[2] {};
     };
 
     void updateCoefficients (bool force) noexcept;
@@ -77,14 +78,15 @@ private:
 
     bool useLookahead = true;
     double sr = 48000.0;
-    int latency = 64;
+    int latency = 20, tick = 8, tickPos = 0;
     bool prepared = false, fresh = true;
 
-    Svf detect[3], audio[3];
+    Svf detect[kNumBands - 1];
     Band bands[kNumBands];
-    double rise = 0.0, baselineUp = 0.0, baselineDown = 0.0, paramGlide = 0.0;
-    double sensTarget = 50.0, lenTarget = 20.0, sens = 50.0, len = 20.0, lenUsed = -1.0, t0 = 5.25, t1 = 11.25;
-    int tickPos = 0;
+    double fastAtt = 0.0, fastRel = 0.0, slowAtt = 0.0, slowRel = 0.0, paramGlide = 0.0;
+    double sensTarget = 50.0, lenTarget = 20.0, sens = 50.0, len = 20.0, sensUsed = -1.0, lenUsed = -1.0;
+    double invSpan = 0.0, holdDecay = 0.0;
+    double mask[2] {}, target[2] {}, maskStep[2] {};
 
     std::vector<float> ring[2];
     int ringMask = 0, ringPos = 0;

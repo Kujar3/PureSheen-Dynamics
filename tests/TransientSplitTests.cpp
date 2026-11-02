@@ -89,16 +89,17 @@ double onsetShareDb (const Parts& p, const std::vector<float>& x, double sr, int
 }
 } // namespace
 
-TEST_CASE ("ts. latency is 64 samples per 48 kHz family and an impulse lands there")
+TEST_CASE ("ts. latency is a short lookahead (under 1 ms) and an impulse lands there")
 {
     const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
-    const int expected[] { 64, 64, 128, 128, 256, 256 };
     for (int k = 0; k < 6; ++k)
     {
         TransientSplitter s;
         s.prepare (rates[k], 512);
         s.setParams (50.0f, 20.0f);
-        CHECK_EQ (s.getLatencySamples(), expected[k]);
+        const int expected = TransientSplitter::latencyFor (rates[k]);
+        CHECK_EQ (s.getLatencySamples(), expected);
+        CHECK (expected > 0 && expected < (int) (0.001 * rates[k]));
         std::vector<float> l (4096, 0.0f), r (4096, 0.0f);
         l[100] = 0.5f;
         r[100] = -0.25f;
@@ -110,7 +111,7 @@ TEST_CASE ("ts. latency is 64 samples per 48 kHz family and an impulse lands the
             const double v = std::abs ((double) p.tl[i] + p.sl[i]);
             if (v > best) { best = v; peak = (int) i; }
         }
-        CHECK_EQ (peak, 100 + expected[k]);
+        CHECK_EQ (peak, 100 + expected);
         CHECK (std::abs (p.tl[(size_t) peak] + p.sl[(size_t) peak] - 0.5f) < 1.0e-7f);
         CHECK (std::abs (p.tr[(size_t) peak] + p.sr[(size_t) peak] + 0.25f) < 1.0e-7f);
     }
@@ -147,7 +148,7 @@ TEST_CASE ("ts. parts sum to the delayed input (any rate, block size and automat
     CHECK (pstest::dbOf (worst) < -130.0);
 }
 
-TEST_CASE ("ts. stationary material stays in the sustain part")
+TEST_CASE ("ts. a steady tone stays in the sustain part, steady noise keeps a small transient share")
 {
     const double sr = 48000.0;
     {
@@ -175,7 +176,8 @@ TEST_CASE ("ts. stationary material stays in the sustain part")
         const double share = ratioDb (energy (p.tl, 48000, l.size()) + energy (p.tr, 48000, l.size()),
                                       energy (l, 48000, l.size()) + energy (r, 48000, l.size()));
         note ("pink noise: transient share after 1 s (dB)", share);
-        CHECK (share < -20.0);
+        CHECK (share > -24.0);   // measured reference: a mask of ~0.15 on steady pink noise (-16 dB of energy)
+        CHECK (share < -10.0);
     }
 }
 
@@ -192,12 +194,12 @@ TEST_CASE ("ts. hits go to the transient part, their tails to the sustain part")
         const int L = s.getLatencySamples();
         const double onset = onsetShareDb (p, x, sr, L, 0.0, 0.010);
         const double tail = onsetShareDb (p, x, sr, L, 0.150, 0.450);
-        note (lookahead ? "lookahead 64: onset (0..10 ms) transient share (dB)" : "no lookahead: onset share (dB)", onset);
-        note (lookahead ? "lookahead 64: tail (150..450 ms) transient share (dB)" : "no lookahead: tail share (dB)", tail);
+        note (lookahead ? "lookahead: onset (0..10 ms) transient share (dB)" : "no lookahead: onset share (dB)", onset);
+        note (lookahead ? "lookahead: tail (150..450 ms) transient share (dB)" : "no lookahead: tail share (dB)", tail);
         if (lookahead)
         {
             CHECK (onset >= -1.5);
-            CHECK (tail <= -15.0);
+            CHECK (tail <= -10.0);   // measured reference: a hit's mask is ~0.2 at 150 ms and ~0 by 300 ms
         }
     }
 }
@@ -227,36 +229,37 @@ TEST_CASE ("ts. sensitivity and length are monotonic")
         s.prepare (sr, 512);
         s.setParams (50.0f, len);
         const auto p = split (s, x, x);
-        const double window = onsetShareDb (p, x, sr, s.getLatencySamples(), 0.020, 0.060);
-        note ("length " + std::to_string ((int) len) + " ms: transient share 20..60 ms after onsets (dB)", window);
+        const double window = onsetShareDb (p, x, sr, s.getLatencySamples(), 0.100, 0.200);
+        note ("length " + std::to_string ((int) len) + " ms: transient share 100..200 ms after onsets (dB)", window);
         CHECK (window >= prev + 3.0);
         prev = window;
     }
 }
 
-TEST_CASE ("ts. the mask is stereo linked: the image of the transient part is kept")
+TEST_CASE ("ts. the channels are split independently; equal channels split equally")
 {
     const double sr = 48000.0;
     const auto l = hits (sr, 3.0, -24.0);
-    std::vector<float> r (l.size());
-    for (size_t i = 0; i < l.size(); ++i)
-        r[i] = 0.5f * l[i];
+    const auto r = pstest::sine (1000.0, -12.0, 3.0, sr);
     TransientSplitter s;
     s.prepare (sr, 512);
-    s.setParams (60.0f, 20.0f);
+    s.setParams (50.0f, 20.0f);
     const auto p = split (s, l, r);
-    double worst = 0.0, peak = 0.0;
+    const double shareR = ratioDb (energy (p.tr, 48000, r.size()), energy (r, 48000, r.size()));
+    note ("hits on the left, steady sine on the right: right transient share (dB)", shareR);
+    CHECK (shareR < -40.0);
+
+    TransientSplitter s2;
+    s2.prepare (sr, 512);
+    s2.setParams (50.0f, 20.0f);
+    const auto q = split (s2, l, l);
+    bool same = true;
     for (size_t i = 0; i < l.size(); ++i)
-    {
-        worst = std::max (worst, std::abs ((double) p.tr[i] - 0.5 * (double) p.tl[i]));
-        peak = std::max (peak, std::abs ((double) p.tl[i]));
-    }
-    note ("max |T_R - 0.5 T_L| relative to the T peak", worst / std::max (peak, 1.0e-12));
-    CHECK (peak > 0.05);
-    CHECK (worst <= 1.0e-6 * peak + 1.0e-9);
+        same = same && q.tl[i] == q.tr[i] && q.sl[i] == q.sr[i];
+    CHECK (same);
 }
 
-TEST_CASE ("ts. a low hit does not pull a steady treble tone into the transient part")
+TEST_CASE ("ts. one broadband mask: a loud low hit takes a steady treble tone with it")
 {
     const double sr = 48000.0;
     const size_t n = (size_t) (4.0 * sr);
@@ -272,18 +275,20 @@ TEST_CASE ("ts. a low hit does not pull a steady treble tone into the transient 
     s.prepare (sr, 512);
     s.setParams (50.0f, 20.0f);
     const auto p = split (s, x, x);
-    // 4 kHz content of T and S over the hit windows (after the first second)
-    double t4 = 0.0, s4 = 0.0;
+    // 4 kHz content of T and S over the first 40 ms of the hits and between them (after the first second)
+    double t4 = 0.0, s4 = 0.0, t4late = 0.0, s4late = 0.0;
     for (size_t onset = 2 * period; onset + period <= n; onset += period)
     {
         const size_t from = onset + (size_t) s.getLatencySamples();
-        const size_t len = (size_t) (0.1 * sr);
-        t4 += std::norm (pstest::toneOf (p.tl, from, len, 4000.0, sr));
-        s4 += std::norm (pstest::toneOf (p.sl, from, len, 4000.0, sr));
+        t4 += std::norm (pstest::toneOf (p.tl, from + 240, (size_t) (0.04 * sr), 4000.0, sr));
+        s4 += std::norm (pstest::toneOf (p.sl, from + 240, (size_t) (0.04 * sr), 4000.0, sr));
+        t4late += std::norm (pstest::toneOf (p.tl, from + (size_t) (0.35 * sr), (size_t) (0.1 * sr), 4000.0, sr));
+        s4late += std::norm (pstest::toneOf (p.sl, from + (size_t) (0.35 * sr), (size_t) (0.1 * sr), 4000.0, sr));
     }
-    const double rel = ratioDb (t4, s4);
-    note ("4 kHz in T vs S during the hits (dB)", rel);
-    CHECK (rel < -20.0);
+    note ("4 kHz in T vs S during the hits (dB)", ratioDb (t4, s4));
+    note ("4 kHz in T vs S 350..450 ms after the hits (dB)", ratioDb (t4late, s4late));
+    CHECK (ratioDb (t4, s4) > 0.0);   // measured reference: the tone follows the hit almost fully (ours about half way)
+    CHECK (ratioDb (t4late, s4late) < -20.0);
 }
 
 TEST_CASE ("ts. silence after a hit: exact zeros, no denormal slowdown")

@@ -6,6 +6,7 @@
 #include "core/Loudness.h"
 #include "dsp/Chain.h"
 #include "dsp/Definition.h"
+#include "dsp/TransientSplit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1191,7 +1192,7 @@ TEST_CASE ("defn. in the chain: T/S twin, M/S and Stereo slots")
             const std::string what = mode == 0.0f ? "Stereo" : (mode == 1.0f ? "M/S" : "T/S");
             note (what + ", Amount " + std::to_string ((int) amount) + ": slot latency", lat);
             note ("  max |out - in delayed|", d);
-            CHECK_EQ (lat, mode == 2.0f ? 1024 + 64 : 1024);
+            CHECK_EQ (lat, mode == 2.0f ? 1024 + TransientSplitter::latencyFor (kSr) : 1024);
             if (amount == 0.0f)
                 CHECK (d < (mode == 2.0f ? 1.0e-6 : 1.0e-7));
             else
