@@ -623,7 +623,8 @@ TEST_CASE ("tbal. shape pulls a +6 dB 2 kHz bump toward the target within the do
         note ("  final correction 2 kHz rel. 500 Hz (dB)", fin);
         note ("  time to 63 % (s)", t63);
         CHECK (inBump > 5.0);
-        CHECK (outBump <= (smooth > 0.0f ? 3.0 : 2.0));   // Shape corrects 80 % (the reference's law)
+        // Shape corrects 0.8 x 0.875 = 70 % of a measured deviation (the reference's law: 2.4 / 3.3 here)
+        CHECK (outBump <= (smooth > 0.0f ? 3.5 : 2.6));
         CHECK (t63 >= 0.5 * 0.49 && t63 <= 1.5 * 0.49);
     }
 }
@@ -1004,7 +1005,7 @@ TEST_CASE ("tbal. smoothing sets the width of the correction")
         note ("  width at half depth (octaves)", width);
         if (smooth == 0.0f)
         {
-            CHECK (depth >= 4.0);   // 80 % of the deviation (the reference's law)
+            CHECK (depth >= 3.4);   // 70 % of a measured deviation (the reference's law)
             CHECK (width <= 0.5);
             CHECK (std::abs (std::log2 (hzOf (peak) / 1000.0)) < 0.1);
         }
@@ -1452,7 +1453,7 @@ TEST_CASE ("tbal. mode and target changes glide the curve")
     note ("  after the change to Trap (dB)", g60[(size_t) (7.5 * kSr) / kHop]);
     note ("  after the change to Boost mode (dB)", g60.back());
     note ("largest change of the 60 Hz gain per hop (dB)", maxStep);
-    CHECK (g60[from] < -2.0);
+    CHECK (g60[from] < -1.7);   // an 8 dB, 120 Hz shelf: 70 % of the measured deviation, smoothed
     CHECK (g60[(size_t) (7.5 * kSr) / kHop] > g60[from] + 2.0);   // Trap wants much more bass
     CHECK (g60.back() >= 0.0);
     CHECK (maxStep < 1.2);

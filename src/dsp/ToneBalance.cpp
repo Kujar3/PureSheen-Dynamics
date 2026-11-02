@@ -67,6 +67,11 @@ constexpr double kDbToLn = 0.11512925464970228;     // ln (10) / 20
 constexpr double kPowDbToLn = 0.23025850929940457;  // ln (10) / 10
 constexpr double kMaxBoostDb = 9.0, kMaxCutDb = 12.0;
 constexpr double kShapeFraction = 0.8;   // Shape corrects 80 % of the deviation at Amount 100 (measured: the reference)
+// ... of the target's shape; the measured part of the deviation (the music's shape relative to pink) counts 0.875 x:
+// the reference follows a darker or brighter spectrum ~0.87 x as far as a plain 0.8 law (pink with the highs -6 / -12
+// / -18 dB: 2.5 / 5.5 / 8.3 dB of change, the plain law 2.8 / 6.3 / 9.7; a +6 dB high step 68 % vs 78 %). Pink itself
+// is unchanged (its measured shape is flat).
+constexpr double kMeasuredShape = 0.875;
 constexpr double kGateAbsDb = -80.0, kGateRelDb = 60.0;
 constexpr double kEmptyBandDb = 40.0, kEmptyBandFadeDb = 6.0;
 constexpr double kOnsetDb = 6.0;
@@ -166,7 +171,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         std::vector<float> kernel;   // nb x nb row-normalised Gaussian weights
         std::vector<int> kernelLo, kernelHi;
         double kernelSigma = -1.0;
-        double offset = 0.0;
+        double offset = 0.0, sMean = 0.0;   // o, and the weighted mean of S over the offset bands
         bool offsetValid = false;
         double maxBoost = 0.0, maxCut = 0.0;   // of the applied curve (meters)
         // smoothed controls
@@ -356,7 +361,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             std::fill (lane.gated.begin(), lane.gated.end(), (uint8_t) 0);
             std::fill (lane.freeze.begin(), lane.freeze.end(), (uint8_t) 0);
             std::fill (lane.onset.begin(), lane.onset.end(), (uint8_t) 0);
-            lane.offset = 0.0;
+            lane.offset = lane.sMean = 0.0;
             lane.offsetValid = false;
             lane.controlsInit = false;
             lane.warm = 0.0;
@@ -576,18 +581,20 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         const float* tgt = targetDb.data() + (size_t) targetIndex * (size_t) nb;
         const float* tol = targetTol.data() + (size_t) targetIndex * (size_t) nb;
         {
-            double num = 0.0, den = 0.0;
+            double num = 0.0, den = 0.0, sNum = 0.0;
             for (int b = 0; b < nb; ++b)
             {
                 const auto i = (size_t) b;
                 if (! bandInOffset[i] || lane.gated[i] || lane.count[i] == 0)
                     continue;
                 num += (double) bandWidthOct[i] * ((double) lane.sDb[i] - (double) tgt[i]);
+                sNum += (double) bandWidthOct[i] * (double) lane.sDb[i];
                 den += bandWidthOct[i];
             }
             if (den > 0.0)
             {
                 lane.offset = num / den;
+                lane.sMean = sNum / den;
                 lane.offsetValid = true;
             }
         }
@@ -604,7 +611,13 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                 const double t = (double) tgt[i] + o;
                 switch (mode)
                 {
-                    case ToneBalanceMode::Shape: c = kShapeFraction * deadBand (t - (double) lane.sDb[i]); break;
+                    case ToneBalanceMode::Shape:
+                    {
+                        // t - s = (T - mean T) - (S - mean S); the measured part is scaled (kMeasuredShape)
+                        const double sRel = (double) lane.sDb[i] - lane.sMean;
+                        c = kShapeFraction * deadBand (t - lane.sMean - kMeasuredShape * sRel);
+                        break;
+                    }
                     case ToneBalanceMode::Boost: c = std::max (0.0, (t - (double) tol[i]) - (double) lane.sDb[i]); break;
                     case ToneBalanceMode::Cut:
                     default:

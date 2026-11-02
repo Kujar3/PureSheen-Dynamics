@@ -19,7 +19,8 @@
 //      in the onset's frame); in Shape boosts are frozen for 3 hops in flagged bands
 //   3. target T (b) = toneTargetDb (target, f_b); level offset o = octave-width weighted mean of S - T over
 //      100 Hz .. 5.6 kHz (gated bands excluded); deviation D = T + o - S (positive = needs a boost)
-//   4. Shape: C = 0.8 D with a 0.5 dB soft dead band (the reference corrects 80 % of the deviation at Amount 100).
+//   4. Shape: C = 0.8 D' with a 0.5 dB soft dead band, D' = (T - mean T) - 0.875 (S - mean S) (offset-band means;
+//      = D on pink): the target's shape is corrected 80 %, a measured deviation from pink 70 % (as the reference).
 //      Boost: C = max (0, (T + o - tol) - S). Cut: reference R = T + o + (tol + 10 dB) (1 - sens / 100)^1.5,
 //      excess E = F - R, C = -0.8 softknee (E, 3 dB), cuts only
 //   5. frequency smoothing (Shape / Boost): Gaussian over log2 f, sigma = 0.08 x (1.5 / 0.08)^(smooth / 100) octaves;
