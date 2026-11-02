@@ -33,9 +33,12 @@
 //     dependent phase scramble with only a few ms of group delay, so transients stay put. Flat |z| = |M|.
 //     Both modes only ever touch S, so L + R is unchanged (mono compatible to float rounding).
 //     Switching mode crossfades the two decorrelators (30 ms).
-//   - Recover Sides: the S power removed by narrowing, P_S (1 - (1 + w)^2), is put back into the band's M as a smoothed
-//     gain: g_rec = sqrt (1 + r^2 P_removed / P_M) (r = 10^(gain/20), 60 ms power detectors, capped at +12 dB). At
-//     w = -1 and 0 dB a hard-panned source keeps its total power (P_L + P_R), symmetrically for left and right.
+//   - Recover Sides: the power of the S AMPLITUDE removed by narrowing, P_S w^2 (S keeps 1 + w of its amplitude), is
+//     put back into the band's M as a smoothed gain: g_rec = sqrt (1 + r^2 P_S w^2 / P_M) (r = 10^(gain/20), 60 ms
+//     power detectors, capped at +12 dB). Measured (Img-Test.wav, round 17): the reference adds 0.06 / 0.23 / 0.93 x
+//     P_S to M at w = -0.25 / -0.5 / -1 (0 dB), twice that at +3 dB, the same for a hard-panned source and for wide
+//     uncorrelated noise; the removed power P_S (1 - (1 + w)^2) put back 3x too much at w = -0.5. At w = -1 and 0 dB
+//     a hard-panned source keeps its total power (P_L + P_R), symmetrically for left and right.
 //     When M cannot carry the removed energy within that cap, a smoothed copy of S restores the remainder, with
 //     M/S covariance included in the gain calculation. Pure S keeps its waveform, using S's polarity in mono.
 //   - Prevent Antiphase: correlation = (P_M - P_S) / (P_M + P_S), so it is >= 0 exactly when P_S <= P_M. The band's
@@ -420,7 +423,7 @@ struct ImagerEngine
                 double sideTarget = 0.0;
                 if (recoverOn && w < 0.0)
                 {
-                    const double removed = recoverAmp2 * s.recS * (1.0 - (1.0 + w) * (1.0 + w));
+                    const double removed = recoverAmp2 * s.recS * w * w;
                     target = std::min (kMaxRecoverGain, std::sqrt (1.0 + removed / s.recM));
                     // Gain alone cannot recover a pure Side signal (M == 0). Put the energy beyond the
                     // bounded Mid gain into a copy of S, accounting for its covariance with M. This keeps

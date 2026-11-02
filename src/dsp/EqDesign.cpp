@@ -15,6 +15,19 @@ namespace ps::eqdesign
 {
 namespace
 {
+// Analog shelf (measured): the set gain is the gain at the corner, the plateau twice that, and the band's Q sets the
+// shelf slope S = 0.0835 + 0.0764 Q (Q 0.2 .. 12 -> S 0.1 .. 1). Returns the equivalent shelf Q of the biquad for the
+// plateau gain plateauDb: 1 / Q^2 = (A + 1 / A) (1 / S - 1) + 2, A = 10^(plateauDb / 40).
+double analogShelfQ (double q, double plateauDb) noexcept
+{
+    const double slope = std::clamp (0.0835 + 0.0764 * q, 0.05, 1.0);
+    const double a = std::pow (10.0, plateauDb / 40.0);
+    return 1.0 / std::sqrt ((a + 1.0 / a) * (1.0 / slope - 1.0) + 2.0);
+}
+} // namespace
+
+namespace
+{
     constexpr double kPi = 3.14159265358979323846;
     constexpr double kSqrtHalf = 0.70710678118654752;
     using cd = std::complex<double>;
@@ -334,10 +347,10 @@ void designAnalog (EqShape shape, EqSlope slope, double sr, double hz, double g,
             break;
         }
         case EqShape::LowShelfAnalog:
-            addSection (d, design::lowShelf (sr, hz, std::clamp (q, 0.1, 1.0), g));
+            addSection (d, design::lowShelf (sr, hz, analogShelfQ (q, 2.0 * g), 2.0 * g));
             break;
         case EqShape::HighShelfAnalog:
-            addSection (d, design::highShelf (sr, hz, std::clamp (q, 0.1, 1.0), g));
+            addSection (d, design::highShelf (sr, hz, analogShelfQ (q, 2.0 * g), 2.0 * g));
             break;
         case EqShape::LowShelfBaxandall:
             addSection (d, design::baxandallLow (sr, hz, g));

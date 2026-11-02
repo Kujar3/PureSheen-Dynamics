@@ -287,9 +287,9 @@ TEST_CASE ("import.eq. absent frequency / Q take the foreign layout, stored valu
     CHECK (near (value (plan, "eq1.a.b1.gain"), 0.0));
     CHECK_EQ (plan.report.mapped, 3);
 
-    // Newer writers: band 1 defaults to Q 24, band 7 to Q 1.
+    // Newer writers: band 1 defaults to Q 24 in the UI = 12 as stored, band 7 to Q 1.
     const auto newer = moduleFile ("Tone", "110000", {});
-    CHECK (near (value (newer, "eq1.a.b1.q"), 24.0));
+    CHECK (near (value (newer, "eq1.a.b1.q"), 12.0));
     CHECK (near (value (newer, "eq1.a.b7.q"), 1.0));
     CHECK (near (value (newer, "eq1.a.b4.q"), 0.707));
 }

@@ -28,8 +28,10 @@
 //   Band Shelf      flat-topped band: 2nd-order high shelf (Q 0.707) up at f * 2^(-bw/2), another one back down at
 //                   f * 2^(bw/2), bw = 2 asinh (1 / (2 Q)) / ln 2 octaves (the bandwidth of a bell of this Q). Very
 //                   narrow bands do not reach the full gain (the two shelves overlap).
-//   Shelf Analog    2nd-order matched shelf, shelf Q = Q clamped to 0.1..1 (0.707 = steepest without overshoot, up to
-//                   1 a slight analog-style overshoot)
+//   Shelf Analog    2nd-order matched shelf that reaches the set gain AT f and twice the gain in its plateau, slope
+//                   S = 0.0835 + 0.0764 Q (Q as the reference stores it, 0.2 .. 12, which its UI shows as 1 .. 24:
+//                   UI = 1.95 Q + 0.61) -> S 0.1 (very gentle) .. 1 (steepest without overshoot). Measured: low and
+//                   high shelves at -6 / -1.8 / +6 dB over the whole Q range fit within 0.04 dB rms (round 17).
 //   Shelf Baxandall 1st-order matched shelves measured from the reference (design::baxandallLow / High in
 //                   Filters.cpp): the high shelf reaches the set gain far above f (lower corner ~0.8 f); the low shelf
 //                   starts near f and keeps falling / rising far below it (depth ~2x the gain); Q not used

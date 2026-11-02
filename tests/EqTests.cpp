@@ -334,13 +334,20 @@ TEST_CASE ("eq. analog: shapes do what they say (spot measurements of eqBandResp
     // band shelf: flat top
     CHECK (std::abs (resp (EqShape::BandShelf, 1000, 6, 0.3, 1000) - 6.0) < 0.3);
     CHECK (std::abs (resp (EqShape::BandShelf, 1000, 6, 0.3, 1400) - 6.0) < 0.5);
-    // shelves: full gain far away, half at the corner
-    for (EqShape s : { EqShape::LowShelfAnalog, EqShape::LowShelfResonant })
-    {
-        CHECK (std::abs (resp (s, 200, 8, 0.707, 15) - 8.0) < 0.3);
-        CHECK (std::abs (resp (s, 200, 8, 0.707, 200) - 4.0) < 0.3);
-        CHECK (std::abs (resp (s, 200, 8, 0.707, 18000)) < 0.1);
-    }
+    // resonant shelf: full gain far away, half at the corner
+    CHECK (std::abs (resp (EqShape::LowShelfResonant, 200, 8, 0.707, 15) - 8.0) < 0.3);
+    CHECK (std::abs (resp (EqShape::LowShelfResonant, 200, 8, 0.707, 200) - 4.0) < 0.3);
+    CHECK (std::abs (resp (EqShape::LowShelfResonant, 200, 8, 0.707, 18000)) < 0.1);
+    // analog shelf: the set gain at the corner, twice the gain in the plateau, Q sets the slope (the reference's renders
+    // at 500 Hz / 5 kHz, Q as stored: 0.2 = its UI minimum 1, 12 = its UI maximum 24)
+    CHECK (std::abs (resp (EqShape::LowShelfAnalog, 500, -6, 0.2, 500) - (-6.01)) < 0.1);
+    CHECK (std::abs (resp (EqShape::LowShelfAnalog, 500, -6, 0.2, 995) - (-5.13)) < 0.1);
+    CHECK (std::abs (resp (EqShape::LowShelfAnalog, 500, -6, 0.2, 141) - (-8.17)) < 0.1);
+    CHECK (std::abs (resp (EqShape::LowShelfAnalog, 500, -6, 12.0, 20) - (-12.0)) < 0.05);
+    CHECK (std::abs (resp (EqShape::LowShelfAnalog, 500, -6, 12.0, 995) - (-0.91)) < 0.1);
+    CHECK (std::abs (resp (EqShape::LowShelfAnalog, 500, -1.8, 4.161, 20) - (-3.59)) < 0.05);
+    CHECK (std::abs (resp (EqShape::HighShelfAnalog, 5000, 6, 4.161, 5000) - 5.98) < 0.1);
+    CHECK (std::abs (resp (EqShape::HighShelfAnalog, 5000, 6, 4.161, 20)) < 0.05);
     // Baxandall shelves follow the reference's measured responses (its renders at 500 Hz / 5 kHz)
     CHECK (std::abs (resp (EqShape::LowShelfBaxandall, 500, -6, 0.707, 500) - (-0.08)) < 0.1);
     CHECK (std::abs (resp (EqShape::LowShelfBaxandall, 500, -6, 0.707, 100) - (-1.97)) < 0.2);
@@ -348,8 +355,8 @@ TEST_CASE ("eq. analog: shapes do what they say (spot measurements of eqBandResp
     CHECK (std::abs (resp (EqShape::HighShelfBaxandall, 5000, 6, 0.707, 5000) - 2.59) < 0.1);
     CHECK (std::abs (resp (EqShape::HighShelfBaxandall, 5000, -12, 0.707, 5000) - (-3.17)) < 0.1);
     CHECK (std::abs (resp (EqShape::HighShelfBaxandall, 1000, 6, 0.707, 20)) < 0.05);
-    // Baxandall is gentler than the analog shelf one octave above the corner
-    CHECK (resp (EqShape::HighShelfBaxandall, 4000, 8, 0.707, 2000) > resp (EqShape::HighShelfAnalog, 4000, 8, 0.707, 2000));
+    // the analog shelf is steeper at a higher Q: one octave above a low shelf's corner it is nearly flat at Q 12
+    CHECK (resp (EqShape::LowShelfAnalog, 500, -6, 12.0, 1000) > resp (EqShape::LowShelfAnalog, 500, -6, 0.2, 1000) + 3.0);
     // vintage: boost below, dip above the corner
     CHECK (resp (EqShape::LowShelfVintage, 100, 10, 0.707, 20) > 9.0);
     CHECK (resp (EqShape::LowShelfVintage, 100, 10, 0.707, 300) < -1.5);
@@ -506,7 +513,7 @@ TEST_CASE ("eq. M/S and L/R: set A on channel 0, set B on channel 1, independent
 
         Rig rb;
         rb.channelMode = mode;
-        rb.band (1, 4, EqShape::HighShelfAnalog, 3000, -9, 0.707);   // set B only
+        rb.band (1, 4, EqShape::HighShelfAnalog, 3000, -4.5, 12.0);   // set B only (plateau 2 x -4.5 dB)
         rb.eq->reset();
         rb.impulse (16384, hl, hr);
         const auto Hr = fft.spectrum (hr);

@@ -530,7 +530,8 @@ TEST_CASE ("deq. static band (Dynamic off) measures like the Equalizer band (Ana
          + fmt (worstDig, 4) + " dB (" + worstDigWhat + "); vs the Equalizer's Digital mode " + fmt (worstDigEq, 4) + " dB");
     CHECK (worstEq < 0.05);
     CHECK (worstFn < 0.05);
-    CHECK (worstDig < 0.1);
+    // the analog shelves' doubled, gentle plateaus (-24 dB at Q 0.5) are the hardest case for the FIR near 20 Hz
+    CHECK (worstDig < 0.4);
     CHECK (worstDigEq < 0.02);
 }
 
@@ -1221,7 +1222,7 @@ TEST_CASE ("deq. fast automation: bounded, finite, low HF splatter; on/off / sha
         say ("extreme automation: finite " + std::to_string (finite) + ", output peak " + fmt (pstest::dbOf (peak), 2)
              + " dBFS (input peak -17)");
         CHECK (finite);
-        CHECK (peak < pstest::dbfsToAmplitude (-17.0 + 3 * 15.0 + 1.0));
+        CHECK (peak < pstest::dbfsToAmplitude (-17.0 + 3 * 15.0 + 3.0));   // analog shelves reach 2 x the gain
     }
 
     // 2. HF splatter: 150 Hz tone through a dynamic band whose freq / gain / Q / threshold are automated randomly every
@@ -1620,7 +1621,8 @@ TEST_CASE ("deq. benchmarks (6 bands x 2 sets, Analog and Digital, typical and w
     };
     const Run runs[] {
         { "Analog, Stereo, 3 bands (typical)", 0, 1, 1, 3, false, 60.0 },
-        { "Analog, M/S, 6 x 2 bands moving", 0, 1, 2, 6, false, 20.0 },
+        // 15: the measured analog shelves (gentle slopes at low Q) are fitted per design; 48x -> 17x here
+        { "Analog, M/S, 6 x 2 bands moving", 0, 1, 2, 6, false, 15.0 },
         { "Analog, M/S, 6 x 2 bands, every parameter automated every block", 0, 1, 2, 6, true, 10.0 },
         { "Digital 8192, Stereo, 3 bands (typical)", 1, 1, 1, 3, false, 30.0 },
         { "Digital 8192, M/S, 6 x 2 bands moving", 1, 1, 2, 6, false, 15.0 },

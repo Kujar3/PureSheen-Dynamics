@@ -10,8 +10,8 @@
 //       Mode I : Haas-style: a delayed (~ 8..20 ms, frequency-dependent) and filtered copy of M added to S
 //       Mode II: decorrelated M (allpass network / short diffusion) added to S, transient-friendly
 //     Both mono compatible (the injected component is in S only, so it cancels in L+R)
-//   - Recover Sides (bands with width < 0 only): the S energy removed by narrowing is re-introduced into M with
-//     recoverSidesGainDb (keeps the level of hard-panned elements when narrowing)
+//   - Recover Sides (bands with width < 0 only): the power of the S amplitude removed by narrowing (P_S w^2) is
+//     re-introduced into M with recoverSidesGainDb (keeps the level of hard-panned elements at full narrowing)
 //   - Prevent antiphase: per band, limits |S| so the band's correlation stays >= 0 (smoothed)
 //   - Crossover: ps::Crossover (default Analog: 0 latency, compensated tree so every band carries the same phase;
 //     Digital = linear phase)

@@ -169,11 +169,12 @@ double eqFreqDefault (const ModuleImport&, int n, int)
 }
 
 // Default Q: 0.707, except the outer shelf bands of the newer writers (where 0.707 is stored explicitly): band 1 shows
-// Q 24 in the real product (writer 120000), band 7 is a guess. Our analog shelves use at most Q 1, so 24 sounds as 1.
+// Q 24 in the real product (writer 120000), which is 12 as stored (shelf Q is stored as (UI - 0.61) / 1.95, measured:
+// UI 1 / 2 / 8.72 / 16 -> 0.2 / 0.713 / 4.16 / 7.90; a render at UI 24 stores no Q and sounds as 12). Band 7 is a guess.
 double eqQDefault (const ModuleImport& m, int n, int)
 {
     if (writer (m) >= 100000 && n == 1)
-        return 24.0;
+        return 12.0;
     return (writer (m) >= 100000 && n == 7) ? 1.0 : 0.707;
 }
 
