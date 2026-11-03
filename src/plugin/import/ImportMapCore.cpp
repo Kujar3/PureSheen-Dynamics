@@ -146,6 +146,11 @@ double imagerStereoizeModeDefault (const ModuleImport& m, int, int)
     return (v >= 9900 && v < 110000) ? 1.0 : 0.0;
 }
 
+// Absent crossovers 2 / 3 sit at 2 kHz / 10 kHz (measured: a four-band file storing only the first, 05's AssistMaster;
+// its side channel fits 2000 / 10000 within 0.14 dB rms, our 1000 / 6000 were off by up to 1.2 dB). The first one is
+// always stored in the files we have; ours is kept when it is not.
+double imagerCutoffDefault (const ModuleImport&, int number, int) { return number == 2 ? 2000.0 : number == 3 ? 10000.0 : kNoValue; }
+
 // The foreign delay control (ms) drives our stereoize amount (%): 0..20 ms -> 0..100 % (range assumed).
 double imagerDelayToAmount (double ms, ModuleImport&, int, int) { return std::clamp (ms, 0.0, 20.0) * 5.0; }
 
@@ -157,7 +162,7 @@ const std::vector<Rule>& imagerRules()
         //  key              act               first count band          set A id          set B id            transform            foreign default                          what
         { kBandActive,      Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,             byVersion (firstSlotOnly, Conf::Known),  "band present" },
         { kNumBands,        Act::Hook,         0, 0, Band::Same,   nullptr,          nullptr,            nullptr,             likely (4.0),                            "band count (older files)" },
-        { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,            nullptr,             noDefault(),                             "crossover frequency" },
+        { kCrossoverCutoff, Act::Hook,         1, 3, Band::Same,   nullptr,          nullptr,            nullptr,             byVersion (imagerCutoffDefault, Conf::Known), "crossover frequency" },
         { kBandBypass,      Act::Hook,         0, 4, Band::Same,   nullptr,          nullptr,            nullptr,             known (0.0),                             "band bypass" },
         { kCrossoverType,   Act::Map,          0, 0, Band::Same,   "~.xoverType",    nullptr,            crossoverKind,       known (2.0),                             "crossover kind" },
         { kImgWidth,        Act::Map,          1, 4, Band::Layout, "~.b#.width",     "~.b.b#.width",     nullptr,             known (0.0),                             "band width" },
