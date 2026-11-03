@@ -624,8 +624,9 @@ TEST_CASE ("tbal. shape pulls a +6 dB 2 kHz bump toward the target within the do
         note ("  time to 63 % (s)", t63);
         CHECK (inBump > 5.0);
         // Shape corrects 0.8 x 0.875 = 70 % of a measured deviation (the reference's law: 2.4 / 3.3 here); the skirted
-        // reading (12 dB / octave) softens a one-octave bump a little (Smoothing 0: 2.5 -> 2.8)
-        CHECK (outBump <= (smooth > 0.0f ? 3.5 : 2.9));
+        // reading (12 dB / octave) softens a one-octave bump a little (Smoothing 0: 2.5 -> 2.8); the bottom-octave boost
+        // roll-off shifts the neutral level a hair (Smoothing 50: 3.494 -> 3.502)
+        CHECK (outBump <= (smooth > 0.0f ? 3.55 : 2.9));
         CHECK (t63 >= 0.5 * 0.49 && t63 <= 1.5 * 0.49);
     }
 }
