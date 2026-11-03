@@ -35,6 +35,19 @@ juce::String eqShapeFullName (ps::EqShape);       // the parameter's choice labe
 // Builds the grouped shape menu (item id = 1 + shape index), current shape ticked.
 juce::PopupMenu eqShapeMenu (ps::EqShape current, bool digital);
 
+// Curve drawing shared by the Equalizer and Dynamic EQ displays.
+// Moves a symmetric dB area (minDb == -maxDb) by under half a pixel so its 0 dB line falls on a pixel centre: the
+// grid's 0 dB line, the band areas' base and a flat curve then all sit on the same row.
+juce::Rectangle<float> snapEqZeroLine (juce::Rectangle<float> dbArea) noexcept;
+// One band's response (db, sampled at xs) as a soft area: strongest at the curve, fading out toward the 0 dB line.
+// No outline, so the stretches where a band sits on 0 dB draw nothing.
+void fillEqBand (juce::Graphics&, const std::vector<float>& xs, const std::vector<float>& db, const DbAxis&,
+                 juce::Colour, bool focus);
+// The summed curve: a thin light line over a soft halo in the module colour.
+void strokeEqCurve (juce::Graphics&, const juce::Path&, juce::Colour moduleColour);
+// A band node: a ring in the band colour with its number; filled when hovered, filled and outlined when selected.
+void paintEqNode (juce::Graphics&, int band, juce::Point<float> centre, float radius, bool selected, bool hover);
+
 //==============================================================================
 // Reads the parameters of EQ 1 or EQ 2 through cached raw parameter pointers (cheap enough for 30 Hz) and keeps them
 // as a ps::EqParams. Message thread only.

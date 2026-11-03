@@ -1223,7 +1223,7 @@ void drawFrequencyGrid (juce::Graphics& g, const FreqAxis& fx, const DbAxis& dy,
 
     for (float db = first; db <= dy.maxDb + 0.01f; db += step)
     {
-        const float y = std::round (dy.dbToY (db));
+        const float y = std::round (dy.dbToY (db) - 0.5f);   // the 1 px line is centred on the value
 
         if (y < area.getY() + 1.0f || y > area.getBottom() - 1.0f)
             continue;

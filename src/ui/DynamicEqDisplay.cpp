@@ -199,7 +199,7 @@ struct DynamicEqDisplay::Impl
         plot = owner.getLocalBounds().toFloat().reduced (1.0f);
         dy.minDb = -(float) rangeDb();
         dy.maxDb = (float) rangeDb();
-        dy.area = plot.withTrimmedTop (18.0f).withTrimmedBottom (22.0f);
+        dy.area = snapEqZeroLine (plot.withTrimmedTop (18.0f).withTrimmedBottom (22.0f));
         lv.minDb = kSpectrumMinDb;
         lv.maxDb = kSpectrumMaxDb;
         lv.area = plot.withTrimmedBottom (18.0f);
@@ -777,31 +777,19 @@ struct DynamicEqDisplay::Impl
 
     //==========================================================================
     // Painting
-    juce::Path curvePath (const std::vector<float>& db, bool skipFlat = false) const
+    juce::Path curvePath (const std::vector<float>& db) const
     {
         juce::Path p;
         const float lo = dy.area.getY() - 40.0f, hi = dy.area.getBottom() + 40.0f;
-        bool drawing = false;
 
         for (size_t i = 0; i < gridX.size() && i < db.size(); ++i)
         {
             const float y = juce::jlimit (lo, hi, dy.dbToY (db[i]));
-            const bool flat = skipFlat && std::abs (db[i]) < 0.08f
-                              && (i + 1 >= db.size() || std::abs (db[i + 1]) < 0.08f)
-                              && (i == 0 || std::abs (db[i - 1]) < 0.08f);
 
-            if (flat)
-            {
-                drawing = false;
-                continue;
-            }
-
-            if (! drawing)
+            if (i == 0)
                 p.startNewSubPath (gridX[i], y);
             else
                 p.lineTo (gridX[i], y);
-
-            drawing = true;
         }
 
         return p;
@@ -835,12 +823,6 @@ struct DynamicEqDisplay::Impl
         const auto colour = eqBandColour (b);
         const float r = kNodeRadius + (isHover || isSel ? 1.0f : 0.0f);
 
-        if (isHover || isSel)
-        {
-            g.setColour (colour.withAlpha (isSel ? 0.22f : 0.16f));
-            g.fillEllipse (juce::Rectangle<float> (r * 2.0f + 10.0f, r * 2.0f + 10.0f).withCentre (c));
-        }
-
         // Direction arrow: where the curve goes when the level rises (Up: above, Down: below the node).
         if (band.dynamic)
         {
@@ -855,26 +837,7 @@ struct DynamicEqDisplay::Impl
             g.fillPath (arrow);
         }
 
-        const auto body = juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (c);
-        g.setColour (juce::Colours::black.withAlpha (0.45f));
-        g.fillEllipse (body.translated (0.0f, 1.2f).expanded (0.8f));
-        g.setGradientFill (juce::ColourGradient::vertical (colour.brighter (0.18f), body.getY(), colour.darker (0.12f), body.getBottom()));
-        g.fillEllipse (body);
-
-        if (isSel)
-        {
-            g.setColour (Colours::text);
-            g.drawEllipse (body.expanded (2.2f), 1.6f);
-        }
-        else
-        {
-            g.setColour (juce::Colours::black.withAlpha (0.35f));
-            g.drawEllipse (body, 1.0f);
-        }
-
-        g.setFont (font (11.0f, 700));
-        g.setColour (Colours::background.withAlpha (0.92f));
-        g.drawText (juce::String (b + 1), body.translated (0.0f, 0.5f), juce::Justification::centred, false);
+        paintEqNode (g, b, c, kNodeRadius, isSel, isHover);
     }
 
     // The band's travel (rest .. full trigger) as a rail at the node's frequency, with a dot at the live gain.
@@ -1102,7 +1065,7 @@ struct DynamicEqDisplay::Impl
             }
         }
 
-        // Per-band travel ranges (rest .. full trigger) and live outlines
+        // Per-band travel ranges (rest .. full trigger) and live areas
         const int focus = drag.band >= 0 ? drag.band : (hover >= 0 ? hover : selected);
 
         for (int i = 0; i < ps::kDynEqBands; ++i)
@@ -1124,14 +1087,13 @@ struct DynamicEqDisplay::Impl
                 {
                     const float dashes[] { 4.0f, 3.0f };
                     juce::Path dashed;
-                    juce::PathStrokeType (1.1f).createDashedStroke (dashed, curvePath (c.trig, true), dashes, 2);
+                    juce::PathStrokeType (1.1f).createDashedStroke (dashed, curvePath (c.trig), dashes, 2);
                     g.setColour (bc.withAlpha (0.7f));
                     g.fillPath (dashed);
                 }
             }
 
-            g.setColour (bc.withAlpha (isFocus ? 0.85f : 0.32f));
-            g.strokePath (curvePath (c.live, true), juce::PathStrokeType (isFocus ? 1.4f : 1.0f));
+            fillEqBand (g, gridX, c.live, dy, bc, isFocus);
         }
 
         // Threshold and detector level of the focused dynamic band
@@ -1180,12 +1142,7 @@ struct DynamicEqDisplay::Impl
                 g.fillPath (dashed);
             }
 
-            const auto path = curvePath (compositeLive[set]);
-            const auto curveColour = blend (colour, Colours::text, 0.35f);
-            g.setColour (colour.withAlpha (0.18f));
-            g.strokePath (path, juce::PathStrokeType (6.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            g.setColour (curveColour);
-            g.strokePath (path, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            strokeEqCurve (g, curvePath (compositeLive[set]), colour);
         }
 
         // Rails, then nodes (the focused one on top)

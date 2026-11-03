@@ -1,5 +1,9 @@
 #include "ui/EqModel.h"
 
+#include "ui/Controls.h"
+
+#include <cmath>
+
 // Equalizer panel helpers (owner: ui-eq). See EqModel.h.
 namespace ps::ui
 {
@@ -68,6 +72,102 @@ juce::Colour eqBandColour (int band)
     };
 
     return juce::Colour (colours[juce::jlimit (0, ps::kEqBands - 1, band)]);
+}
+
+juce::Rectangle<float> snapEqZeroLine (juce::Rectangle<float> dbArea) noexcept
+{
+    const float centre = dbArea.getCentreY();
+    return dbArea.translated (0.0f, std::floor (centre) + 0.5f - centre);
+}
+
+void fillEqBand (juce::Graphics& g, const std::vector<float>& xs, const std::vector<float>& db, const DbAxis& dy,
+                 juce::Colour colour, bool focus)
+{
+    const size_t n = juce::jmin (xs.size(), db.size());
+
+    if (n < 2)
+        return;
+
+    const float zero = dy.dbToY (0.0f);
+    const float lo = dy.area.getY() - 40.0f, hi = dy.area.getBottom() + 40.0f;
+    float top = zero, bottom = zero;
+    juce::Path p;
+    p.startNewSubPath (xs[0], zero);
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const float y = juce::jlimit (lo, hi, dy.dbToY (db[i]));
+        p.lineTo (xs[i], y);
+        top = juce::jmin (top, y);
+        bottom = juce::jmax (bottom, y);
+    }
+
+    p.lineTo (xs[n - 1], zero);
+    p.closeSubPath();
+
+    const bool boost = top < zero - 0.5f, cut = bottom > zero + 0.5f;
+
+    if (! boost && ! cut)
+        return;
+
+    // Alpha by distance from 0 dB: full strength at the band's furthest point, nearly clear at the 0 dB line.
+    const float strength = focus ? 0.5f : 0.32f;
+    const auto edge = colour.withAlpha (strength), base = colour.withAlpha (0.02f);
+    juce::ColourGradient grad (boost ? edge : base, 0.0f, boost ? top : zero, cut ? edge : base, 0.0f, cut ? bottom : zero, false);
+
+    if (boost && cut)
+        grad.addColour ((zero - top) / (bottom - top), base);
+
+    g.setGradientFill (grad);
+    g.fillPath (p);
+}
+
+void strokeEqCurve (juce::Graphics& g, const juce::Path& path, juce::Colour moduleColour)
+{
+    g.setColour (moduleColour.withAlpha (0.12f));
+    g.strokePath (path, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (blend (moduleColour, Colours::text, 0.72f));
+    g.strokePath (path, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+void paintEqNode (juce::Graphics& g, int band, juce::Point<float> centre, float radius, bool selected, bool hover)
+{
+    const auto colour = eqBandColour (band);
+    const bool filled = selected || hover;
+    const float r = radius + (filled ? 1.0f : 0.0f);
+    const auto body = juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (centre);
+
+    if (filled)
+    {
+        g.setColour (colour.withAlpha (selected ? 0.22f : 0.16f));
+        g.fillEllipse (body.expanded (5.0f));
+    }
+
+    g.setColour (juce::Colours::black.withAlpha (0.4f));
+    g.fillEllipse (body.translated (0.0f, 1.2f).expanded (0.6f));
+
+    if (filled)
+    {
+        g.setGradientFill (juce::ColourGradient::vertical (colour.brighter (0.18f), body.getY(), colour.darker (0.12f), body.getBottom()));
+        g.fillEllipse (body);
+    }
+    else
+    {
+        g.setColour (Colours::background.withAlpha (0.88f));
+        g.fillEllipse (body);
+        g.setColour (colour);
+        g.drawEllipse (body.reduced (0.9f), 1.8f);
+    }
+
+    if (selected)
+    {
+        g.setColour (Colours::text);
+        g.drawEllipse (body.expanded (2.2f), 1.6f);
+    }
+
+    g.setFont (font (10.5f, 700));
+    g.setColour (filled ? Colours::background.withAlpha (0.92f) : colour.brighter (0.1f));
+    g.drawText (juce::String (band + 1), body.translated (0.0f, 0.5f), juce::Justification::centred, false);
 }
 
 juce::String eqShapeShortName (ps::EqShape s)

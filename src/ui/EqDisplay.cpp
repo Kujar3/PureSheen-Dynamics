@@ -177,7 +177,7 @@ struct EqDisplay::Impl
         plot = owner.getLocalBounds().toFloat().reduced (1.0f);
         dy.minDb = -(float) rangeDb();
         dy.maxDb = (float) rangeDb();
-        dy.area = plot.withTrimmedTop (18.0f).withTrimmedBottom (22.0f);
+        dy.area = snapEqZeroLine (plot.withTrimmedTop (18.0f).withTrimmedBottom (22.0f));
 
         const int w = range.idealWidth();
         range.setBounds (juce::Rectangle<int> ((int) plot.getRight() - w - 8, (int) plot.getY() + 7, w, 20));
@@ -600,83 +600,27 @@ struct EqDisplay::Impl
 
     //==========================================================================
     // Painting
-    // skipFlat: leaves out the stretches where the curve sits on 0 dB (band outlines would otherwise all paint the
-    // 0 dB line in their colours).
-    juce::Path curvePath (const std::vector<float>& db, bool skipFlat = false) const
+    juce::Path curvePath (const std::vector<float>& db) const
     {
         juce::Path p;
         const float lo = dy.area.getY() - 40.0f, hi = dy.area.getBottom() + 40.0f;
-        bool drawing = false;
 
         for (size_t i = 0; i < gridX.size() && i < db.size(); ++i)
         {
             const float y = juce::jlimit (lo, hi, dy.dbToY (db[i]));
-            const bool flat = skipFlat && std::abs (db[i]) < 0.08f
-                              && (i + 1 >= db.size() || std::abs (db[i + 1]) < 0.08f)
-                              && (i == 0 || std::abs (db[i - 1]) < 0.08f);
 
-            if (flat)
-            {
-                drawing = false;
-                continue;
-            }
-
-            if (! drawing)
+            if (i == 0)
                 p.startNewSubPath (gridX[i], y);
             else
                 p.lineTo (gridX[i], y);
-
-            drawing = true;
         }
 
-        return p;
-    }
-
-    juce::Path fillPath (const std::vector<float>& db) const
-    {
-        auto p = curvePath (db);
-
-        if (gridX.empty())
-            return p;
-
-        const float zero = dy.dbToY (0.0f);
-        p.lineTo (gridX.back(), zero);
-        p.lineTo (gridX.front(), zero);
-        p.closeSubPath();
         return p;
     }
 
     void paintNode (juce::Graphics& g, int b, juce::Point<float> c, bool isSel, bool isHover) const
     {
-        const auto colour = eqBandColour (b);
-        const float r = kNodeRadius + (isHover || isSel ? 1.0f : 0.0f);
-
-        if (isHover || isSel)
-        {
-            g.setColour (colour.withAlpha (isSel ? 0.22f : 0.16f));
-            g.fillEllipse (juce::Rectangle<float> (r * 2.0f + 10.0f, r * 2.0f + 10.0f).withCentre (c));
-        }
-
-        const auto body = juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (c);
-        g.setColour (juce::Colours::black.withAlpha (0.45f));
-        g.fillEllipse (body.translated (0.0f, 1.2f).expanded (0.8f));
-        g.setGradientFill (juce::ColourGradient::vertical (colour.brighter (0.18f), body.getY(), colour.darker (0.12f), body.getBottom()));
-        g.fillEllipse (body);
-
-        if (isSel)
-        {
-            g.setColour (Colours::text);
-            g.drawEllipse (body.expanded (2.2f), 1.6f);
-        }
-        else
-        {
-            g.setColour (juce::Colours::black.withAlpha (0.35f));
-            g.drawEllipse (body, 1.0f);
-        }
-
-        g.setFont (font (11.0f, 700));
-        g.setColour (Colours::background.withAlpha (0.92f));
-        g.drawText (juce::String (b + 1), body.translated (0.0f, 0.5f), juce::Justification::centred, false);
+        paintEqNode (g, b, c, kNodeRadius, isSel, isHover);
     }
 
     void paintReadout (juce::Graphics& g, int b, juce::Point<float> node) const
@@ -784,21 +728,12 @@ struct EqDisplay::Impl
             }
         }
 
-        // Per-band soft fills and outlines
+        // Per-band soft areas
         const int focus = drag.band >= 0 ? drag.band : (hover >= 0 ? hover : selected);
 
         for (int i = 0; i < ps::kEqBands; ++i)
-        {
-            if (! p.bands[set][i].on || ! curves[set][i].valid)
-                continue;
-
-            const bool isFocus = i == focus;
-            const auto bc = eqBandColour (i);
-            g.setColour (bc.withAlpha (isFocus ? 0.20f : 0.085f));
-            g.fillPath (fillPath (curves[set][i].db));
-            g.setColour (bc.withAlpha (isFocus ? 0.85f : 0.32f));
-            g.strokePath (curvePath (curves[set][i].db, true), juce::PathStrokeType (isFocus ? 1.4f : 1.0f));
-        }
+            if (p.bands[set][i].on && curves[set][i].valid)
+                fillEqBand (g, gridX, curves[set][i].db, dy, eqBandColour (i), i == focus);
 
         // Audition range
         if (audition.on)
@@ -833,14 +768,7 @@ struct EqDisplay::Impl
             anyOn = anyOn || p.bands[set][i].on;
 
         if (anyOn)
-        {
-            const auto path = curvePath (composite[set]);
-            const auto curveColour = blend (colour, Colours::text, 0.35f);
-            g.setColour (colour.withAlpha (0.18f));
-            g.strokePath (path, juce::PathStrokeType (6.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            g.setColour (curveColour);
-            g.strokePath (path, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        }
+            strokeEqCurve (g, curvePath (composite[set]), colour);
 
         // Nodes (the focused one on top)
         for (int pass = 0; pass < 2; ++pass)

@@ -51,7 +51,7 @@ public:
 
     juce::Rectangle<float> chip (int i) const
     {
-        const auto b = getLocalBounds().toFloat();
+        const auto b = getLocalBounds().toFloat().reduced (2.5f);   // room for the selection ring
         const float gap = 5.0f;
         const float size = juce::jmin ((b.getWidth() - 3.0f * gap) / 4.0f, (b.getHeight() - gap) / 2.0f);
         const float w = size * 4.0f + gap * 3.0f, h = size * 2.0f + gap;
