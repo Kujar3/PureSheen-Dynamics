@@ -4,6 +4,7 @@
 #include "plugin/Assistant.h"
 #include "ui/Controls.h"
 
+#include <array>
 #include <cmath>
 
 namespace ps::ui
@@ -886,6 +887,8 @@ struct AssistantPanel::Impl
         status = assistant.getStatusText();
         progress = assistant.getProgress();
         working = assistant.isWorking() || assistant.getPhase() == Assistant::Phase::Listening;
+        if (page == Page::Listen)
+            updateOrbLevels();
         inputLufs = assistant.getInputLufs();
         outputLufs = proc.getChain().getIoMeters().outputShortTermLufs.load();
         owner.repaint();
@@ -1117,28 +1120,154 @@ struct AssistantPanel::Impl
         g.setColour (Col::text);
         g.drawText (headline, r.removeFromTop (r.getHeight() * 0.3f), juce::Justification::centredBottom, false);
 
-        const auto ringArea = r.removeFromTop (r.getHeight() * 0.6f).withSizeKeepingCentre (110.0f, 110.0f);
-        const auto c = ringArea.getCentre();
-        const float t = (float) (juce::Time::getMillisecondCounter() % 4000u) / 4000.0f;
-        g.setGradientFill (juce::ColourGradient (Col::accent.withAlpha (0.35f), c.x, c.y, juce::Colours::transparentBlack,
-                                                 c.x + 60.0f, c.y, true));
-        g.fillEllipse (ringArea.expanded (6.0f + 4.0f * std::sin (t * juce::MathConstants<float>::twoPi)));
-        g.setColour (Col::background);
-        g.fillEllipse (ringArea.reduced (14.0f));
-        juce::Path track, value;
-        track.addCentredArc (c.x, c.y, 48.0f, 48.0f, 0.0f, 0.0f, juce::MathConstants<float>::twoPi, true);
-        g.setColour (Col::outline);
-        g.strokePath (track, juce::PathStrokeType (4.0f));
-        if (progress > 0.001f)
-        {
-            value.addCentredArc (c.x, c.y, 48.0f, 48.0f, 0.0f, 0.0f, juce::MathConstants<float>::twoPi * juce::jlimit (0.0f, 1.0f, progress), true);
-            g.setColour (Col::accent);
-            g.strokePath (value, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        }
+        const auto orbArea = r.removeFromTop (r.getHeight() * 0.6f);
+        const float radius = juce::jlimit (34.0f, 64.0f, juce::jmin (orbArea.getWidth(), orbArea.getHeight()) / 3.3f);
+        paintOrb (g, orbArea.getCentre(), radius, ph);
         g.setFont (font (13.0f));
         g.setColour (Col::textDim);
         g.drawText (status.isNotEmpty() ? status : juce::String ("Ready to listen..."), r.removeFromTop (30.0f),
                     juce::Justification::centred, false);
+    }
+
+    // The listening orb: a dark sphere in a slowly turning halo (mint, sky, violet) with the progress on its rim.
+    // Inside it, while listening, the live output spectrum as a mirrored wave (lows left, highs right); while the
+    // suggestions are built, translucent planes drifting around each other.
+    void updateOrbLevels()
+    {
+        auto& spectrum = ctx.getServices().getOutputSpectrum();
+
+        for (int i = 0; i < kOrbPoints; ++i)
+        {
+            const float hz = 40.0f * std::pow (400.0f, (float) i / (float) (kOrbPoints - 1));   // 40 Hz .. 16 kHz
+            const float db = spectrum.levelDbAt (hz) + 4.5f * std::log2 (hz / 1000.0f);         // tilt: music falls
+            const float target = juce::jlimit (0.0f, 1.0f, (db + 72.0f) / 54.0f);              // ~4.5 dB / octave
+            auto& v = orbLevel[(size_t) i];
+            v += (target - v) * (target > v ? 0.45f : 0.12f);
+        }
+    }
+
+    void paintOrb (juce::Graphics& g, juce::Point<float> c, float radius, Assistant::Phase ph) const
+    {
+        const float twoPi = juce::MathConstants<float>::twoPi;
+        const float t = (float) std::fmod (juce::Time::getMillisecondCounterHiRes() * 0.001, 3600.0);
+        const auto orb = juce::Rectangle<float> (radius * 2.0f, radius * 2.0f).withCentre (c);
+        const juce::Colour hues[] { Col::accent, Col::info, Col::sideChannel };
+        const bool failed = ph == Assistant::Phase::Failed;
+
+        // Halo: three soft glows circling behind the rim at their own speeds
+        for (int i = 0; i < 3; ++i)
+        {
+            const float a = t * (0.32f + 0.11f * (float) i) * (i == 1 ? -1.0f : 1.0f) + (float) i * twoPi / 3.0f;
+            const auto p = c + juce::Point<float> (std::cos (a), std::sin (a)) * radius * 0.5f;
+            const float gr = radius * 1.08f;
+            const auto hue = failed ? Col::textFaint : hues[i];
+            g.setGradientFill (juce::ColourGradient (hue.withAlpha (0.42f), p.x, p.y, hue.withAlpha (0.0f), p.x + gr, p.y, true));
+            g.fillEllipse (juce::Rectangle<float> (gr * 2.0f, gr * 2.0f).withCentre (p));
+        }
+
+        // Body: lit from the top left
+        g.setGradientFill (juce::ColourGradient (Col::panelRaised.darker (0.15f), c.x - radius * 0.35f, c.y - radius * 0.45f,
+                                                 Col::background.darker (0.6f), c.x + radius * 0.55f, c.y + radius * 0.85f, true));
+        g.fillEllipse (orb);
+
+        {
+            juce::Graphics::ScopedSaveState state (g);
+            juce::Path clip;
+            clip.addEllipse (orb);
+            g.reduceClipRegion (clip);
+
+            if (ph == Assistant::Phase::Analysing)
+            {
+                // Planes drifting around each other
+                for (int i = 0; i < 3; ++i)
+                {
+                    const float a = t * (0.55f + 0.2f * (float) i) * (i == 1 ? -1.0f : 1.0f) + (float) i * 2.1f;
+                    const auto off = juce::Point<float> (std::cos (a * 0.7f), std::sin (a * 0.9f)) * radius * 0.28f;
+                    juce::Path plane;
+                    plane.addEllipse (-radius * 1.05f, -radius * 0.42f, radius * 2.1f, radius * 0.84f);
+                    const auto xf = juce::AffineTransform::rotation (a).translated (c + off);
+                    const auto p0 = juce::Point<float> (-radius, 0.0f).transformedBy (xf);
+                    const auto p1 = juce::Point<float> (radius, 0.0f).transformedBy (xf);
+                    g.setGradientFill (juce::ColourGradient (hues[i].withAlpha (0.55f), p0.x, p0.y, hues[i].withAlpha (0.04f), p1.x, p1.y, false));
+                    g.fillPath (plane, xf);
+                }
+
+                const float a = t * 1.6f;
+                const auto dot = c + juce::Point<float> (std::cos (a), std::sin (a * 1.3f)) * radius * 0.5f;
+                g.setColour (Col::text.withAlpha (0.9f));
+                g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre (dot));
+            }
+            else if (! failed)
+            {
+                // Faint rings breathing outwards
+                for (int k = 1; k <= 4; ++k)
+                {
+                    const float rr = radius * (0.2f * (float) k + 0.04f * std::sin (t * 1.4f - (float) k));
+                    g.setColour (Col::text.withAlpha (0.05f));
+                    g.drawEllipse (juce::Rectangle<float> (rr * 2.0f, rr * 2.0f).withCentre (c), 1.0f);
+                }
+
+                // The spectrum as a mirrored wave: a wide tinted layer behind, a bright one in front
+                const float x0 = c.x - radius * 0.9f, x1 = c.x + radius * 0.9f;
+                auto wave = [&] (float scale, float phase)
+                {
+                    juce::Path p;
+                    std::array<juce::Point<float>, kOrbPoints> top {};
+
+                    for (int i = 0; i < kOrbPoints; ++i)
+                    {
+                        const float u = (float) i / (float) (kOrbPoints - 1);
+                        const float taper = std::sin (u * juce::MathConstants<float>::pi);
+                        const float wobble = 0.05f + 0.035f * std::sin (t * 2.2f + phase + (float) i * 0.8f);
+                        const float amp = radius * 0.46f * taper * (wobble + 0.9f * orbLevel[(size_t) i]) * scale;
+                        top[(size_t) i] = { x0 + (x1 - x0) * u, c.y - amp };
+                    }
+
+                    // Smooth through the midpoints, along the top and back along the mirrored bottom
+                    p.startNewSubPath (top[0]);
+                    for (int i = 1; i < kOrbPoints; ++i)
+                        p.quadraticTo (top[(size_t) i - 1], (top[(size_t) i - 1] + top[(size_t) i]) * 0.5f);
+                    p.lineTo (top.back());
+                    for (int i = kOrbPoints - 1; i > 0; --i)
+                    {
+                        const auto a = top[(size_t) i], b = top[(size_t) i - 1];
+                        p.quadraticTo ({ a.x, 2.0f * c.y - a.y }, { (a.x + b.x) * 0.5f, c.y - ((a.y + b.y) * 0.5f - c.y) });
+                    }
+                    p.closeSubPath();
+                    return p;
+                };
+
+                g.setGradientFill (juce::ColourGradient (Col::info.withAlpha (0.35f), x0, c.y, Col::sideChannel.withAlpha (0.35f), x1, c.y, false));
+                g.fillPath (wave (1.3f, 1.7f));
+                g.setGradientFill (juce::ColourGradient (Col::text.withAlpha (0.95f), c.x, c.y - radius * 0.3f,
+                                                         Col::accent.withAlpha (0.85f), c.x, c.y + radius * 0.3f, false));
+                g.fillPath (wave (1.0f, 0.0f));
+            }
+        }
+
+        g.setColour (Col::text.withAlpha (0.08f));
+        g.drawEllipse (orb.reduced (0.5f), 1.0f);
+
+        // Progress on the rim, with a bright head
+        const float rr = radius + 7.0f;
+        juce::Path track;
+        track.addCentredArc (c.x, c.y, rr, rr, 0.0f, 0.0f, twoPi, true);
+        g.setColour (Col::outline.withAlpha (0.55f));
+        g.strokePath (track, juce::PathStrokeType (2.5f));
+
+        if (progress > 0.001f)
+        {
+            const float end = twoPi * juce::jlimit (0.0f, 1.0f, progress);
+            juce::Path value;
+            value.addCentredArc (c.x, c.y, rr, rr, 0.0f, 0.0f, end, true);
+            g.setColour (Col::accent);
+            g.strokePath (value, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            const auto head = c + juce::Point<float> (std::sin (end), -std::cos (end)) * rr;
+            g.setColour (Col::accent.withAlpha (0.3f));
+            g.fillEllipse (juce::Rectangle<float> (13.0f, 13.0f).withCentre (head));
+            g.setColour (Col::text);
+            g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre (head));
+        }
     }
 
     void paintResults (juce::Graphics& g)
@@ -1225,6 +1354,8 @@ struct AssistantPanel::Impl
     ps::Curve trackCurve {};
     juce::String status;
     float progress = 0.0f, inputLufs = ps::kNoValue, outputLufs = ps::kNoValue;
+    static constexpr int kOrbPoints = 28;
+    std::array<float, kOrbPoints> orbLevel {};   // smoothed spectrum levels 0..1 for the listening orb
 };
 
 //==============================================================================
