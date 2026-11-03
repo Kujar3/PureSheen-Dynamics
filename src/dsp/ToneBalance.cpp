@@ -52,8 +52,8 @@
 //   applies the limits below). So the curve is power neutral at every Amount (not only at 100), the limits are taken
 //   into account, and a region at 0 % gets no correction at all, the shift included. Q is the power of every bin,
 //   averaged over 1.5 s (kPowerAverageSec; measured: with a 50 ms average our level followed every frame's spectrum
-//   and sat 0.1 .. 0.45 dB above the reference on music at the default Speed, Tone Balance alone; at 1.5 .. 2 s the
-//   band levels of all seven slices come within 0.2 dB and the full chains match ~0.5 dB better each). The
+//   and its output power sat 0.1 .. 0.5 dB above the reference on music at the default Speed, Tone Balance alone;
+//   with 1.5 s it is within ~0.2 dB on all seven slices measured, and the full chains match ~0.5 dB better each). The
 //   solve interpolates the final dB curve at each bin before converting to power gain, exactly as synthesis does;
 //   averaging endpoint power gains would overestimate energy.
 //   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / presence kinks.
