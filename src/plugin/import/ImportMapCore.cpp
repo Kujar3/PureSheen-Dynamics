@@ -146,7 +146,7 @@ double imagerStereoizeModeDefault (const ModuleImport& m, int, int)
     return (v >= 9900 && v < 110000) ? 1.0 : 0.0;
 }
 
-// Absent crossovers 2 / 3 sit at 2 kHz / 10 kHz (measured: a four-band file storing only the first, 05's AssistMaster;
+// Absent crossovers 2 / 3 sit at 2 kHz / 10 kHz (measured: a four-band file storing only the first, test track 05's preset;
 // its side channel fits 2000 / 10000 within 0.14 dB rms, our 1000 / 6000 were off by up to 1.2 dB). The first one is
 // always stored in the files we have; ours is kept when it is not.
 double imagerCutoffDefault (const ModuleImport&, int number, int) { return number == 2 ? 2000.0 : number == 3 ? 10000.0 : kNoValue; }
