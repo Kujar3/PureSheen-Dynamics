@@ -432,7 +432,9 @@ TEST_CASE ("max. latency: constant per mode, measured impulse delay == reported,
                 if (std::abs (s.l[i]) > std::abs (s.l[at]))
                     at = i;
             CHECK_EQ ((int) at - 10, lat);
-            CHECK (std::abs (s.l[at] - 0.01f) < 1.0e-6f);
+            // the soft clip (Light, 100 %) drives quiet material by up to +1.5 dB (band-limited residue on an impulse)
+            CHECK (std::abs (s.l[at]) >= 0.01f - 1.0e-6f);
+            CHECK (std::abs (s.l[at]) <= 0.01f * 1.185f + 1.0e-6f);
             std::cout << "  " << lat << " (" << fmt (1000.0 * lat / sr) << ")";
             if (m == 0)
                 CHECK (1000.0 * lat / sr <= 1.25);
@@ -998,9 +1000,11 @@ TEST_CASE ("max. automation: soft clip mode changes ramp the curve in every mode
         if (worst >= 0.001)
             std::cout << "    mode " << mode << " soft clip automation step " << worst << "\n";
         CHECK (worst < 0.001);
-        CHECK (std::abs (s.l[11000] - 0.6f) < 1.0e-6f);
-        CHECK (s.l[22000] < 0.56f); // Heavy actually changed the curve
-        CHECK (std::abs (s.l[38000] - 0.6f) < 1.0e-6f);
+        const float light = 0.6f * 1.185f;   // Light: +1.5 dB drive, still under its knee
+        CHECK (std::abs (s.l[11000] - light) < 1.0e-4f);
+        CHECK (s.l[22000] > light + 0.1f); // Heavy (+5.9 dB into its knee) actually changed the curve
+        CHECK (s.l[22000] < 1.0f);
+        CHECK (std::abs (s.l[38000] - light) < 1.0e-4f);
         CHECK (std::abs (s.l[22000] + s.r[22000]) < 1.0e-6f);
     }
 }

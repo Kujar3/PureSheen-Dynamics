@@ -239,9 +239,10 @@ private:
 
 //==============================================================================
 // Soft clip on 4x oversampled audio. Output = input delayed by the oversampler latency + the downsampled clipping
-// residue (curve (x) - x) * amount, so below the onset (or at amount 0) it is an exact delay. The curve is relative to
-// the output level: linear up to the onset (Light -3 dB, Moderate -9 dB, Heavy -30 dB), then a tanh knee that
-// approaches the output level.
+// residue (curve (x) - x) * amount, so at amount 0 it is an exact delay. The curve is relative to the output level: a
+// drive (Light +1.5 dB, Moderate +3.2 dB, Heavy +5.9 dB), linear up to a knee (0.9 / 0.75 / 0.6 x the output level),
+// then a tanh knee that approaches the output level. So quiet passages get (1 - amount) + amount x drive of gain
+// (measured: the reference's soft clip at 15 % Light lifts everything below the limiter by +0.23 dB, Heavy +1.2 dB).
 class SoftClipStage
 {
 public:
@@ -259,6 +260,7 @@ private:
     bool useMinimum = false, stale = true;
     std::array<DelayLine, 2> dry;
     double onset = 0.708, onsetNow = 0.708, amountTarget = 0.0, amountNow = 0.0, amountStep = 0.0;
+    double drive = 1.0, driveNow = 1.0;
     double previousCeiling = 1.0;
     bool ceilingValid = false;
     std::array<std::vector<float>, 2> residue;

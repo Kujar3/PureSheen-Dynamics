@@ -109,9 +109,9 @@ struct MaximizerPanel::Impl
         for (auto* t : kSpectralText) specTips.add (t);
         aggressive.setItemTooltips (aggrTips);
         spectral.setItemTooltips (specTips);
-        clipMode.setItemTooltips ({ "Light: starts softening the peaks 3 dB below full scale.",
-                                    "Moderate: starts 9 dB below full scale, warmer.",
-                                    "Heavy: starts 30 dB below full scale, strongly saturated." });
+        clipMode.setItemTooltips ({ "Light: drives the clipper +1.5 dB, rounds off only the peaks near full scale.",
+                                    "Moderate: drives it +3 dB, softens from 2.5 dB below full scale, warmer.",
+                                    "Heavy: drives it +6 dB, softens from 4 dB below full scale, strongly saturated." });
 
         for (auto* k : { &character, &upward, &siTransient, &siSustain, &clipAmount, &transAmount, &learnTarget })
             k->setColour (colour);

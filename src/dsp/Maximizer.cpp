@@ -56,8 +56,10 @@
 //   summed, none worse.
 // - Transient Emphasis: up to +8 dB on onsets (0.3 ms / 15 ms envelope against a 20 ms / 200 ms one), applied before
 //   the limiter, so the limiter's gain envelope and the soft clip shape the hits.
-// - Soft Clip: relative to the output level (onset -3 / -9 / -30 dB), residue form on 4x oversampled audio (linear
-//   phase; minimum phase in Low Latency to keep it ~1 ms).
+// - Soft Clip: relative to the output level, a drive (Light / Moderate / Heavy +1.5 / +3.2 / +5.9 dB) into a tanh
+//   knee from 0.9 / 0.75 / 0.6 x the output level, mixed in by the amount, residue form on 4x oversampled audio (linear
+//   phase; minimum phase in Low Latency to keep it ~1 ms). Measured (Up-Test.wav, Checklist 16): the reference's soft
+//   clip lifts everything below the limiter by (1 - amount) + amount x drive, on every algorithm.
 // - Mode changes: the output fades out (raised cosine 10 ms), the pipeline is flushed and reconfigured, refilled for
 //   the new latency and faded in. Latency is constant per mode and sample rate (not affected by True Peak, styles,
 //   character or soft clip).
@@ -114,11 +116,12 @@ void smoothCore (maxi::CoreSettings& cs, double c) noexcept
     cs.slowChargeMs = c <= 4.0 ? 0.0 : (c >= 7.0 ? 30.0 : 1000.0 * std::pow (0.03, (c - 4.0) / 3.0));
     cs.lfAdapt = 0.0;
     // Dense limiting: once more than ~60 % of the recent time is limited, the fast release slows (up to +100 ms), so
-    // steady material driven far into the limiter is turned down rather than flattened. Measured on the spectral
-    // algorithm at character 2 (Up-Test.wav, Gain +20: steady noise 10 dB over comes out 2.7 dB quieter than a plain
-    // fast release; 60 ms noise bursts at 16 dB over and decaying tones barely change). Music (limited ~15-45 % of the
-    // time at +8 dB) stays under the knee.
-    cs.denseReleaseMs = 100.0;
+    // steady material driven far into the limiter is turned down rather than flattened. Measured at character 2 on the
+    // default, transparent and spectral algorithms alike (Up-Test.wav, Gain +20: steady noise 10 dB over comes out
+    // 2.7-3.2 dB quieter than a plain fast release; 60 ms noise bursts at 16 dB over and decaying tones barely change).
+    // Above character 4 the slow stage holds sustained limiting itself and the extra fades (15 ms at 6, measured on the
+    // spectral algorithm). Music (limited ~15-45 % of the time at +8 dB) stays under the knee.
+    cs.denseReleaseMs = c <= 4.0 ? 100.0 : 100.0 * std::pow (0.15, (c - 4.0) / 2.0);
     cs.denseKnee = 0.6;
     cs.denseChargeMs = 50.0;
     cs.denseReleaseEnvMs = 100.0;

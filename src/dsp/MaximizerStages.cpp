@@ -505,14 +505,19 @@ void SoftClipStage::reset() noexcept
     minimum.reset();
     amountNow = amountTarget;
     onsetNow = onset;
+    driveNow = drive;
     ceilingValid = false;
     stale = false;
 }
 
 void SoftClipStage::setParams (bool on, int mode, double amount01) noexcept
 {
-    static constexpr double onsets[3] { 0.70794578438, 0.35481338923, 0.03162277660 };   // -3, -9, -30 dB
-    onset = onsets[std::clamp (mode, 0, 2)];
+    // Light / Moderate / Heavy: drive +1.5 / +3.2 / +5.9 dB, knee 0.9 / 0.75 / 0.6 x the output level (measured)
+    static constexpr double drives[3] { 1.185, 1.45, 1.97 };
+    static constexpr double onsets[3] { 0.9, 0.75, 0.6 };
+    const int i = std::clamp (mode, 0, 2);
+    drive = drives[i];
+    onset = onsets[i];
     amountTarget = on ? std::clamp (amount01, 0.0, 1.0) : 0.0;
 }
 
@@ -551,11 +556,11 @@ void SoftClipStage::process (const float* const* in, float* const* out, const do
     const int on = n * factor;
     const double step = amountStep / (double) factor;
     double amountEnd = amountNow;
-    double onsetEnd = onsetNow;
+    double onsetEnd = onsetNow, driveEnd = driveNow;
     for (int ch = 0; ch < 2; ++ch)
     {
         double amt = amountNow;
-        double o = onsetNow;
+        double o = onsetNow, dr = driveNow;
         float* u = up[ch];
         for (int j = 0; j < on; ++j)
         {
@@ -565,26 +570,25 @@ void SoftClipStage::process (const float* const* in, float* const* out, const do
             const double fraction = (double) (j % factor + 1) / factor;
             const double c = before + fraction * (after - before), invC = 1.0 / c;
             rampControl (o, onset, step);
+            rampControl (dr, drive, step);
             const double range = 1.0 - o;
             if (amt < amountTarget)
                 amt = std::min (amountTarget, amt + step);
             else if (amt > amountTarget)
                 amt = std::max (amountTarget, amt - step);
             const double v = (double) u[j];
-            const double a = std::abs (v) * invC;
-            double r = 0.0;
-            if (a > o)
-            {
-                const double y = o + range * std::tanh ((a - o) / range);
-                r = (v < 0.0 ? -(y - a) : (y - a)) * c;
-            }
+            const double a = std::abs (v) * invC * dr;
+            const double y = a > o ? o + range * std::tanh ((a - o) / range) : a;
+            const double r = (v < 0.0 ? -y : y) * c - v;
             u[j] = (float) (r * amt);
         }
         amountEnd = amt;
         onsetEnd = o;
+        driveEnd = dr;
     }
     amountNow = amountEnd;
     onsetNow = onsetEnd;
+    driveNow = driveEnd;
 
     float* res[2] { residue[0].data(), residue[1].data() };
     os.downsample (res, n);

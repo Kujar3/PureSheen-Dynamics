@@ -131,7 +131,7 @@ enum class MaximizerMode : int
 };
 enum class AggressiveStyle : int { Clipping = 0, Crisp, Balanced, Pumping };
 enum class SpectralStyle : int { Classic = 0, Modern, Transient };
-enum class SoftClipMode : int { Light = 0, Moderate, Heavy };   // onset -3 / -9 / -30 dBFS
+enum class SoftClipMode : int { Light = 0, Moderate, Heavy };   // drive +1.5 / +3.2 / +5.9 dB into the knee
 
 //==============================================================================
 enum class DitherBits : int { Bits24 = 0, Bits20, Bits16, Bits12, Bits8 };
