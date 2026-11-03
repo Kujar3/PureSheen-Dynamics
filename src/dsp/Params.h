@@ -21,8 +21,10 @@
 //   T/S split       "<prefix>.ts.sens" / "<prefix>.ts.len"     every module that offers Transient/Sustain
 // Order: the 0.1.1 table (I/O, the six Core modules, Dither) is frozen; phase 2 appends after "dith.dc": first the
 // Core T/S additions (eq1 / eq2 ts params, the Imager channel slot and its set B, "exc.ts.on" and the exc ts params),
-// then each phase 2 module in ModuleType order (slot params, then its own params in struct order).
-// tests/ParamCompatTests.cpp guards the 0.1.1 part (index, id, name, range, default, choices of all 479 entries).
+// then each phase 2 module in ModuleType order (slot params, then its own params in struct order). The vintage-style
+// modules (phase 3) append after "bass.autoGain" the same way (ccmp, peq, clim, tape).
+// tests/ParamCompatTests.cpp guards the 0.1.1 part (index, id, name, range, default, choices of all 479 entries), the
+// 0.2 - 0.5 table (841 entries) and the vintage appendix (count + fingerprint).
 // Host-visible names: "<shortName> <Band n> <Name> [(A)|(B)]", e.g. "EQ 1 Band 3 Freq (A)". Set B is labelled "(B)";
 // the UI shows A/B as "Mid"/"Side", "Left"/"Right" or "Transient"/"Sustain" depending on the channel mode.
 namespace ps
@@ -44,6 +46,8 @@ struct ParamSpec
 
 const std::vector<ParamSpec>& paramSpecs();          // fixed order; append-only across versions
 inline constexpr int kNumParams_0_1_1 = 479;         // entries of the released 0.1.1 table (dith.dc is the last)
+inline constexpr int kNumParams_0_5_0 = 841;         // entries of the 0.2 .. 0.5 table: 0.1.1 + the phase 2 appendix
+                                                     //   (bass.autoGain is the last); the vintage appendix follows
 int paramIndex (const std::string& id) noexcept;     // -1 when unknown (not realtime: string lookup)
 
 // Plain values, one per paramSpecs() entry (choices / bools as 0, 1, 2 ...).
@@ -65,9 +69,10 @@ struct IoParams
 void readIoParams (ParamValues, IoParams&) noexcept;
 
 // Per-module slot controls the host applies around every module.
-// Modules with a single channel mode (Maximizer, Bass Shaper: Stereo only) have only "<prefix>.on": no chMode (a
-// choice needs >= 2 entries), no a.on / b.on / link (no effect in Stereo; and "max.link" is the Maximizer's
-// Gain/Output link). readSlotParams then returns Stereo, both channels on, link on. (The Imager was single-mode in
+// Modules with a single channel mode (Maximizer, Bass Shaper, Classic Limiter, Tape: Stereo only) have only
+// "<prefix>.on": no chMode (a choice needs >= 2 entries), no a.on / b.on / link (no effect in Stereo; and "max.link" /
+// "clim.link" are the limiters' own Gain/Output and Threshold/Ceiling links). readSlotParams then returns Stereo,
+// both channels on, link on. (The Imager was single-mode in
 // 0.1.x; its "img.chMode" / "img.a.on" / "img.b.on" / "img.link" are appended phase 2 entries.)
 struct SlotParams
 {
@@ -84,11 +89,11 @@ struct SlotParams
 void readSlotParams (ParamValues, ModuleType, SlotParams&) noexcept;
 
 // Channel modes each module offers (reference-suite parity), Stereo first, then M/S, L/R, T/S where offered:
-//   Equalizer 1 / 2, Dynamic EQ, Match EQ                                  Stereo, M/S, L/R, T/S
+//   Equalizer 1 / 2, Dynamic EQ, Match EQ, Passive EQ                      Stereo, M/S, L/R, T/S
 //   Exciter, Tone Balance, Definition, Smoother, Low Contrast              Stereo, M/S, T/S
-//   Dynamics, Punch                                                        Stereo, M/S
+//   Dynamics, Punch, Classic Compressor                                    Stereo, M/S
 //   Imager                                                                 Stereo, T/S
-//   Maximizer, Bass Shaper                                                 Stereo
+//   Maximizer, Bass Shaper, Classic Limiter, Tape                          Stereo
 std::vector<ChannelMode> supportedChannelModes (ModuleType);
 
 // (phase 2) The modes of the "<prefix>.chMode" choice, in choice order (empty for single-mode modules). Equal to
@@ -442,5 +447,91 @@ struct BassShaperParams
     bool autoGain = false;            // "autoGain"
 };
 void readBassShaperParams (ParamValues, BassShaperParams&) noexcept;
+
+//==============================================================================
+//==============================================================================
+// Vintage-style modules (phase 3). Ranges and defaults marked (TBC) are first-principles choices to be confirmed
+// against the reference before release; the parameter table keeps them in one place (ParamTable.cpp reads these
+// struct defaults). Unlike the phase 2 modules, their defaults are the reference's defaults, not neutral settings: the
+// neutral settings are documented in each module's header.
+
+//==============================================================================
+// Classic Compressor ("ccmp.", Stereo / M/S; per channel set "<a|b>.<name>", Stereo uses set A)
+struct ClassicCompSetParams
+{
+    float thresholdDb = -12.0f;       // "thr"        -40..0 (TBC)
+    float ratio = 2.0f;               // "ratio"      1..20, skew centre 4, ":1" (TBC)
+    float attackMs = 10.0f;           // "attack"     0.1..100 log (TBC)
+    float releaseMs = 100.0f;         // "release"    30..3000 log (TBC): the transient release; sustained reduction
+                                      //              releases slower (ClassicComp.h)
+    ClassicCompMode mode = ClassicCompMode::Balanced;   // "mode" Sharp / Balanced / Smooth (TBC)
+    float makeupDb = 0.0f;            // "makeup"     -12..+24
+    bool autoGain = true;             // "autoGain"   (TBC)
+    float scHighPassHz = 20.0f;       // "sc.hpf"     20..500 log: 12 dB/oct high-pass on the detector (TBC)
+    float scBellHz = 1000.0f;         // "sc.bellHz"  200..8000 log: wide bell (Q 0.7) on the detector
+    float scBellDb = 0.0f;            // "sc.bellDb"  -8..+8
+    float scShelfHz = 6000.0f;        // "sc.shelfHz" 2000..16000 log: high shelf on the detector
+    float scShelfDb = 0.0f;           // "sc.shelfDb" -8..+8
+};
+struct ClassicCompParams
+{
+    ClassicCompSetParams sets[kNumChannelSets];      // "<a|b>.<name>"
+};
+void readClassicCompParams (ParamValues, ClassicCompParams&) noexcept;
+
+//==============================================================================
+// Passive EQ ("peq.", Stereo / M/S / L/R / T/S; per channel set "<a|b>.<name>"). The frequency selectors are choices
+// whose index points into the kPassiveEq*Hz arrays of Types.h; the amount knobs run 0..10 (0 = no effect).
+struct PassiveEqSetParams
+{
+    // top section (passive LC program EQ)
+    int lowHzIndex = 3;               // "lowHz"      kPassiveEqLowHz: 20 / 30 / 45 / 60 / 100 Hz (60, TBC)
+    float lowBoost = 0.0f;            // "lowBoost"   0..10
+    float lowCut = 0.0f;              // "lowCut"     0..10
+    int highHzIndex = 3;              // "highHz"     kPassiveEqHighHz: 3 / 4 / 5 / 8 / 10 / 12 / 16 kHz (8 k, TBC)
+    float highBoost = 0.0f;           // "highBoost"  0..10
+    float highBandwidth = 5.0f;       // "highBw"     0 (sharp) .. 10 (broad) (TBC)
+    int highCutHzIndex = 1;           // "highCutHz"  kPassiveEqHighCutHz: 5 / 10 / 20 kHz (10 k, TBC)
+    float highCut = 0.0f;             // "highCut"    0..10
+    // bottom section (passive midrange EQ)
+    int lowMidHzIndex = 1;            // "lmHz"       kPassiveEqLowMidHz: 200 / 300 / 500 / 700 / 1000 Hz (300, TBC)
+    float lowMidBoost = 0.0f;         // "lmBoost"    0..10
+    int midHzIndex = 4;               // "midHz"      kPassiveEqMidHz: 200 Hz .. 7 kHz, 11 steps (1 k, TBC)
+    float midCut = 0.0f;              // "midCut"     0..10
+    int highMidHzIndex = 2;           // "hmHz"       kPassiveEqHighMidHz: 1.5 / 2 / 3 / 4 / 5 kHz (3 k, TBC)
+    float highMidBoost = 0.0f;        // "hmBoost"    0..10
+};
+struct PassiveEqParams
+{
+    float drive = 0.0f;               // "drive"      0..10 tube make-up stage (shared by both sets; 0 = no colour)
+    PassiveEqSetParams sets[kNumChannelSets];        // "<a|b>.<name>"
+};
+void readPassiveEqParams (ParamValues, PassiveEqParams&) noexcept;
+
+//==============================================================================
+// Classic Limiter ("clim.", Stereo only: slot = "clim.on")
+struct ClassicLimiterParams
+{
+    float thresholdDb = 0.0f;         // "thr"        -12..0 (TBC): gain before the limiter = ceiling - threshold
+    float ceilingDb = -0.1f;          // "ceiling"    -12..0 dBFS (TBC)
+    float character = 5.0f;           // "character"  0 (fast) .. 10 (slow) (TBC)
+    ClassicLimiterMode mode = ClassicLimiterMode::Analog;   // "mode" Analog / Tube / Modern (TBC)
+    bool truePeak = false;            // "truePeak"   (TBC)
+    bool linkThresholdCeiling = false;   // "link"    UI: Threshold and Ceiling move together (no DSP effect)
+};
+void readClassicLimiterParams (ParamValues, ClassicLimiterParams&) noexcept;
+
+//==============================================================================
+// Tape ("tape.", Stereo only: slot = "tape.on")
+struct TapeParams
+{
+    TapeSpeed speed = TapeSpeed::Ips15;   // "speed"     7.5 / 15 / 30 ips (TBC)
+    float driveDb = 0.0f;             // "drive"      -30..+20 dB into the tape model (output level compensated)
+    float bias = 0.0f;                // "bias"       -10..+10
+    float harmonics = 0.0f;           // "harmonics"  0..10 even-order harmonics (TBC)
+    float lowEmphasis = 5.0f;         // "lowEmph"    0..10 head bump (0 = no peak, roll-off kept; 10 = +10 dB) (TBC)
+    float highEmphasis = 4.0f;        // "highEmph"   0..10 (4 = flat highs)
+};
+void readTapeParams (ParamValues, TapeParams&) noexcept;
 
 } // namespace ps

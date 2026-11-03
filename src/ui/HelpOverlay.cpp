@@ -94,6 +94,14 @@ struct HelpOverlay::Impl
               moduleColour (ps::ModuleType::LowContrast) },
             { "**Bass Shaper** - level, punch, sustain and peaks of everything below a cutoff.",
               moduleColour (ps::ModuleType::BassShaper) },
+            { "**Classic Compressor** - smooth glue compression with an old-school feel.",
+              moduleColour (ps::ModuleType::ClassicComp) },
+            { "**Passive EQ** - broad, musical boosts and cuts at a few classic frequencies.",
+              moduleColour (ps::ModuleType::PassiveEq) },
+            { "**Classic Limiter** - warm tube-style limiting; lower the threshold to get louder.",
+              moduleColour (ps::ModuleType::ClassicLimiter) },
+            { "**Tape** - the warmth, low-end bump and soft highs of recording to tape.",
+              moduleColour (ps::ModuleType::Tape) },
         };
 
         close.roundBackground = true;

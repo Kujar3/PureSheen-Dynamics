@@ -29,10 +29,16 @@ enum class ModuleType : int
     LowContrast,    // "lowc" Low Contrast: time-frequency contrast of the low end (20..300 Hz)
     BassShaper,     // "bass" Bass Shaper: balance, punch, sustain power and peak control below a cutoff
     // ---- phase 3+ (append here) ----
+    // vintage-style modules (phase 3)
+    ClassicComp,    // "ccmp" Classic Compressor: feedback compressor, program-dependent release, three knee modes
+    PassiveEq,      // "peq"  Passive EQ: passive LC program EQ + passive midrange EQ + tube make-up stage
+    ClassicLimiter, // "clim" Classic Limiter: variable-mu feedback tube limiter followed by a brickwall stage
+    Tape,           // "tape" Tape: two-head tape machine (record EQ, tape saturation, reproduce EQ, head bump)
     Count
 };
 
 inline constexpr int kNumCoreModuleTypes = (int) ModuleType::DynamicEq;   // the six types released in 0.1.x
+inline constexpr int kFirstVintageModuleType = (int) ModuleType::ClassicComp;   // (phase 3) the vintage-style four
 
 inline constexpr int kNumModuleTypes = (int) ModuleType::Count;
 
@@ -211,5 +217,29 @@ inline constexpr std::array<double, kPunchSyncNotes> kPunchSyncFractions {
     1.0 / 6.0, 1.0 / 4.0, 3.0 / 8.0,         // 1/4T  1/4  1/4D
     1.0 / 3.0, 1.0 / 2.0, 3.0 / 4.0          // 1/2T  1/2  1/2D
 };
+
+//==============================================================================
+// (phase 3) Vintage-style module enums and stepped values (choice indices of their parameters; append-only).
+
+// Classic Compressor knee / ballistics modes (stored 0..2 in this order).
+enum class ClassicCompMode : int { Sharp = 0, Balanced, Smooth, Count };
+
+// Classic Limiter modes: Analog = clean gain element, Tube = tube saturation in the gain element, Modern = the tube
+// stage blended with a transparent limiter.
+enum class ClassicLimiterMode : int { Analog = 0, Tube, Modern, Count };
+
+// Tape speeds; kTapeSpeedIps[index] = inches per second.
+enum class TapeSpeed : int { Ips7_5 = 0, Ips15, Ips30, Count };
+inline constexpr std::array<double, (int) TapeSpeed::Count> kTapeSpeedIps { 7.5, 15.0, 30.0 };
+
+// Passive EQ stepped frequencies in Hz (index = choice value of the parameter named in the comment).
+inline constexpr std::array<double, 5> kPassiveEqLowHz { 20.0, 30.0, 45.0, 60.0, 100.0 };                  // "lowHz"
+inline constexpr std::array<double, 7> kPassiveEqHighHz { 3000.0, 4000.0, 5000.0, 8000.0, 10000.0, 12000.0,
+                                                          16000.0 };                                       // "highHz"
+inline constexpr std::array<double, 3> kPassiveEqHighCutHz { 5000.0, 10000.0, 20000.0 };                  // "highCutHz"
+inline constexpr std::array<double, 5> kPassiveEqLowMidHz { 200.0, 300.0, 500.0, 700.0, 1000.0 };         // "lmHz"
+inline constexpr std::array<double, 11> kPassiveEqMidHz { 200.0, 300.0, 500.0, 700.0, 1000.0, 1500.0, 2000.0, 3000.0,
+                                                          4000.0, 5000.0, 7000.0 };                        // "midHz"
+inline constexpr std::array<double, 5> kPassiveEqHighMidHz { 1500.0, 2000.0, 3000.0, 4000.0, 5000.0 };    // "hmHz"
 
 } // namespace ps

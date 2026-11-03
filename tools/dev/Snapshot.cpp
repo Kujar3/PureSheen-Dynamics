@@ -427,6 +427,102 @@ int runSnapshot (const juce::File& outputDir)
     // 01: default chain
     ok &= writePng (*editor, file ("01_default_1180x720"));
 
+    // ---- BEGIN vintage (phase 3): the four vintage-style panels at 980x600 / 1180x720 / 1800x1100, Passive EQ in
+    //      Mid/Side (Side tab) and Transient/Sustain, the Classic Compressor in Mid/Side, the strip with every module,
+    //      Help at 980x600.
+    // Set PURESHEEN_SNAPSHOT_ONLY=vintage to stop after this block.
+    {
+        juce::MemoryBlock stateBefore;
+        proc.getStateInformation (stateBefore);
+
+        std::vector<ps::ModuleType> vintage;
+        for (int t = ps::kFirstVintageModuleType; t < ps::kNumModuleTypes; ++t)
+        {
+            vintage.push_back ((ps::ModuleType) t);
+            proc.addModule ((ps::ModuleType) t);
+        }
+        pumpMessages (30);
+
+        struct VintageSize { int w, h; const char* name; };
+        const VintageSize sizes[] = { { 980, 600, "980x600" }, { 1180, 720, "1180x720" }, { 1800, 1100, "1800x1100" } };
+        for (const auto& sz : sizes)
+        {
+            editor->setSize (sz.w, sz.h);
+            for (auto t : vintage)
+            {
+                editor->selectModule ((int) t);
+                rig.play (*editor, 8);
+                auto* panel = editor->getCurrentPanel();
+                if (panel == nullptr || panel->getModuleType() != t)
+                {
+                    std::cout << "FAILED: no panel for " << ps::moduleInfo (t).name << "\n";
+                    ok = false;
+                    continue;
+                }
+                ok &= writePng (*editor, file (juce::String ("17_") + ps::moduleInfo (t).idPrefix + "_" + sz.name));
+            }
+        }
+
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule ((int) ps::ModuleType::PassiveEq);
+        set (proc, "peq.chMode", 1.0f);
+        set (proc, "peq.link", 0.0f);
+        rig.play (*editor, 4);
+        if (auto* panel = editor->getCurrentPanel())
+            panel->setChannelSet (1);
+        rig.play (*editor, 2);
+        ok &= writePng (*editor, file ("17_peq_midside_1180x720"));
+        if (auto* panel = editor->getCurrentPanel())
+            panel->setChannelSet (0);
+        set (proc, "peq.chMode", 3.0f);
+        rig.play (*editor, 6);
+        ok &= writePng (*editor, file ("17_peq_ts_1180x720"));
+
+        editor->selectModule ((int) ps::ModuleType::ClassicComp);
+        set (proc, "ccmp.chMode", 1.0f);
+        set (proc, "ccmp.link", 0.0f);
+        rig.play (*editor, 6);
+        ok &= writePng (*editor, file ("17_ccmp_midside_1180x720"));
+
+        // every module in the chain (Equalizer 2 included): the strip at its densest
+        std::vector<ps::ModuleType> all { ps::kDefaultChain.begin(), ps::kDefaultChain.end() - 1 };
+        all.push_back (ps::ModuleType::Equalizer2);
+        for (int t = ps::kNumCoreModuleTypes; t < ps::kNumModuleTypes; ++t)
+            all.push_back ((ps::ModuleType) t);
+        all.push_back (ps::ModuleType::Maximizer);
+        proc.setChainOrder (all);
+        pumpMessages (30);
+        const bool every = (int) proc.getChainOrder().size() == ps::kNumModuleTypes;
+        std::cout << (every ? "vintage: every module in the chain: ok\n" : "FAILED: not every module is in the chain\n");
+        ok &= every;
+        for (const auto& sz : { sizes[0], sizes[1] })
+        {
+            editor->setSize (sz.w, sz.h);
+            editor->selectModule ((int) ps::ModuleType::Tape);
+            rig.play (*editor, 8);
+            ok &= writePng (*editor, file (juce::String ("17_all_modules_") + sz.name));
+        }
+        editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+        editor->setHelpVisible (true);
+        rig.play (*editor, 2);
+        ok &= writePng (*editor, file ("17_help_980x600"));
+        editor->setHelpVisible (false);
+        ok &= checkNoFocus (*editor);
+
+        proc.setStateInformation (stateBefore.getData(), (int) stateBefore.getSize());
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule ((int) ps::ModuleType::Equalizer1);
+        rig.play (*editor, 4);
+
+        if (juce::SystemStats::getEnvironmentVariable ("PURESHEEN_SNAPSHOT_ONLY", {}) == "vintage")
+        {
+            holder.reset();
+            std::cout << (ok ? "snapshots OK (vintage only)\n" : "snapshots FAILED\n");
+            return ok ? 0 : 1;
+        }
+    }
+    // ---- END vintage
+
     // ---- BEGIN reference (phase 3): the Reference page (empty, loading, loaded with loops A B C and the comparison at
     //      three sizes, the header's REF while the reference is heard, a missing file), the reference overlay on EQ 1.
     //      Synthetic reference WAVs only (written to a temp folder, deleted at the end).
@@ -1589,7 +1685,7 @@ int runSnapshot (const juce::File& outputDir)
         ok &= writePng (*editor, file ("10_exc_4band_midside_1180x720"));
     }
 
-    // 13: phase 2: every module in the chain (the strip with 14 tiles) at every size, the new panels at 980x600, and
+    // 13: phase 2: every module in the chain (the strip with every tile) at every size, the new panels at 980x600, and
     //     the Transient/Sustain channel mode (EQ 1 with the Sustain tab, Exciter with its T/S switch)
     {
         set (proc, "exc.chMode", 0.0f);
@@ -1601,7 +1697,7 @@ int runSnapshot (const juce::File& outputDir)
         proc.setChainOrder (all);
         pumpMessages (30);
         const bool every = (int) proc.getChainOrder().size() == ps::kNumModuleTypes;
-        std::cout << (every ? "all 14 modules in the chain: ok\n" : "FAILED: not every module is in the chain\n");
+        std::cout << (every ? "every module in the chain: ok\n" : "FAILED: not every module is in the chain\n");
         ok &= every;
 
         const Size allSizes[] = { { 980, 600, "980x600" }, { 1180, 720, "1180x720" }, { 1800, 1100, "1800x1100" } };

@@ -2,6 +2,8 @@
 
 #include "core/Loudness.h"
 #include "dsp/BassShaper.h"
+#include "dsp/ClassicComp.h"
+#include "dsp/ClassicLimiter.h"
 #include "dsp/Definition.h"
 #include "dsp/DynamicEq.h"
 #include "dsp/Dynamics.h"
@@ -11,8 +13,10 @@
 #include "dsp/LowContrast.h"
 #include "dsp/MatchEq.h"
 #include "dsp/Maximizer.h"
+#include "dsp/PassiveEq.h"
 #include "dsp/Punch.h"
 #include "dsp/Smoother.h"
+#include "dsp/Tape.h"
 #include "dsp/ToneBalance.h"
 #include "dsp/TransientSplit.h"
 
@@ -496,6 +500,10 @@ std::unique_ptr<Module> makeModule (ModuleType type)
         case ModuleType::Punch:       return std::make_unique<Punch>();
         case ModuleType::LowContrast: return std::make_unique<LowContrast>();
         case ModuleType::BassShaper:  return std::make_unique<BassShaper>();
+        case ModuleType::ClassicComp:    return std::make_unique<ClassicComp>();
+        case ModuleType::PassiveEq:      return std::make_unique<PassiveEq>();
+        case ModuleType::ClassicLimiter: return std::make_unique<ClassicLimiter>();
+        case ModuleType::Tape:           return std::make_unique<Tape>();
         case ModuleType::Count:
         default: break;
     }

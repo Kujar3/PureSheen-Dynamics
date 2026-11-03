@@ -51,8 +51,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     for (size_t index = 0; index < specs.size(); ++index)
     {
         const auto& s = specs[index];
-        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix (append-only, so the index decides)
-        const juce::ParameterID pid { juce::String (s.id), index < (size_t) ps::kNumParams_0_1_1 ? 1 : 2 };
+        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix; 3: the vintage appendix (append-only, so the index
+        // decides)
+        const int version = index < (size_t) ps::kNumParams_0_1_1 ? 1 : (index < (size_t) ps::kNumParams_0_5_0 ? 2 : 3);
+        const juce::ParameterID pid { juce::String (s.id), version };
         const juce::String name (s.name);
 
         switch (s.kind)

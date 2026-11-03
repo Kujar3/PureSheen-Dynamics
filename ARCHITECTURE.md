@@ -20,8 +20,8 @@ Later phases (enums are append-only, so they slot in):
   Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
 - Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
 - Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (done, from RefMatch, see
-  "Track Referencing (phase 3)" below), analog-style
-  compressor / EQ / limiter / tape modules, a de-limiter, and one plug-in per module ("PureSheen EQ", ...)
+  "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (contracts done, see
+  "Vintage-style modules (phase 3)" below), a de-limiter, and one plug-in per module ("PureSheen EQ", ...)
 - Phase 4: MCP bridge
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
@@ -64,6 +64,7 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
   Quadrature.h/.cpp       ripple-free envelope for Punch / Bass Shaper
   DynamicEq, MatchEq (+ MatchAnalysis, CurveFir), ToneBalance (+ ToneTargets), Definition, Smoother, Punch,
   LowContrast, BassShaper .h/.cpp   one contract header + implementation per module
+  (phase 3) ClassicComp, PassiveEq, ClassicLimiter, Tape .h/.cpp   the vintage-style modules (contract + stub)
 src/plugin/               PluginProcessor.h/.cpp (+ PluginState, UndoHistory, Presets, FactoryPresets, MatchEqState;
                           MatchEqStateTests.cpp is compiled into the dev tool only)
 src/plugin/Assistant.*    (phase 3) the Assistant on the processor side: capture, worker, state child, macro edits
@@ -78,7 +79,8 @@ src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, M
                           SpectralWidgets, SpectralCommon), PunchPanel (+ PunchViews), LowContrastPanel (+
                           LowRegionDisplay), BassShaperPanel (+ BassScope), LowEndWidgets
                           (phase 3) AssistantPanel (the Assistant page), the header's Assistant | Chain | Reference switch;
-                          ReferencePanel, RefWaveform, RefComparison (Track Referencing)
+                          ReferencePanel, RefWaveform, RefComparison (Track Referencing); ClassicCompPanel,
+                          PassiveEqPanel, ClassicLimiterPanel, TapePanel (vintage-style modules)
 tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators);
                           ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
@@ -620,3 +622,79 @@ minute songs, integrated loudness and LRA within 0.1 LU of ffmpeg's ebur128.
 **Known limits.** Integrated level match uses the whole region's loudness, so a quiet intro of the reference plays
 quieter than the master (Short-term follows what is heard). The reference plays without the chain's latency offset
 (a different song; a few ms do not matter).
+
+## Vintage-style modules (phase 3)
+
+Four modules modelled on classic analog circuit classes, under our own names: a feedback compressor, a passive LC
+program EQ with a passive midrange EQ and a tube make-up stage, a variable-mu feedback tube limiter with a brickwall
+stage, and a two-head tape machine. Clean room: public documentation and black-box renders only. Until the renders are
+fitted, every module is built from first principles of its circuit class with every coefficient in one named constant
+block (`k...` in an anonymous namespace at the top of its .cpp), so the fit only changes numbers. Ranges and defaults
+marked (TBC) in `Params.h` are confirmed before release; nothing is installed before that.
+
+| ModuleType | prefix | display name (short) | channel modes | T/S twin | params | latency (44.1 / 48 kHz) | owner |
+|---|---|---|---|---|---|---|---|
+| ClassicComp | ccmp | Classic Compressor (Classic Comp) | St, M/S | no | 29 | 0 | mod-ccmp |
+| PassiveEq | peq | Passive EQ | St, M/S, L/R, T/S | yes | 36 | 3 (`kPassiveEqLatency`) | mod-peq |
+| ClassicLimiter | clim | Classic Limiter | St | no | 7 | 109 / 117 (`ClassicLimiter::latencyFor`) | mod-clim |
+| Tape | tape | Tape | St | no | 7 | 5 (`kTapeLatency`) | mod-tape |
+
+(params = slot params incl. `.ts.*` + module params; 79 entries appended after `bass.autoGain`, indices 841..919,
+`ccmp.on` .. `tape.highEmph`; 920 entries in all.)
+
+**Parameters.** The vintage appendix follows the phase 2 rules: every module in ModuleType order, slot params first
+(`.on`; `.chMode`, `.a.on`, `.b.on`, `.link` for the multi-mode ones; `.ts.sens` / `.ts.len` for the Passive EQ), then
+its own params in struct order (shared params first, then set A, then set B). The Classic Compressor's controls are all
+per channel set; the Passive EQ's Drive is shared (the tube stage), its two sections per set. The Passive EQ frequency
+selectors are choices indexing `kPassiveEq*Hz` (Types.h); `ClassicCompMode`, `ClassicLimiterMode` and `TapeSpeed`
+(`kTapeSpeedIps`) are their choice enums. Unlike the phase 2 modules, the defaults are the reference's (TBC), not
+neutral settings: each header documents its neutral settings. The processor gives the appendix APVTS version hint 3
+(`kNumParams_0_5_0` = 841 marks its start). `tests/ParamCompatTests.cpp` freezes the 0.2 .. 0.5 table (841 entries,
+count + fingerprint) and the vintage appendix (79 entries, count + fingerprint of its own entries; update that hash
+when a (TBC) value is confirmed, the test prints it).
+
+**Contracts** (headers are contracts, rule 1; the stubs pass audio through delayed by the contract's latency):
+- `ClassicComp.h`: feedback detector (the gain-stage output of the previous sample through the sidechain EQ: 12 dB/oct
+  high-pass, wide bell, high shelf), linked in Stereo, per set in M/S, peak / RMS blend; knee per mode (Sharp 2,
+  Balanced 6, Smooth 12 dB) with the feedback ratio mapping c = ratio - 1 (closed-form fixed point); attack scaled per
+  mode, program-dependent release (held share, 300 ms); the mode saturator scaled by the reduction depth; auto gain
+  before makeup; latency 0; neutral at ratio 1 / makeup 0 / auto gain off; `soloDetectionFilter` = hear the sidechain;
+  meters per set (reduction, 1 s hold, sidechain level, auto gain); panel helpers `detectorResponseDb`,
+  `staticCurveDb`.
+- `PassiveEq.h`: seven matched-biquad sections per channel (resonant low shelf boost, low shelf cut above it, high
+  peak with bandwidth and boost coupling, high shelf cut, low-mid / mid / high-mid proportional-Q peaks), a knob law
+  table, then the 2x minimum-phase oversampled tube stage (Drive; at 0 an exact delay); latency 3 at every rate whatever the
+  drive; neutral at the defaults (= input delayed by 3); twin per the Module.h rules; `getMagnitudeDb (set, hz)` for the
+  panel (both sets designed by instance A, published through a seqlock).
+- `ClassicLimiter.h`: input gain ceiling - threshold, the variable-mu stage (feedback detector, g = 1 / (1 + u^k) with
+  a 10 dB soft knee, exactly 1 below it; attack / release tables per mode over Character; program-dependent release;
+  Analog = clean with a 60 Hz detector high-pass, Tube = saturation scaled by the reduction, Modern = a blend), the
+  saturator 2x minimum-phase oversampled (Analog: an exact 3-sample delay), then the Maximizer's `maxi::LimiterCore`
+  (1.5 ms lookahead) and `maxi::Guard` (0.5 ms, true peak when on, always in the path); latency `latencyFor (rate)`;
+  Delta excludes the Threshold / Ceiling gain (handlesDelta, as the Maximizer); meters (both stages, peak reduction,
+  output peak) and a reduction history FIFO.
+- `Tape.h`: 4x minimum-phase oversampled record EQ (pre-emphasis at 500 Hz / 1 kHz / 2 kHz for 7.5 / 15 / 30 ips) ->
+  drive -> hysteretic saturator shaped by bias, even harmonics -> de-emphasis -> head bump (40 / 60 / 110 Hz, 0..+10 dB)
+  -> gap loss -> high emphasis (4 = flat) -> static make-up (-18 dBFS pink in = out); no noise, wow or flutter; latency
+  5; no neutral setting; meters (drive level, saturation); `responseDb` for the panel's emphasis view.
+
+**Registration** (done in the contracts wave): Chain (`createModule`, the Passive EQ twin), the Add menu (its own
+section), state / presets / undo (generic by id prefix), the chain strip (from 15 modules the compact tiles pack to
+44 px with 4 px gaps, so all 18 fit at 980 px), colours (Classic Comp lime, Passive EQ pink, Classic Limiter sage,
+Tape silver), Help ("More modules"), GenericModulePanel stubs in `src/ui/<Name>Panel.h/.cpp`, selftest
+("-- Vintage-style modules": added before the Maximizer at their defaults, realtime groups with every parameter moved in every channel
+mode, the contract latency in every mode at 44.1 / 48 kHz, nulls at the neutral settings, a 0.5.0 state loading
+unchanged), snapshots (`17_*`, `PURESHEEN_SNAPSHOT_ONLY=vintage`), one test file per module. The CMake globs pick the
+new files up (no CMakeLists change). The preset importer still skips the four sections as modules we do not have
+(`tests/XmlPresetImportTests.cpp` expects specs for every type before the Classic Compressor) until the integration
+adds their maps.
+
+Ownership for the module wave (only edit your files; ask the lead for contract changes):
+- mod-ccmp: ClassicComp.h/.cpp, tests/ClassicCompTests.cpp ("ccmp."), ui/ClassicCompPanel.h/.cpp
+- mod-peq: PassiveEq.h/.cpp, tests/PassiveEqTests.cpp ("peq."), ui/PassiveEqPanel.h/.cpp
+- mod-clim: ClassicLimiter.h/.cpp, tests/ClassicLimiterTests.cpp ("clim."), ui/ClassicLimiterPanel.h/.cpp
+- mod-tape: Tape.h/.cpp, tests/TapeTests.cpp ("tape."), ui/TapePanel.h/.cpp
+- lead (contracts) / integration: Types.h, Params.h, ParamTable.cpp, Chain.cpp, Widgets.cpp, ChainStrip.cpp,
+  ModulePanels.cpp, HelpOverlay.cpp, FactoryPresets.cpp, SelfTest.cpp, Snapshot.cpp, ParamTests / ParamCompatTests,
+  the importer maps; module owners report needed changes. Factory presets (3-5 per module), the importer map, the
+  status section and version 0.6.0 come with the integration.

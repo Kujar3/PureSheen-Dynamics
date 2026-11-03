@@ -8,10 +8,12 @@ namespace ps::ui
 {
 namespace
 {
-constexpr int kGap = 8, kCompactGap = 6;
+constexpr int kGap = 8, kCompactGap = 6, kDenseGap = 4;
 constexpr int kPlusW = 58, kCompactPlusW = 44;
-constexpr float kFullTileMinW = 104.0f;   // below this the tiles switch to the compact layout (up to 14 modules)
+constexpr float kFullTileMinW = 104.0f;   // below this the tiles switch to the compact layout (up to 18 modules)
 constexpr float kCompactTileMinW = 50.0f;
+constexpr float kDenseTileMinW = 44.0f;   // more than kDenseFrom modules (phase 3: up to 18) at 980 px
+constexpr int kDenseFrom = 15;
 constexpr float kEase = 0.38f;
 
 enum class Part { none, body, led, solo, delta, close, plus };
@@ -30,7 +32,8 @@ struct ChainStrip::Impl
     }
 
     // Full tiles (104..232 px) while they fit; with many modules (phase 2: up to 14) a compact tile (name on two
-    // lines, LED / S / Delta below, a thin difference bar) down to 50 px, so every module stays visible from 980 px.
+    // lines, LED / S / Delta below, a thin difference bar) down to 50 px, so every module stays visible from 980 px;
+    // from 15 modules (phase 3: up to 18) the compact tiles pack tighter (4 px gaps, down to 44 px).
     float naturalWidth (int gapPx, int plusPx) const
     {
         const auto area = tilesArea();
@@ -39,14 +42,17 @@ struct ChainStrip::Impl
     }
 
     bool compact() const { return naturalWidth (kGap, kPlusW) < kFullTileMinW; }
-    float gap() const { return (float) (compact() ? kCompactGap : kGap); }
+    bool dense() const { return (int) order.size() >= kDenseFrom; }
+    int compactGap() const { return dense() ? kDenseGap : kCompactGap; }
+    float gap() const { return (float) (compact() ? compactGap() : kGap); }
     float plusWidth() const { return (float) (compact() ? kCompactPlusW : kPlusW); }
 
     float tileWidth() const
     {
         if (! compact())
             return juce::jlimit (kFullTileMinW, 232.0f, naturalWidth (kGap, kPlusW));
-        return juce::jlimit (kCompactTileMinW, kFullTileMinW, naturalWidth (kCompactGap, kCompactPlusW));
+        return juce::jlimit (dense() ? kDenseTileMinW : kCompactTileMinW, kFullTileMinW,
+                             naturalWidth (compactGap(), kCompactPlusW));
     }
 
     float slotX (int slot) const { return tilesArea().getX() + (float) slot * (tileWidth() + gap()); }
@@ -439,7 +445,7 @@ struct ChainStrip::Impl
         {
             const auto type = (ps::ModuleType) t;
 
-            if (t == ps::kNumCoreModuleTypes && count > 0)
+            if ((t == ps::kNumCoreModuleTypes || t == ps::kFirstVintageModuleType) && count > 0)
                 menu.addSeparator();
 
             if (! proc.isModuleInChain (type))

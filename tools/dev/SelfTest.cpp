@@ -4,6 +4,9 @@
 #include "dsp/Maximizer.h"
 #include "dsp/TransientSplit.h"
 #include "dsp/BassShaper.h"
+#include "dsp/ClassicLimiter.h"
+#include "dsp/PassiveEq.h"
+#include "dsp/Tape.h"
 #include "plugin/Assistant.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/MatchEqState.h"
@@ -375,14 +378,15 @@ void testParameters()
     for (int i = 0; sameOrder && i < hostParams.size(); ++i)
     {
         auto* p = dynamic_cast<juce::RangedAudioParameter*> (hostParams[i]);
-        const int version = i < ps::kNumParams_0_1_1 ? 1 : 2;   // 0.1.1 table: 1, phase 2 appendix: 2
+        // 0.1.1 table: 1, phase 2 appendix: 2, vintage appendix: 3
+        const int version = i < ps::kNumParams_0_1_1 ? 1 : (i < ps::kNumParams_0_5_0 ? 2 : 3);
         sameOrder = p != nullptr && p->getParameterID() == juce::String (specs[(size_t) i].id)
                     && p->getVersionHint() == version && p->getName (256) == juce::String (specs[(size_t) i].name);
         if (! sameOrder)
             first = specs[(size_t) i].id;
     }
-    check (sameOrder, str ("params: one host parameter per paramSpecs() entry, same order / id / name, version 1 / 2 (",
-                           specs.size(), ")"), first);
+    check (sameOrder, str ("params: one host parameter per paramSpecs() entry, same order / id / name, version "
+                           "1 / 2 / 3 (", specs.size(), ")"), first);
 
     bool defaults = true;
     for (const auto& s : specs)
@@ -888,7 +892,16 @@ void setStateXml (PureSheenProcessor& p, const juce::String& xmlText);
 std::vector<ps::ModuleType> phase2Types()
 {
     std::vector<ps::ModuleType> t;
-    for (int i = ps::kNumCoreModuleTypes; i < ps::kNumModuleTypes; ++i)
+    for (int i = ps::kNumCoreModuleTypes; i < ps::kFirstVintageModuleType; ++i)
+        t.push_back ((ps::ModuleType) i);
+    return t;
+}
+
+// (phase 3) the vintage-style modules
+std::vector<ps::ModuleType> vintageTypes()
+{
+    std::vector<ps::ModuleType> t;
+    for (int i = ps::kFirstVintageModuleType; i < ps::kNumModuleTypes; ++i)
         t.push_back ((ps::ModuleType) i);
     return t;
 }
@@ -1079,7 +1092,7 @@ void testPhase2()
                         "reported to the host)", failures.empty() ? latencies : failures);
     }
 
-    // State round trip with all 14 modules, every T/S-capable one in Transient/Sustain and random values everywhere:
+    // State round trip with every module type, every T/S-capable one in Transient/Sustain and random values everywhere:
     // the restored processor holds the same values, chain and channel modes and plays finite audio.
     {
         Host a;
@@ -1121,16 +1134,17 @@ void testPhase2()
                 tsKept = tsKept && slot.channelMode == ps::ChannelMode::TransientSustain;
             }
         check (diffs == 0 && b.proc.getChainOrder() == order && tsKept,
-               "state: 14 modules in T/S with random values round trip (values, chain, channel modes)",
+               str ("state: ", ps::kNumModuleTypes, " modules in T/S with random values round trip (values, chain, "
+                    "channel modes)"),
                str (diffs, " differ, e.g. ", first, "; chain ", chainText (b.proc.getChainOrder())));
         const auto out = b.stream (24000, musicLikeInput (0.2f));
         b.proc.flushPendingChanges (true);
         a.stream (24000, musicLikeInput (0.2f));
         a.proc.flushPendingChanges (true);
-        check (allFinite (out), str ("state: the restored 14-module T/S chain plays finite audio"));
+        check (allFinite (out), str ("state: the restored ", ps::kNumModuleTypes, "-module T/S chain plays finite audio"));
         check (b.proc.getLatencySamples() == b.proc.getCurrentLatencySamples()
                    && b.proc.getLatencySamples() == a.proc.getCurrentLatencySamples(),
-               "state: the restored 14-module T/S chain reports the same latency to the host",
+               str ("state: the restored ", ps::kNumModuleTypes, "-module T/S chain reports the same latency to the host"),
                str (b.proc.getLatencySamples(), " / ", b.proc.getCurrentLatencySamples(), " / ", a.proc.getCurrentLatencySamples()));
     }
 
@@ -1175,6 +1189,165 @@ void testPhase2()
         check (slot.channelMode == ps::ChannelMode::MidSide, "state: 0.1.x Exciter Mid/Side stays Mid/Side");
         ps::readSlotParams (v.data(), ps::ModuleType::Imager, slot);
         check (slot.channelMode == ps::ChannelMode::Stereo, "state: 0.1.x Imager stays Stereo");
+    }
+}
+
+//==============================================================================
+// (phase 3) The vintage-style modules: registration, latency, neutral settings, realtime safety, older states.
+
+// The settings at which a vintage module is a latency-aligned null on a quiet (-26 dBFS peak) signal (see each
+// module's header); Tape has none (it saturates by design).
+Config vintageNeutralConfig (ps::ModuleType type, bool& hasNull)
+{
+    hasNull = true;
+    switch (type)
+    {
+        case ps::ModuleType::ClassicComp:
+            return { { "ccmp.a.ratio", 1.0f }, { "ccmp.b.ratio", 1.0f }, { "ccmp.a.autoGain", 0.0f }, { "ccmp.b.autoGain", 0.0f } };
+        case ps::ModuleType::PassiveEq:
+            return {};   // the defaults (every amount 0, drive 0)
+        case ps::ModuleType::ClassicLimiter:
+            return { { "clim.thr", 0.0f }, { "clim.ceiling", 0.0f }, { "clim.mode", 0.0f } };
+        default:
+            break;
+    }
+    hasNull = false;
+    return {};
+}
+
+// The latency each vintage module's contract fixes (samples at `rate`).
+int vintageLatency (ps::ModuleType type, double rate)
+{
+    switch (type)
+    {
+        case ps::ModuleType::PassiveEq:      return ps::kPassiveEqLatency;
+        case ps::ModuleType::ClassicLimiter: return ps::ClassicLimiter::latencyFor (rate);
+        case ps::ModuleType::Tape:           return ps::kTapeLatency;
+        default:                             return 0;
+    }
+}
+
+void testVintage()
+{
+    std::cout << "\n-- Vintage-style modules (Classic Compressor, Passive EQ, Classic Limiter, Tape)\n";
+
+    // all four can be added (before the Maximizer, every one of them at its defaults) and survive busy settings in
+    // every channel mode allocation-free
+    {
+        Host h;
+        h.prepare();
+        for (auto t : vintageTypes())
+            h.proc.addModule (t);
+        h.proc.flushPendingChanges (true);
+        const auto order = h.proc.getChainOrder();
+        check ((int) order.size() == (int) ps::kDefaultChain.size() + (int) vintageTypes().size()
+                   && order.back() == ps::ModuleType::Maximizer,
+               "vintage: the four modules added to the default chain, before the Maximizer", chainText (order));
+
+        bool defaults = true;
+        std::string firstOff;
+        const auto& specs = ps::paramSpecs();
+        for (size_t i = (size_t) ps::kNumParams_0_5_0; i < specs.size(); ++i)
+            if (! psplug::sameValue ((int) i, h.get (specs[i].id), specs[i].defaultValue))
+            {
+                defaults = false;
+                if (firstOff.empty())
+                    firstOff = specs[i].id;
+            }
+        check (defaults, "vintage: added modules start at their defaults", firstOff);
+
+        const auto input = musicLikeInput (0.25f);
+        for (auto t : vintageTypes())
+        {
+            std::vector<Config> configs;
+            for (int rot = 0; rot < 4; ++rot)
+                configs.push_back (busyConfig (t, rot));
+            configs.push_back ({ { std::string (ps::moduleInfo (t).idPrefix) + ".on", 0.0f } });
+            runGroup (h, str (ps::moduleInfo (t).name, ": every parameter moved, every channel mode"), configs, input);
+        }
+    }
+
+    // every vintage module alone, in every channel mode it offers: the contract's latency is reported to the host
+    // (T/S adds the splitter) and, where the module defines neutral settings, the output is the input delayed by it
+    for (double rate : { 44100.0, 48000.0 })
+    {
+        std::string failures, latencies;
+        bool allOk = true;
+        const long long n = (long long) rate;
+        const auto quiet = recordInput (n, noiseInput (0.05f, 43));
+        for (auto t : vintageTypes())
+        {
+            bool hasNull = false;
+            const auto neutral = vintageNeutralConfig (t, hasNull);
+            for (auto mode : ps::supportedChannelModes (t))
+            {
+                Host h (rate);
+                h.prepare();
+                h.proc.setChainOrder ({ t });
+                for (const auto& [id, v] : neutral)
+                    h.set (id, v);
+                for (const auto& [id, v] : channelModeConfig (t, mode))
+                    h.set (id, v);
+                h.stream (8192, replay (quiet));
+                h.proc.flushPendingChanges (true);
+                const auto out = h.stream (n, replay (quiet));
+                const int lat = h.proc.getCurrentLatencySamples();
+                const int want = vintageLatency (t, rate)
+                                 + (mode == ps::ChannelMode::TransientSustain ? ps::TransientSplitter::latencyFor (rate) : 0);
+                const float d = nullDb (quiet, out, lat, 8192);
+                const bool ok = lat == want && h.proc.getLatencySamples() == lat && allFinite (out)
+                                && (! hasNull || d < -120.0f);
+                if (! ok)
+                {
+                    allOk = false;
+                    failures += str (ps::moduleInfo (t).idPrefix, " mode ", (int) mode, ": ", d, " dBFS (lat ", lat,
+                                     ", want ", want, ") ");
+                }
+                static const char* const modeNames[] { "St", "MS", "LR", "TS" };
+                latencies += str (ps::moduleInfo (t).idPrefix, ".", modeNames[(int) mode & 3], "=", lat, " ");
+            }
+        }
+        check (allOk, str ("[dsp] vintage: every module alone in every channel mode reports its contract latency at ",
+                           rate, " Hz and nulls at its neutral settings (Tape: no neutral setting)"),
+               failures.empty() ? latencies : failures);
+    }
+
+    // a 0.5.0 state (the 841 parameters, no vintage ids) loads unchanged and leaves every vintage parameter at its
+    // default
+    {
+        juce::String params;
+        const auto& specs = ps::paramSpecs();
+        for (int i = 0; i < ps::kNumParams_0_5_0; ++i)
+        {
+            const auto& sp = specs[(size_t) i];
+            float v = sp.defaultValue;
+            if (sp.id == "bass.balance") v = 2.5f;
+            if (sp.id == "deq.a.b2.gain") v = -3.0f;
+            params << "<PARAM id=\"" << sp.id << "\" value=\"" << juce::String (v) << "\"/>";
+        }
+        Host c;
+        for (auto t : vintageTypes())
+            c.proc.addModule (t);   // a running instance with the vintage modules: the old state replaces the chain
+        c.set ("clim.thr", -6.0f);
+        c.set ("peq.a.lowBoost", 4.0f);
+        setStateXml (c.proc, "<PureSheen version=\"1\"><PARAMS>" + params + "</PARAMS><Chain><Module type=\"eq1\"/>"
+                             "<Module type=\"deq\"/><Module type=\"bass\"/><Module type=\"max\"/></Chain><Options/>"
+                             "<Snapshots activeSnapshot=\"-1\"/></PureSheen>");
+        bool vintageDefault = true;
+        std::string firstOff;
+        for (size_t i = (size_t) ps::kNumParams_0_5_0; i < specs.size(); ++i)
+            if (! psplug::sameValue ((int) i, c.get (specs[i].id), specs[i].defaultValue))
+            {
+                vintageDefault = false;
+                if (firstOff.empty())
+                    firstOff = specs[i].id;
+            }
+        const std::vector<ps::ModuleType> order { ps::ModuleType::Equalizer1, ps::ModuleType::DynamicEq,
+                                                  ps::ModuleType::BassShaper, ps::ModuleType::Maximizer };
+        check (approx (c, "bass.balance", 2.5f) && approx (c, "deq.a.b2.gain", -3.0f) && c.proc.getChainOrder() == order,
+               "vintage: a 0.5.0 state (841 parameters) loads its values and chain unchanged",
+               chainText (c.proc.getChainOrder()));
+        check (vintageDefault, "vintage: a 0.5.0 state leaves every vintage parameter at its default", firstOff);
     }
 }
 
@@ -1734,7 +1907,8 @@ void testPresets()
 
         bool perModule = true;
         std::string counts;
-        for (int t = 0; t < ps::kNumModuleTypes; ++t)
+        // (the vintage-style modules get their 3-5 presets at their integration; until then none)
+        for (int t = 0; t < ps::kFirstVintageModuleType; ++t)
         {
             const auto n = p.getPresets (t).size();
             counts += str (ps::moduleInfo ((ps::ModuleType) t).idPrefix, "=", n, " ");
@@ -3327,6 +3501,7 @@ int runSelfTest()
     testLatency();
     testRealtime();
     testPhase2();
+    testVintage();
     testState();
     testUndo();
     testMaximizerLearn();

@@ -93,6 +93,21 @@ std::vector<std::string> documentedIds()
     add ("bass", { "cutoff", "balance", "punch", "sus.on", "sus.thr", "sus.amount", "sus.char", "peak.on", "peak.thr",
                    "peak.char", "peak.mix", "autoGain" });
 
+    // vintage-style modules (phase 3)
+    for (const char* set : { "a.", "b." })
+    {
+        const std::string sp = set;
+        for (const char* n : { "thr", "ratio", "attack", "release", "mode", "makeup", "autoGain", "sc.hpf", "sc.bellHz",
+                               "sc.bellDb", "sc.shelfHz", "sc.shelfDb" })
+            ids.push_back ("ccmp." + sp + n);
+        for (const char* n : { "lowHz", "lowBoost", "lowCut", "highHz", "highBoost", "highBw", "highCutHz", "highCut",
+                               "lmHz", "lmBoost", "midHz", "midCut", "hmHz", "hmBoost" })
+            ids.push_back ("peq." + sp + n);
+    }
+    add ("peq", { "drive" });
+    add ("clim", { "thr", "ceiling", "character", "mode", "truePeak", "link" });
+    add ("tape", { "speed", "drive", "bias", "harmonics", "lowEmph", "highEmph" });
+
     for (const char* eq : { "eq1", "eq2" })
     {
         add (eq, { "mode", "amount", "softSat", "firSize" });
@@ -591,6 +606,10 @@ TEST_CASE ("params. supported channel modes match the chMode choices")
     CHECK (supportedChannelModes (ModuleType::Punch) == ms);
     CHECK (supportedChannelModes (ModuleType::LowContrast) == msTs);
     CHECK (supportedChannelModes (ModuleType::BassShaper) == st);
+    CHECK (supportedChannelModes (ModuleType::ClassicComp) == ms);
+    CHECK (supportedChannelModes (ModuleType::PassiveEq) == all);
+    CHECK (supportedChannelModes (ModuleType::ClassicLimiter) == st);
+    CHECK (supportedChannelModes (ModuleType::Tape) == st);
 
     // the Exciter keeps its released two-entry choice list; T/S is the appended exc.ts.on switch
     CHECK (channelModeChoices (ModuleType::Exciter) == ms);
@@ -908,3 +927,147 @@ TEST_CASE ("params. phase 2 reads map to the right fields and keep regions order
     readSlotParams (v.data(), ModuleType::Imager, slot);
     CHECK_EQ (slot.channelMode, ChannelMode::TransientSustain);
 }
+
+TEST_CASE ("params. vintage defaults reproduce the struct defaults")
+{
+    const auto v = defaultValues();
+    const ParamValues pv = v.data();
+
+    {
+        ClassicCompParams r, d;
+        r.sets[1].ratio = 9.0f; r.sets[0].mode = ClassicCompMode::Smooth; r.sets[1].autoGain = false;
+        readClassicCompParams (pv, r);
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            const auto& x = r.sets[s];
+            const auto& y = d.sets[s];
+            CHECK_EQ (x.thresholdDb, y.thresholdDb);
+            CHECK_EQ (x.ratio, y.ratio);
+            CHECK_EQ (x.attackMs, y.attackMs);
+            CHECK_EQ (x.releaseMs, y.releaseMs);
+            CHECK_EQ (x.mode, y.mode);
+            CHECK_EQ (x.makeupDb, y.makeupDb);
+            CHECK_EQ (x.autoGain, y.autoGain);
+            CHECK_EQ (x.scHighPassHz, y.scHighPassHz);
+            CHECK_EQ (x.scBellHz, y.scBellHz);
+            CHECK_EQ (x.scBellDb, y.scBellDb);
+            CHECK_EQ (x.scShelfHz, y.scShelfHz);
+            CHECK_EQ (x.scShelfDb, y.scShelfDb);
+        }
+        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("ccmp.a.ratio")].skewCentre, 4.0f);
+    }
+    {
+        PassiveEqParams r, d;
+        r.drive = 3.0f; r.sets[1].midHzIndex = 9; r.sets[0].lowBoost = 4.0f;
+        readPassiveEqParams (pv, r);
+        CHECK_EQ (r.drive, 0.0f);   // neutral tube stage
+        for (int s = 0; s < kNumChannelSets; ++s)
+        {
+            const auto& x = r.sets[s];
+            const auto& y = d.sets[s];
+            CHECK_EQ (x.lowHzIndex, y.lowHzIndex);
+            CHECK_EQ (x.lowBoost, 0.0f);
+            CHECK_EQ (x.lowCut, 0.0f);
+            CHECK_EQ (x.highHzIndex, y.highHzIndex);
+            CHECK_EQ (x.highBoost, 0.0f);
+            CHECK_EQ (x.highBandwidth, y.highBandwidth);
+            CHECK_EQ (x.highCutHzIndex, y.highCutHzIndex);
+            CHECK_EQ (x.highCut, 0.0f);
+            CHECK_EQ (x.lowMidHzIndex, y.lowMidHzIndex);
+            CHECK_EQ (x.lowMidBoost, 0.0f);
+            CHECK_EQ (x.midHzIndex, y.midHzIndex);
+            CHECK_EQ (x.midCut, 0.0f);
+            CHECK_EQ (x.highMidHzIndex, y.highMidHzIndex);
+            CHECK_EQ (x.highMidBoost, 0.0f);
+        }
+        // the frequency choices list the Types.h arrays; the defaults point at 60 Hz, 8 kHz, 10 kHz, 300 Hz, 1 kHz, 3 kHz
+        const auto& specs = paramSpecs();
+        CHECK_EQ (specs[(size_t) paramIndex ("peq.a.lowHz")].choices.size(), kPassiveEqLowHz.size());
+        CHECK_EQ (specs[(size_t) paramIndex ("peq.b.highHz")].choices.size(), kPassiveEqHighHz.size());
+        CHECK_EQ (specs[(size_t) paramIndex ("peq.a.highCutHz")].choices.size(), kPassiveEqHighCutHz.size());
+        CHECK_EQ (specs[(size_t) paramIndex ("peq.a.lmHz")].choices.size(), kPassiveEqLowMidHz.size());
+        CHECK_EQ (specs[(size_t) paramIndex ("peq.a.midHz")].choices.size(), kPassiveEqMidHz.size());
+        CHECK_EQ (specs[(size_t) paramIndex ("peq.a.hmHz")].choices.size(), kPassiveEqHighMidHz.size());
+        const auto label = [&specs] (const char* id, int index)
+        {
+            return specs[(size_t) paramIndex (id)].choices[(size_t) index];
+        };
+        CHECK_EQ (label ("peq.a.lowHz", d.sets[0].lowHzIndex), std::string ("60 Hz"));
+        CHECK_EQ (label ("peq.a.highHz", d.sets[0].highHzIndex), std::string ("8 kHz"));
+        CHECK_EQ (label ("peq.a.highCutHz", d.sets[0].highCutHzIndex), std::string ("10 kHz"));
+        CHECK_EQ (label ("peq.a.lmHz", d.sets[0].lowMidHzIndex), std::string ("300 Hz"));
+        CHECK_EQ (label ("peq.a.midHz", d.sets[0].midHzIndex), std::string ("1 kHz"));
+        CHECK_EQ (label ("peq.a.midHz", 5), std::string ("1.5 kHz"));
+        CHECK_EQ (label ("peq.a.hmHz", d.sets[0].highMidHzIndex), std::string ("3 kHz"));
+    }
+    {
+        ClassicLimiterParams r, d;
+        r.mode = ClassicLimiterMode::Modern; r.truePeak = true; r.linkThresholdCeiling = true;
+        readClassicLimiterParams (pv, r);
+        CHECK_EQ (r.thresholdDb, d.thresholdDb);
+        CHECK_EQ (r.ceilingDb, d.ceilingDb);
+        CHECK_EQ (r.character, d.character);
+        CHECK_EQ (r.mode, d.mode);
+        CHECK_EQ (r.truePeak, d.truePeak);
+        CHECK_EQ (r.linkThresholdCeiling, d.linkThresholdCeiling);
+    }
+    {
+        TapeParams r, d;
+        r.speed = TapeSpeed::Ips30; r.harmonics = 7.0f;
+        readTapeParams (pv, r);
+        CHECK_EQ (r.speed, d.speed);
+        CHECK_EQ (r.driveDb, d.driveDb);
+        CHECK_EQ (r.bias, d.bias);
+        CHECK_EQ (r.harmonics, d.harmonics);
+        CHECK_EQ (r.lowEmphasis, d.lowEmphasis);
+        CHECK_EQ (r.highEmphasis, 4.0f);   // flat highs (documented)
+        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("tape.speed")].choices[(size_t) d.speed], std::string ("15 ips"));
+    }
+}
+
+TEST_CASE ("params. vintage reads map to the right fields and clamp the stepped choices")
+{
+    auto v = defaultValues();
+    setValue (v, "ccmp.b.sc.shelfDb", -5.5f);
+    setValue (v, "ccmp.b.mode", 99.0f);       // clamped to Smooth
+    setValue (v, "ccmp.a.release", 750.0f);
+    setValue (v, "peq.b.midHz", 99.0f);       // clamped to 7 kHz
+    setValue (v, "peq.a.hmBoost", 6.5f);
+    setValue (v, "peq.drive", 2.0f);
+    setValue (v, "clim.ceiling", -0.3f);
+    setValue (v, "clim.mode", (float) ClassicLimiterMode::Tube);
+    setValue (v, "tape.speed", 0.0f);
+    setValue (v, "tape.bias", -3.0f);
+
+    ClassicCompParams cc;
+    readClassicCompParams (v.data(), cc);
+    CHECK_EQ (cc.sets[1].scShelfDb, -5.5f);
+    CHECK_EQ (cc.sets[0].scShelfDb, 0.0f);
+    CHECK_EQ (cc.sets[1].mode, ClassicCompMode::Smooth);
+    CHECK_EQ (cc.sets[0].releaseMs, 750.0f);
+
+    PassiveEqParams pe;
+    readPassiveEqParams (v.data(), pe);
+    CHECK_EQ (pe.sets[1].midHzIndex, (int) kPassiveEqMidHz.size() - 1);
+    CHECK_EQ (pe.sets[0].highMidBoost, 6.5f);
+    CHECK_EQ (pe.sets[1].highMidBoost, 0.0f);
+    CHECK_EQ (pe.drive, 2.0f);
+
+    ClassicLimiterParams cl;
+    readClassicLimiterParams (v.data(), cl);
+    CHECK_EQ (cl.ceilingDb, -0.3f);
+    CHECK_EQ (cl.mode, ClassicLimiterMode::Tube);
+
+    TapeParams tp;
+    readTapeParams (v.data(), tp);
+    CHECK_EQ (tp.speed, TapeSpeed::Ips7_5);
+    CHECK_EQ (kTapeSpeedIps[(size_t) tp.speed], 7.5);
+    CHECK_EQ (tp.bias, -3.0f);
+
+    // Passive EQ offers T/S (twin + split controls); the others do not
+    CHECK (supportsTransientSustain (ModuleType::PassiveEq));
+    CHECK (paramIndex ("peq.ts.sens") >= 0 && paramIndex ("peq.ts.len") >= 0);
+    for (auto t : { ModuleType::ClassicComp, ModuleType::ClassicLimiter, ModuleType::Tape })
+        CHECK (! supportsTransientSustain (t));
+}
+

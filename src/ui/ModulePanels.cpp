@@ -1,6 +1,8 @@
 #include "ui/Widgets.h"
 
 #include "ui/BassShaperPanel.h"
+#include "ui/ClassicCompPanel.h"
+#include "ui/ClassicLimiterPanel.h"
 #include "ui/DefinitionPanel.h"
 #include "ui/DynamicEqPanel.h"
 #include "ui/DynamicsPanel.h"
@@ -10,8 +12,10 @@
 #include "ui/LowContrastPanel.h"
 #include "ui/MatchEqPanel.h"
 #include "ui/MaximizerPanel.h"
+#include "ui/PassiveEqPanel.h"
 #include "ui/PunchPanel.h"
 #include "ui/SmootherPanel.h"
+#include "ui/TapePanel.h"
 #include "ui/ToneBalancePanel.h"
 
 namespace ps::ui
@@ -34,6 +38,10 @@ std::unique_ptr<ModulePanel> createModulePanel (PureSheenProcessor& p, EditorSer
         case ps::ModuleType::Punch:       return std::make_unique<PunchPanel> (p, s);
         case ps::ModuleType::LowContrast: return std::make_unique<LowContrastPanel> (p, s);
         case ps::ModuleType::BassShaper:  return std::make_unique<BassShaperPanel> (p, s);
+        case ps::ModuleType::ClassicComp:    return std::make_unique<ClassicCompPanel> (p, s);
+        case ps::ModuleType::PassiveEq:      return std::make_unique<PassiveEqPanel> (p, s);
+        case ps::ModuleType::ClassicLimiter: return std::make_unique<ClassicLimiterPanel> (p, s);
+        case ps::ModuleType::Tape:           return std::make_unique<TapePanel> (p, s);
         case ps::ModuleType::Count:
         default: break;
     }

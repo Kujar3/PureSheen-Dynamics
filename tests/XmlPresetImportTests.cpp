@@ -711,7 +711,9 @@ TEST_CASE ("import. every table row targets real ids; keys unique per table and 
         CHECK (skippedModuleDescription (spec->tagKey) == nullptr);
         CHECK (spec->tagKey != kGlobalSectionKey && spec->tagKey != kChainBlobKey);
     }
-    CHECK_EQ (types.size(), (size_t) ps::kNumModuleTypes);   // every module type has a spec
+    // every module type up to the Bass Shaper has a spec; the vintage-style modules get theirs at their integration
+    // (until then their sections are skipped as modules we do not have)
+    CHECK_EQ (types.size(), (size_t) ps::kFirstVintageModuleType);
 
     std::vector<const ModuleSpec*> all = allModuleSpecs();
     all.push_back (&globalSpec());

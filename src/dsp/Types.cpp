@@ -21,6 +21,10 @@ const ModuleInfo& moduleInfo (ModuleType type)
         { "pnch", "Punch", "Punch" },
         { "lowc", "Low Contrast", "Low Contrast" },
         { "bass", "Bass Shaper", "Bass Shaper" },
+        { "ccmp", "Classic Compressor", "Classic Comp" },
+        { "peq", "Passive EQ", "Passive EQ" },
+        { "clim", "Classic Limiter", "Classic Limiter" },
+        { "tape", "Tape", "Tape" },
     };
 
     static_assert (sizeof (infos) / sizeof (infos[0]) == (size_t) kNumModuleTypes, "one ModuleInfo per ModuleType");

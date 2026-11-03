@@ -1262,6 +1262,10 @@ juce::Colour moduleColour (ps::ModuleType type)
         case ps::ModuleType::Punch:       return juce::Colour (0xfff07a9a);   // rose
         case ps::ModuleType::LowContrast: return juce::Colour (0xffc9a27e);   // tan
         case ps::ModuleType::BassShaper:  return juce::Colour (0xffe39a52);   // copper
+        case ps::ModuleType::ClassicComp:    return juce::Colour (0xffb9d46a);   // lime
+        case ps::ModuleType::PassiveEq:      return juce::Colour (0xffeb8fc9);   // pink
+        case ps::ModuleType::ClassicLimiter: return juce::Colour (0xff93c97f);   // sage
+        case ps::ModuleType::Tape:           return juce::Colour (0xffb7c3d0);   // silver
         case ps::ModuleType::Count:
         default: break;
     }

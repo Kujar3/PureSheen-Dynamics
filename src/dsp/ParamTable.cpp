@@ -20,6 +20,8 @@
 //         then exc.ts.on, exc.ts.sens/len
 //      b. each phase 2 module in ModuleType order: slot params (+ .ts.sens / .ts.len when it offers T/S), then its
 //         module params in struct order (per-set params set A then set B; bands band by band)
+//   5. vintage appendix (phase 3, after bass.autoGain): ccmp, peq, clim, tape in ModuleType order, built exactly like
+//      4b (shared params first, then set A, then set B)
 // Bands of the multiband modules exist for all kMaxBands bands and both channel sets even when a module does not use
 // them (Imager width is per band only, it is Stereo-only).
 //
@@ -178,6 +180,36 @@ struct BassIdx
         peakThr = -1, peakChar = -1, peakMix = -1, autoGain = -1;
 };
 
+// ---- vintage-style modules (phase 3) ----
+struct CcmpIdx
+{
+    struct Set
+    {
+        int thr = -1, ratio = -1, attack = -1, release = -1, mode = -1, makeup = -1, autoGain = -1, scHpf = -1,
+            scBellHz = -1, scBellDb = -1, scShelfHz = -1, scShelfDb = -1;
+    } sets[kNumChannelSets];
+};
+
+struct PeqIdx
+{
+    int drive = -1;
+    struct Set
+    {
+        int lowHz = -1, lowBoost = -1, lowCut = -1, highHz = -1, highBoost = -1, highBw = -1, highCutHz = -1,
+            highCut = -1, lmHz = -1, lmBoost = -1, midHz = -1, midCut = -1, hmHz = -1, hmBoost = -1;
+    } sets[kNumChannelSets];
+};
+
+struct ClimIdx
+{
+    int thr = -1, ceiling = -1, character = -1, mode = -1, truePeak = -1, link = -1;
+};
+
+struct TapeIdx
+{
+    int speed = -1, drive = -1, bias = -1, harmonics = -1, lowEmph = -1, highEmph = -1;
+};
+
 // Channel modes per module as a fixed table (the realtime side of supportedChannelModes).
 struct ChannelModeTable
 {
@@ -208,6 +240,10 @@ struct Table
     PnchIdx pnch;
     LowcIdx lowc;
     BassIdx bass;
+    CcmpIdx ccmp;
+    PeqIdx peq;
+    ClimIdx clim;
+    TapeIdx tape;
 };
 
 //==============================================================================
@@ -250,6 +286,7 @@ ChannelModeTable channelModesFor (ModuleType type)
         case ModuleType::Equalizer2:
         case ModuleType::DynamicEq:
         case ModuleType::MatchEq:
+        case ModuleType::PassiveEq:
             add (ChannelMode::MidSide);
             add (ChannelMode::LeftRight);
             add (ChannelMode::TransientSustain);
@@ -264,6 +301,7 @@ ChannelModeTable channelModesFor (ModuleType type)
             break;
         case ModuleType::Dynamics:
         case ModuleType::Punch:
+        case ModuleType::ClassicComp:
             add (ChannelMode::MidSide);
             break;
         case ModuleType::Imager:
@@ -271,6 +309,8 @@ ChannelModeTable channelModesFor (ModuleType type)
             break;
         case ModuleType::Maximizer:
         case ModuleType::BassShaper:
+        case ModuleType::ClassicLimiter:
+        case ModuleType::Tape:
         case ModuleType::Count:
         default:
             break;
@@ -935,6 +975,126 @@ void addBassShaper (Builder& b, BassIdx& x)
     x.autoGain  = b.addBool (p + ".autoGain", n + " Auto Gain", d.autoGain, m);
 }
 
+//==============================================================================
+// Vintage appendix (phase 3, after bass.*)
+
+// "20 Hz", "1.5 kHz", "10 kHz" (ASCII choice labels of the stepped frequency selectors).
+std::string hzLabel (double hz)
+{
+    if (hz < 1000.0)
+        return std::to_string ((int) std::lround (hz)) + " Hz";
+    const long tenths = std::lround (hz / 100.0);
+    return std::to_string (tenths / 10) + (tenths % 10 != 0 ? "." + std::to_string (tenths % 10) : std::string()) + " kHz";
+}
+
+template <size_t N>
+std::vector<std::string> hzLabels (const std::array<double, N>& hz)
+{
+    std::vector<std::string> labels;
+    for (double f : hz)
+        labels.push_back (hzLabel (f));
+    return labels;
+}
+
+void addClassicComp (Builder& b, CcmpIdx& x)
+{
+    const auto type = ModuleType::ClassicComp;
+    const std::string p = moduleInfo (type).idPrefix;
+    const std::string n = moduleInfo (type).shortName;
+    const int m = (int) type;
+    const ClassicCompParams d;
+
+    for (int set = 0; set < kNumChannelSets; ++set)
+    {
+        const auto& sd = d.sets[set];
+        const std::string id = p + "." + setLetter (set) + ".";
+        const std::string sx = setSuffix (set);
+        auto& si = x.sets[set];
+        si.thr       = b.addFloat (id + "thr", n + " Threshold" + sx, -40.0f, 0.0f, sd.thresholdDb, "dB", m);
+        si.ratio     = b.addFloat (id + "ratio", n + " Ratio" + sx, 1.0f, 20.0f, sd.ratio, ":1", m, 4.0f);
+        si.attack    = b.addLog (id + "attack", n + " Attack" + sx, 0.1f, 100.0f, sd.attackMs, "ms", m);
+        si.release   = b.addLog (id + "release", n + " Release" + sx, 30.0f, 3000.0f, sd.releaseMs, "ms", m);
+        si.mode      = b.addChoice (id + "mode", n + " Mode" + sx, { "Sharp", "Balanced", "Smooth" }, (int) sd.mode, m);
+        si.makeup    = b.addFloat (id + "makeup", n + " Makeup" + sx, -12.0f, 24.0f, sd.makeupDb, "dB", m);
+        si.autoGain  = b.addBool (id + "autoGain", n + " Auto Gain" + sx, sd.autoGain, m);
+        si.scHpf     = b.addLog (id + "sc.hpf", n + " Sidechain High Pass" + sx, 20.0f, 500.0f, sd.scHighPassHz, "Hz", m);
+        si.scBellHz  = b.addLog (id + "sc.bellHz", n + " Sidechain Bell Freq" + sx, 200.0f, 8000.0f, sd.scBellHz, "Hz", m);
+        si.scBellDb  = b.addFloat (id + "sc.bellDb", n + " Sidechain Bell Gain" + sx, -8.0f, 8.0f, sd.scBellDb, "dB", m);
+        si.scShelfHz = b.addLog (id + "sc.shelfHz", n + " Sidechain Shelf Freq" + sx, 2000.0f, 16000.0f, sd.scShelfHz,
+                                 "Hz", m);
+        si.scShelfDb = b.addFloat (id + "sc.shelfDb", n + " Sidechain Shelf Gain" + sx, -8.0f, 8.0f, sd.scShelfDb, "dB", m);
+    }
+}
+
+void addPassiveEq (Builder& b, PeqIdx& x)
+{
+    const auto type = ModuleType::PassiveEq;
+    const std::string p = moduleInfo (type).idPrefix;
+    const std::string n = moduleInfo (type).shortName;
+    const int m = (int) type;
+    const PassiveEqParams d;
+
+    x.drive = b.addFloat (p + ".drive", n + " Drive", 0.0f, 10.0f, d.drive, "", m);
+
+    for (int set = 0; set < kNumChannelSets; ++set)
+    {
+        const auto& sd = d.sets[set];
+        const std::string id = p + "." + setLetter (set) + ".";
+        const std::string sx = setSuffix (set);
+        auto& si = x.sets[set];
+        si.lowHz     = b.addChoice (id + "lowHz", n + " Low Freq" + sx, hzLabels (kPassiveEqLowHz), sd.lowHzIndex, m);
+        si.lowBoost  = b.addFloat (id + "lowBoost", n + " Low Boost" + sx, 0.0f, 10.0f, sd.lowBoost, "", m);
+        si.lowCut    = b.addFloat (id + "lowCut", n + " Low Cut" + sx, 0.0f, 10.0f, sd.lowCut, "", m);
+        si.highHz    = b.addChoice (id + "highHz", n + " High Boost Freq" + sx, hzLabels (kPassiveEqHighHz),
+                                    sd.highHzIndex, m);
+        si.highBoost = b.addFloat (id + "highBoost", n + " High Boost" + sx, 0.0f, 10.0f, sd.highBoost, "", m);
+        si.highBw    = b.addFloat (id + "highBw", n + " High Bandwidth" + sx, 0.0f, 10.0f, sd.highBandwidth, "", m);
+        si.highCutHz = b.addChoice (id + "highCutHz", n + " High Cut Freq" + sx, hzLabels (kPassiveEqHighCutHz),
+                                    sd.highCutHzIndex, m);
+        si.highCut   = b.addFloat (id + "highCut", n + " High Cut" + sx, 0.0f, 10.0f, sd.highCut, "", m);
+        si.lmHz      = b.addChoice (id + "lmHz", n + " Low-Mid Freq" + sx, hzLabels (kPassiveEqLowMidHz),
+                                    sd.lowMidHzIndex, m);
+        si.lmBoost   = b.addFloat (id + "lmBoost", n + " Low-Mid Boost" + sx, 0.0f, 10.0f, sd.lowMidBoost, "", m);
+        si.midHz     = b.addChoice (id + "midHz", n + " Mid Freq" + sx, hzLabels (kPassiveEqMidHz), sd.midHzIndex, m);
+        si.midCut    = b.addFloat (id + "midCut", n + " Mid Cut" + sx, 0.0f, 10.0f, sd.midCut, "", m);
+        si.hmHz      = b.addChoice (id + "hmHz", n + " High-Mid Freq" + sx, hzLabels (kPassiveEqHighMidHz),
+                                    sd.highMidHzIndex, m);
+        si.hmBoost   = b.addFloat (id + "hmBoost", n + " High-Mid Boost" + sx, 0.0f, 10.0f, sd.highMidBoost, "", m);
+    }
+}
+
+void addClassicLimiter (Builder& b, ClimIdx& x)
+{
+    const auto type = ModuleType::ClassicLimiter;
+    const std::string p = moduleInfo (type).idPrefix;
+    const std::string n = moduleInfo (type).shortName;
+    const int m = (int) type;
+    const ClassicLimiterParams d;
+
+    x.thr       = b.addFloat (p + ".thr", n + " Threshold", -12.0f, 0.0f, d.thresholdDb, "dB", m);
+    x.ceiling   = b.addFloat (p + ".ceiling", n + " Ceiling", -12.0f, 0.0f, d.ceilingDb, "dB", m);
+    x.character = b.addFloat (p + ".character", n + " Character", 0.0f, 10.0f, d.character, "", m);
+    x.mode      = b.addChoice (p + ".mode", n + " Mode", { "Analog", "Tube", "Modern" }, (int) d.mode, m);
+    x.truePeak  = b.addBool (p + ".truePeak", n + " True Peak", d.truePeak, m);
+    x.link      = b.addBool (p + ".link", n + " Link Threshold and Ceiling", d.linkThresholdCeiling, m);
+}
+
+void addTape (Builder& b, TapeIdx& x)
+{
+    const auto type = ModuleType::Tape;
+    const std::string p = moduleInfo (type).idPrefix;
+    const std::string n = moduleInfo (type).shortName;
+    const int m = (int) type;
+    const TapeParams d;
+
+    x.speed     = b.addChoice (p + ".speed", n + " Speed", { "7.5 ips", "15 ips", "30 ips" }, (int) d.speed, m);
+    x.drive     = b.addFloat (p + ".drive", n + " Drive", -30.0f, 20.0f, d.driveDb, "dB", m);
+    x.bias      = b.addFloat (p + ".bias", n + " Bias", -10.0f, 10.0f, d.bias, "", m);
+    x.harmonics = b.addFloat (p + ".harmonics", n + " Harmonics", 0.0f, 10.0f, d.harmonics, "", m);
+    x.lowEmph   = b.addFloat (p + ".lowEmph", n + " Low Emphasis", 0.0f, 10.0f, d.lowEmphasis, "", m);
+    x.highEmph  = b.addFloat (p + ".highEmph", n + " High Emphasis", 0.0f, 10.0f, d.highEmphasis, "", m);
+}
+
 Table buildTable()
 {
     Table t;
@@ -964,7 +1124,7 @@ Table buildTable()
 
     addDither (b, t.dith);
 
-    // ---- phase 2 appendix ----
+    // ---- phase 2 appendix, then the vintage appendix (phase 3): every module after the Core six in ModuleType order
     addCoreTransientSustain (b, t);
 
     for (int i = kNumCoreModuleTypes; i < kNumModuleTypes; ++i)
@@ -986,6 +1146,10 @@ Table buildTable()
             case ModuleType::Punch:       addPunch (b, t.pnch); break;
             case ModuleType::LowContrast: addLowContrast (b, t.lowc); break;
             case ModuleType::BassShaper:  addBassShaper (b, t.bass); break;
+            case ModuleType::ClassicComp:    addClassicComp (b, t.ccmp); break;
+            case ModuleType::PassiveEq:      addPassiveEq (b, t.peq); break;
+            case ModuleType::ClassicLimiter: addClassicLimiter (b, t.clim); break;
+            case ModuleType::Tape:           addTape (b, t.tape); break;
             default: break;
         }
     }
@@ -1494,6 +1658,77 @@ void readBassShaperParams (ParamValues v, BassShaperParams& p) noexcept
     p.peakCharacterPercent = readFloat (v, d.peakChar);
     p.peakMixPercent = readFloat (v, d.peakMix);
     p.autoGain = readBool (v, d.autoGain);
+}
+
+//==============================================================================
+// Vintage readers (phase 3)
+void readClassicCompParams (ParamValues v, ClassicCompParams& p) noexcept
+{
+    const auto& d = table().ccmp;
+    for (int set = 0; set < kNumChannelSets; ++set)
+    {
+        const auto& si = d.sets[set];
+        auto& s = p.sets[set];
+        s.thresholdDb = readFloat (v, si.thr);
+        s.ratio = readFloat (v, si.ratio);
+        s.attackMs = readFloat (v, si.attack);
+        s.releaseMs = readFloat (v, si.release);
+        s.mode = readEnum<ClassicCompMode> (v, si.mode, (int) ClassicCompMode::Count);
+        s.makeupDb = readFloat (v, si.makeup);
+        s.autoGain = readBool (v, si.autoGain);
+        s.scHighPassHz = readFloat (v, si.scHpf);
+        s.scBellHz = readFloat (v, si.scBellHz);
+        s.scBellDb = readFloat (v, si.scBellDb);
+        s.scShelfHz = readFloat (v, si.scShelfHz);
+        s.scShelfDb = readFloat (v, si.scShelfDb);
+    }
+}
+
+void readPassiveEqParams (ParamValues v, PassiveEqParams& p) noexcept
+{
+    const auto& d = table().peq;
+    p.drive = readFloat (v, d.drive);
+    for (int set = 0; set < kNumChannelSets; ++set)
+    {
+        const auto& si = d.sets[set];
+        auto& s = p.sets[set];
+        s.lowHzIndex = readInt (v, si.lowHz, 0, (int) kPassiveEqLowHz.size() - 1);
+        s.lowBoost = readFloat (v, si.lowBoost);
+        s.lowCut = readFloat (v, si.lowCut);
+        s.highHzIndex = readInt (v, si.highHz, 0, (int) kPassiveEqHighHz.size() - 1);
+        s.highBoost = readFloat (v, si.highBoost);
+        s.highBandwidth = readFloat (v, si.highBw);
+        s.highCutHzIndex = readInt (v, si.highCutHz, 0, (int) kPassiveEqHighCutHz.size() - 1);
+        s.highCut = readFloat (v, si.highCut);
+        s.lowMidHzIndex = readInt (v, si.lmHz, 0, (int) kPassiveEqLowMidHz.size() - 1);
+        s.lowMidBoost = readFloat (v, si.lmBoost);
+        s.midHzIndex = readInt (v, si.midHz, 0, (int) kPassiveEqMidHz.size() - 1);
+        s.midCut = readFloat (v, si.midCut);
+        s.highMidHzIndex = readInt (v, si.hmHz, 0, (int) kPassiveEqHighMidHz.size() - 1);
+        s.highMidBoost = readFloat (v, si.hmBoost);
+    }
+}
+
+void readClassicLimiterParams (ParamValues v, ClassicLimiterParams& p) noexcept
+{
+    const auto& d = table().clim;
+    p.thresholdDb = readFloat (v, d.thr);
+    p.ceilingDb = readFloat (v, d.ceiling);
+    p.character = readFloat (v, d.character);
+    p.mode = readEnum<ClassicLimiterMode> (v, d.mode, (int) ClassicLimiterMode::Count);
+    p.truePeak = readBool (v, d.truePeak);
+    p.linkThresholdCeiling = readBool (v, d.link);
+}
+
+void readTapeParams (ParamValues v, TapeParams& p) noexcept
+{
+    const auto& d = table().tape;
+    p.speed = readEnum<TapeSpeed> (v, d.speed, (int) TapeSpeed::Count);
+    p.driveDb = readFloat (v, d.drive);
+    p.bias = readFloat (v, d.bias);
+    p.harmonics = readFloat (v, d.harmonics);
+    p.lowEmphasis = readFloat (v, d.lowEmph);
+    p.highEmphasis = readFloat (v, d.highEmph);
 }
 
 } // namespace ps
