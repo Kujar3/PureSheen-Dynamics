@@ -677,8 +677,9 @@ TEST_CASE ("tbal. shape corrects a bass excess and stays power neutral on severa
                 note ("  40-100 Hz excess vs 1 kHz, output (dB)", excess);
                 CHECK (inExcess > 6.0);
                 // 0.8 x 0.875 of 7.4 dB leaves ~2.2; the detector's 0.3 s attack reads the narrow bass bands of noise
-                // a little high (~0.4 dB), the skirted reading softens the shelf's slope (~0.3 dB)
-                CHECK (excess < 3.0);
+                // a little high (~0.4 dB), the skirted reading softens the shelf's slope (~0.3 dB); the 1.5 s power
+                // average of the neutral solve lifts the lows ~0.2 dB against the noisy per-hop average it replaced
+                CHECK (excess < 3.15);
             }
         }
 }
@@ -1107,7 +1108,7 @@ TEST_CASE ("tbal. region amounts act independently")
         note ("Mid 0: largest |correction| 125 Hz .. 5 kHz (dB)", worstMid);
         note ("  correction at 40 Hz (the low region still works, dB)", lowCorr);
         CHECK (worstMid < 0.3);
-        CHECK (lowCorr < -0.5);   // (the power-neutral anchor sits higher in the lows than the loudness-neutral one)
+        CHECK (lowCorr < -0.4);   // (the power-neutral anchor sits higher in the lows than the loudness-neutral one)
     }
 }
 

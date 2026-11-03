@@ -29,8 +29,9 @@
 //      sigma = 0.08 x (1.5 / 0.08)^(smooth / 100) octaves;
 //      Cut: [0.25 0.5 0.25] across bands
 //   6. region amounts: C x mix of low / mid / high % with 1/3-octave raised-cosine crossfades at 100 Hz and 5.6 kHz
-//   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P), solved without
-//      the boost cap of step 8 (so capped boosts lose power, as the reference does on white noise)
+//   7. Shape only: power neutral (unweighted, as measured), C -= 10 log10 (sum P 10^(C / 10) / sum P), P the bin
+//      powers averaged over 1.5 s, solved without the boost cap of step 8 (so capped boosts lose power, as the
+//      reference does on white noise)
 //   8. C = amount / 100 x C, limited to -12 x amount / 100 and +9 x (amount / 100)^0.84 dB (measured: +5.1 at 50,
 //      +2.7 at 25);
 //      boosts only in measured (ungated) bands

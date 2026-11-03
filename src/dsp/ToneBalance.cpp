@@ -50,7 +50,10 @@
 // - Power neutrality (Shape) is computed on the amount-scaled, region-weighted curve, and its level shift x is applied
 //   in proportion to the region weight w (Newton steps solve sum Q 10^(final (C - x w) / 10) = sum Q, where final ()
 //   applies the limits below). So the curve is power neutral at every Amount (not only at 100), the limits are taken
-//   into account, and a region at 0 % gets no correction at all, the shift included. Q is the power of every bin. The
+//   into account, and a region at 0 % gets no correction at all, the shift included. Q is the power of every bin,
+//   averaged over 1.5 s (kPowerAverageSec; measured: with a 50 ms average our level followed every frame's spectrum
+//   and sat 0.1 .. 0.45 dB above the reference on music at the default Speed, Tone Balance alone; at 1.5 .. 2 s the
+//   band levels of all seven slices come within 0.2 dB and the full chains match ~0.5 dB better each). The
 //   solve interpolates the final dB curve at each bin before converting to power gain, exactly as synthesis does;
 //   averaging endpoint power gains would overestimate energy.
 //   A bounded Newton solve keeps a sign bracket and bisects unsafe steps at the limiter / presence kinks.
@@ -122,7 +125,7 @@ constexpr double kAttackSec = 0.3;
 // the reference pulls a high boost back at once when the band gets loud (its gain on an acoustic slice's highs falls
 // 5 dB within ~0.3 s of a strum) but keeps a bass boost through kicks.
 constexpr double kBoostDropSec = 0.05, kBoostDropExp = 1.5;
-constexpr double kPreAverageSec = 0.05;   // power pre-average of S: min (50 ms, tauS / 2)
+constexpr double kPowerAverageSec = 1.5;   // bin power average of the power-neutral solve
 constexpr double kOffsetLoHz = 100.0, kOffsetHiHz = 5600.0;
 constexpr double kSkirtDbPerOct = 12.0;   // Shape / Boost band reading: power skirts on both sides
 
@@ -207,8 +210,8 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         // sPow: power pre-average of the Shape / Boost detector, sLev: its dB one-pole (S); slowPow: the Cut
         // reference (1.5 s), fastPow: F (tauC); sDb / refDb: per hop, see updateLane
         std::vector<float> power, sPow, sLev, slowPow, fastPow, sDb, refDb, c, tmp, gBoost, gCut, out;
-        // K-weighted power per bin and its short pre-average (as sPow). Keep bins separate: interpolation in dB
-        // does not commute with conversion to power gain, especially on sparse spectra in the merged low bands.
+        // power per bin and its 1.5 s average (the power-neutral solve's reference). Keep bins separate: interpolation
+        // in dB does not commute with conversion to power gain, especially on sparse spectra in the merged low bands.
         std::vector<float> loudPow, loudAvg;
         std::vector<double> shiftGain, shiftSlope;   // per-band scratch for the loudness solve
         std::vector<float> presence;   // 0..1: smoothed "this band is measured" (0 while gated); scales boosts
@@ -531,7 +534,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
         const double aS = std::exp (-hopSec / tauS);
         const double aA = std::exp (-hopSec / std::min (kAttackSec, tauS));
         const double aPresence = std::exp (-hopSec / std::clamp (tauS, 0.1, 0.5));
-        const double aP = std::exp (-hopSec / std::min (kPreAverageSec, 0.5 * tauS));
+        const double aQ = std::exp (-hopSec / kPowerAverageSec);
         const double aSlow = std::exp (-hopSec / kCutRefTauSec);
         const double aF = std::exp (-hopSec / tauC);
         const double aRel = std::exp (-hopSec / std::max (2.0 * hopSec, cutMode ? tauC : 0.5 * tauS));
@@ -619,7 +622,7 @@ struct ToneBalance::Impl final : SpectralEngine::Client
                     lane.count[i] = (uint16_t) (n + 1);
             }
             {
-                const double eL = std::min (aP, (double) lane.loudCount / (double) (lane.loudCount + 1));
+                const double eL = std::min (aQ, (double) lane.loudCount / (double) (lane.loudCount + 1));
                 for (size_t k = 0; k < lane.loudPow.size(); ++k)
                 {
                     const double q = lane.loudPow[k];
