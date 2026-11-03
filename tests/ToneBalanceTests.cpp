@@ -1787,6 +1787,6 @@ TEST_CASE ("tbal. proposed factory presets behave on music-like material")
             CHECK (std::abs (dPow) < 0.5);
         else
             CHECK (maxBoost == 0.0 && dLu <= 0.01);
-        CHECK (maxCut < -0.4);
-    }
+        CHECK (maxCut < -0.3);   // -0.36 for both Shape presets since the bottom band reads the bass above it (its
+    }                            // thin sub is no longer boosted, so the power-neutral shift cuts less elsewhere)
 }

@@ -12,8 +12,8 @@
 // latency N (42.7 ms at 48 kHz), constant. Band grid: 1/12 octave from 20 Hz to min (20 kHz, 0.45 fs), at least 2
 // bins per band (narrower low bands merged). Per hop, per lane:
 //   1. L (b) = octave-density band level (Stereo / T/S: power sum of L + R minus 3 dB; Shape / Boost read the larger
-//      of it and the level through 12 dB / octave power skirts, the Cut detectors narrow), gated (below -80 dBFS density
-//      or more than 60 dB under the loudest band: hold, no detection)
+//      of it and the level through 12 dB / octave power skirts, 2 dB / octave from the bottom band up; the Cut detectors
+//      narrow), gated (below -80 dBFS density or more than 60 dB under the loudest band: hold, no detection)
 //   2. time smoothing (one-pole on band power, per-hop coefficient): Shape / Boost tauS = 4000 ms x (60 / 4000)^(speed / 100)
 //      (0 = 4 s, 50 = 490 ms, 100 = 60 ms) -> S (b), attacking with min (0.3 s, tauS) where the band rises; Cut: fast
 //      F (b) with tauC = 400 ms x (5 / 400)^(cutSpeed / 100) plus S (b) at 1.5 s. Tame Transients: bands with

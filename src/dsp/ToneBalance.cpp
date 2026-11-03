@@ -30,6 +30,12 @@
 //   hole at its full depth and lift it from the edge on. Smooth spectra (pink, brown, white) read the same either way.
 //   Taking the larger of the two keeps peaks and dense music on the narrow reading (the skirted reading alone lost
 //   0.2 .. 0.4 dB of match on rock and test slice S; with the max they gain 0.5 .. 0.9).
+//   The bottom band (20 Hz: one FFT bin, which cannot resolve that octave) reads the bands above it through a
+//   2 dB / octave skirt (kBottomSkirtDbPerOct), so a sub under a loud bass reads as the bass's continuation instead of
+//   a hole. Measured (Round20-Test.wav, the reference at Rock / Amount 25): pink with the sub 24 dB down gets its sub
+//   lifted +0.2 .. +0.9 dB, the same with 100-250 Hz +12 dB gets none (-0.3 .. +0.1), nor does slice 12's spectrum
+//   (sub ~25 dB under its bass). Ours at 20 Hz: +1.2 -> +0.3 and +1.5 -> +0.3 (40-63 Hz still 0.4 .. 0.6 dB high);
+//   17-slice sweep +0.9 dB summed, no slice below -0.05. Every band below 100 Hz on 2 .. 4 dB / octave lost 08 / 01.
 //   The gate and the Shape / Boost onsets use the skirted levels; the Cut detectors (F, the 1.5 s reference) and the
 //   Cut onsets keep the narrow bands (resonances).
 // - Shape / Boost detector S: a one-pole on band power (tauS), in dB afterwards (measured: the reference's Shape on
@@ -128,6 +134,7 @@ constexpr double kBoostDropSec = 0.05, kBoostDropExp = 1.5;
 constexpr double kPowerAverageSec = 1.5;   // bin power average of the power-neutral solve
 constexpr double kOffsetLoHz = 100.0, kOffsetHiHz = 5600.0;
 constexpr double kSkirtDbPerOct = 12.0;   // Shape / Boost band reading: power skirts on both sides
+constexpr double kBottomSkirtDbPerOct = 2.0;   // ... the bottom band's skirt toward the bands above it
 
 #if PS_TBAL_HAS_SSE_CSR
 struct ScopedFlushDenormals
@@ -355,7 +362,8 @@ struct ToneBalance::Impl final : SpectralEngine::Client
             for (int j = 0; j < nb; ++j)
             {
                 const double d = std::abs (bandLog2[(size_t) j] - bandLog2[(size_t) b]);
-                const double w = (double) bandWidthOct[(size_t) j] * std::pow (10.0, -kSkirtDbPerOct * d / 10.0);
+                const double skirt = b == 0 && j > 0 ? kBottomSkirtDbPerOct : kSkirtDbPerOct;
+                const double w = (double) bandWidthOct[(size_t) j] * std::pow (10.0, -skirt * d / 10.0);
                 row[j] = (float) w;
                 sum += w;
             }
