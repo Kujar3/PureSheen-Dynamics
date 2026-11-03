@@ -2,21 +2,44 @@
 
 #include "ui/ModulePanel.h"
 
+#include <memory>
+
 // Classic Compressor panel. Owner: mod-ccmp. Implementation: ClassicCompPanel.cpp.
 // Contract: the editor creates it through createModulePanel (ModulePanels.cpp) for ps::ModuleType::ClassicComp; it is a
-// ModulePanel (the base draws the header: name, presets, channel modes, channel tabs, Delta, Reset).
-// For now it is the GenericModulePanel (every parameter as a control, built from ps::paramSpecs()). The dedicated
-// panel replaces the body: a large gain-reduction meter (a needle-style arc in our style), knobs for threshold / ratio / attack /
-// release / makeup, the mode as a 3-segment control, the Auto Gain toggle and a sidechain EQ strip (three nodes on a
-// mini curve from ps::ClassicComp::detectorResponseDb, or six knobs) with a listen button (soloDetectionFilter).
-// Every control gets a tooltip in plain language. It may stop deriving from GenericModulePanel (derive from
-// ModulePanel directly) as long as the constructor stays.
+// ModulePanel (the base draws the header: name, presets, Stereo | M/S, the Mid | Side tabs with Link, Delta, Reset).
+//
+//   top    : "Gain Reduction" card (a needle on an arc, 0 .. -20 dB on a square-root scale, the 1 s hold tick, the
+//            reduction in large type, the detector level and the auto-gain correction), "Transfer" card (the static
+//            curve of ps::ClassicComp::staticCurveDb with its knee, the threshold node to drag, a ball at the live
+//            input / output level) and "Detection Filter" card (the sidechain curve of detectorResponseDb with three
+//            nodes: high-pass (frequency), bell and shelf (frequency and gain); the Listen pill =
+//            ModuleMonitor::soloDetectionFilter)
+//   bottom : "Compressor" card: Threshold, Ratio, Attack, Release, Makeup knobs; Mode (Sharp | Balanced | Smooth) and
+//            Auto Gain
+// Every control follows the selected channel set (M/S) and edits both sets with Link on. Every ClassicCompSetParams
+// parameter has a control; "ccmp.on" lives in the chain strip, the channel mode and Link in the header. Node drags are
+// one undo step; double-click resets, right-click opens a menu. Never takes keyboard focus; left-click-only edits.
+// The detector solo ends when the panel closes.
 namespace ps::ui
 {
-class ClassicCompPanel : public GenericModulePanel
+class ClassicCompPanel : public ModulePanel
 {
 public:
     ClassicCompPanel (PureSheenProcessor&, EditorServices&);
     ~ClassicCompPanel() override;
+
+    void tick() override;
+    void refresh() override;
+    void channelSetChanged() override;
+    void paint (juce::Graphics&) override;
+
+    int getNumControls() const noexcept;             // parameter controls (tests / snapshot checks)
+
+protected:
+    void layoutContent (juce::Rectangle<int> contentArea) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
 };
 } // namespace ps::ui

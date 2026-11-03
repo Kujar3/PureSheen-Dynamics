@@ -11,9 +11,11 @@
 //
 //   x -> input gain G = ceiling - threshold (dB; lowering the threshold makes it louder, as a maximizer)
 //     -> variable-mu stage (stereo-linked, feedback):
-//          detector: the stage's own output of the previous sample, max (|L|, |R|) (Analog: through a 60 Hz
-//            high-pass, kAnalogDetHpHz, "tighter lows"), smoothed by attack / release one-poles into env (linear)
-//          gain element g = 1 / (1 + u^kMuExponent), u = max (0, env - K) / (C - K), C = the ceiling (linear) and
+//          detector: the stage's own output of the previous sample (the gain element's output G x g, before the
+//            oversampled saturator), max (|L|, |R|) (Analog: through a 60 Hz high-pass, kAnalogDetHpHz, "tighter
+//            lows"), smoothed by attack / release one-poles into env (linear)
+//          gain element g = 1 / (1 + u^kMuExponent) (kMuExponent 2), u = max (0, env - K) / (C - K), C = the ceiling
+//            (linear) and
 //            K = C x 10^(-kKneeDb / 20) the start of the very soft knee (kKneeDb 10): exactly 1 below the knee, the
 //            ratio rising with level above it
 //          times from character (0 = fast .. 10 = slow) per mode: kAttackMs[mode][0..10], kReleaseMs[mode][0..10]

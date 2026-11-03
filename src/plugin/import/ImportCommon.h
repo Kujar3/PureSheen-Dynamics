@@ -11,8 +11,8 @@
 #include <vector>
 
 // Preset importer: shared types of the mapping tables (pure C++17, no JUCE; compiled into the plug-in, the dev tool
-// and CoreTests). Owner: importer framework. The mapping tables live in ImportMapEq.cpp, ImportMapCore.cpp and
-// ImportMapPhase2.cpp; the engine (structure, chain, plan) in ImportEngine.h/.cpp; the JUCE side (file reading,
+// and CoreTests). Owner: importer framework. The mapping tables live in ImportMapEq.cpp, ImportMapCore.cpp,
+// ImportMapPhase2.cpp and ImportMapPhase3.cpp; the engine (structure, chain, plan) in ImportEngine.h/.cpp; the JUCE side (file reading,
 // juce::XmlDocument, applying to the processor, file chooser) in XmlPresetImport.h/.cpp.
 //
 // The imported format (a foreign mastering suite's .xml presets): a root element with PresetVer / PluginVer
@@ -145,11 +145,12 @@ struct ModuleSpec
     Hook finish = nullptr;                 // after the table (cross-parameter rules)
 };
 
-// The three family files (one function each, called by the engine; never at static-init time).
+// The family files (one function each, called by the engine; never at static-init time).
 const std::vector<ModuleSpec>& eqFamilySpecs();        // ImportMapEq.cpp:     EQ 1, EQ 2, Dynamic EQ, Match EQ
 const std::vector<ModuleSpec>& coreFamilySpecs();      // ImportMapCore.cpp:   Dynamics, Imager, Exciter, Maximizer
 const ModuleSpec& globalSpec();                        // ImportMapCore.cpp:   the global section (type Count)
 const std::vector<ModuleSpec>& phase2FamilySpecs();    // ImportMapPhase2.cpp: Tone Balance .. Bass Shaper
+const std::vector<ModuleSpec>& vintageFamilySpecs();   // ImportMapPhase3.cpp: Classic Compressor .. Tape
 
 //==============================================================================
 // Result bookkeeping

@@ -23,19 +23,23 @@
 //   5. low-mid     peak boost at kPassiveEqLowMidHz[lmHz], up to kMidMaxDb (10) dB
 //   6. mid cut     peak cut at kPassiveEqMidHz[midHz], up to -kMidMaxDb dB
 //   7. high-mid    peak boost at kPassiveEqHighMidHz[hmHz], up to kMidMaxDb dB
-//                  5 - 7 proportional Q: Q = kMidQLow + (kMidQHigh - kMidQLow) x law (amount / 10)
+//                  5 - 7 proportional Q: Q = kMidQLow + (kMidQHigh - kMidQLow) x law (amount / 10) (kMidQHigh >
+//                  kMidQLow: broad at a touch, narrower as the amount rises)
 //   law (u) = the knob law, table kKnobLaw[11] over 0..10 interpolated linearly (identity until fitted); law (0) = 0.
-//   A section at amount 0 is exactly unity (skipped once its glide has settled): its biquad is not in the path.
+//   A section at amount 0 is exactly unity (numerator = denominator: the SVF's output weights are exactly 1, 0, 0), so
+//   it adds nothing to the path; its state keeps running, so engaging it starts from a warm state.
 //   Frequencies above 0.45 x sampleRate are clamped there (the matched design keeps the shape below Nyquist).
 //   8. tube make-up stage: 2x oversampled (Oversampler, MinimumPhase), a soft asymmetric saturator, mostly 2nd harmonic,
 //      scaled by drive (0..10, shared by both sets; kDriveMax sets the curve at 10), level-compensated so a -18 dBFS
 //      sine at 1 kHz keeps its level. drive 0: the stage is bypassed and the signal is delayed by an exact integer
-//      delay of kPassiveEqLatency samples instead (bit-exact); crossing 0 crossfades the two paths over 20 ms.
-// Latency: kPassiveEqLatency (the 2x minimum-phase oversampler's round trip, 3 samples) at every sample rate, whatever
-// the drive, so it never jumps (reported whenever the module is in the chain; it depends on no parameter).
+//      delay of kPassiveEqLatency samples (bit-exact). The oversampled path carries only the compensated nonlinear
+//      residual, added to this same clean delay; crossing 0 fades that correction over 20 ms without combing the clean
+//      signal. The residual has the minimum-phase oversampler's frequency-dependent phase.
+// Latency: kPassiveEqLatency (3 samples on the clean path, the rounded oversampler latency for the residual) at every
+// sample rate, whatever the drive, so it never jumps (reported in the chain; it depends on no parameter).
 // Neutral: every amount 0 and drive 0 (the defaults): output = input delayed by kPassiveEqLatency exactly.
 // Parameter changes: designs are recomputed only when a set's values change and glide over 10 ms (SmoothedBiquad); a
-// frequency step (choice) glides the same way, no click.
+// frequency step (choice) glides the same way, no click. The first parameters after prepare/reset snap, including Drive.
 // T/S twin (Module.h rules): with getParamSet() == 1 setParams copies set B over set A; the latency is shared.
 // Meters: none of its own (the slot's difference meter only).
 namespace ps

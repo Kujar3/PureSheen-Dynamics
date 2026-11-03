@@ -100,7 +100,7 @@ const Aliases& aliases()
         m["ToneChain"] = specOf (ps::ModuleType::Equalizer1).elementKey;
         m["Common"] = kGlobalSectionKey;
         m["Order"] = kChainBlobKey;
-        m["Tape"] = skippedModuleKey ("tape emulation");
+        m["Restorer"] = skippedModuleKey ("de-limiter");
         m["Width #"] = ruleKey (img, "band width");
         m["Present #"] = ruleKey (img, "band present");
         m["Count"] = ruleKey (img, "band count (older files)");
@@ -343,12 +343,12 @@ TEST_CASE ("import. whole-chain file: chain order, skipped and unknown modules, 
 {
     const auto root = el ("Root", { { "PresetVer", "3" }, { "PluginVer", "100000" } },
                           { el ("Common", { { "Enabled", "1" } },
-                                { chainNode ({ { "Tape", 0 }, { "SpreadChain", 0 }, { "Somebody Else", 0 },
+                                { chainNode ({ { "Restorer", 0 }, { "SpreadChain", 0 }, { "Somebody Else", 0 },
                                                { "ToneChain", 0 }, { "SpreadChain", 0 } }),
                                   el ("ExtraBytes", { { "ElementID", "Common" }, { "Data", "" } }) }),
                             el ("Spread", { { "Enabled", "1" } }, { param ("SpreadChain", "Width 1", "25.00000000") }),
                             el ("Tone", { { "Enabled", "1" } }),
-                            el ("Tape", { { "Enabled", "1" } }, { param ("Tape", "Drive", "3") }),
+                            el ("Restorer", { { "Enabled", "1" } }, { param ("Restorer", "Drive", "3") }),
                             el ("Unrelated", { { "Enabled", "1" } }, { param ("Unrelated", "Width 1", "80") }) });
     const auto plan = buildImportPlan (root, opts());
     REQUIRE (plan.ok);
@@ -358,7 +358,7 @@ TEST_CASE ("import. whole-chain file: chain order, skipped and unknown modules, 
     CHECK_EQ (plan.order[0], ps::ModuleType::Imager);
     CHECK_EQ (plan.order[1], ps::ModuleType::Equalizer1);
     REQUIRE (plan.report.skipped.size() == 2);
-    CHECK_EQ (plan.report.skipped[0], std::string ("tape emulation"));
+    CHECK_EQ (plan.report.skipped[0], std::string ("de-limiter"));
     CHECK_EQ (plan.report.skipped[1], std::string ("unknown module"));
     CHECK (near (value (plan, "img.b1.width"), 25.0));
     CHECK (near (value (plan, "img.on"), 1.0));
@@ -367,7 +367,7 @@ TEST_CASE ("import. whole-chain file: chain order, skipped and unknown modules, 
     CHECK_EQ (plan.report.unmapped, 0);
 
     const auto line = summariseReport (plan);
-    CHECK_EQ (line, std::string ("Imported 2 modules, 1 setting. Skipped: tape emulation, unknown module."));
+    CHECK_EQ (line, std::string ("Imported 2 modules, 1 setting. Skipped: de-limiter, unknown module."));
 }
 
 TEST_CASE ("import. the section power switch turns a chain module off; the chain flag byte is not power")
@@ -623,19 +623,19 @@ TEST_CASE ("import. files that are not importable say so in plain words")
     CHECK (! empty.error.empty());
 
     // A single-module file for a module we do not have.
-    const auto tape = buildImportPlan (el ("Root", { { "PresetVer", "1" }, { "PluginVer", "110000" } },
-                                           { el ("Tape", { { "Enabled", "1" } }, { param ("Tape", "Drive", "3") }),
+    const auto restorer = buildImportPlan (el ("Root", { { "PresetVer", "1" }, { "PluginVer", "110000" } },
+                                           { el ("Restorer", { { "Enabled", "1" } }, { param ("Restorer", "Drive", "3") }),
                                              el ("Common", { { "Enabled", "0" } }) }),
                                        opts());
-    CHECK (! tape.ok);
-    CHECK (tape.error.find ("tape emulation") != std::string::npos);
+    CHECK (! restorer.ok);
+    CHECK (restorer.error.find ("de-limiter") != std::string::npos);
 }
 
 TEST_CASE ("import. hostile trees never crash and every value stays in range")
 {
     std::uint32_t seed = 12345u;
     auto next = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
-    const char* tags[] = { "Spread", "Tone", "Common", "Tape", "Param", "ExtraBytes", "X", "" };
+    const char* tags[] = { "Spread", "Tone", "Common", "Restorer", "Param", "ExtraBytes", "X", "" };
     const char* attrs[] = { "Enabled", "ElementID", "ParamID", "Value", "Data", "PresetVer", "PluginVer" };
     const char* texts[] = { "Width 1", "Aux: Width 4", "Present 2", "Edge 3", "Kind", "Split", "Count", "Off 0",
                             "Wide Style", "Wide Time", "1", "0", "-1", "1e308", "-1e308", "nan", "", "9999999999",
@@ -711,9 +711,8 @@ TEST_CASE ("import. every table row targets real ids; keys unique per table and 
         CHECK (skippedModuleDescription (spec->tagKey) == nullptr);
         CHECK (spec->tagKey != kGlobalSectionKey && spec->tagKey != kChainBlobKey);
     }
-    // every module type up to the Bass Shaper has a spec; the vintage-style modules get theirs at their integration
-    // (until then their sections are skipped as modules we do not have)
-    CHECK_EQ (types.size(), (size_t) ps::kFirstVintageModuleType);
+    // every module type has a spec (the vintage-style family included)
+    CHECK_EQ (types.size(), (size_t) ps::kNumModuleTypes);
 
     std::vector<const ModuleSpec*> all = allModuleSpecs();
     all.push_back (&globalSpec());

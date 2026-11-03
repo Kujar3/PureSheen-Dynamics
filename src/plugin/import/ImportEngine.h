@@ -93,13 +93,14 @@ ImportPlan buildImportPlan (const XmlNode& root, const ImportOptions& = {});
 
 // Where a single-module import inserts its module when the chain does not hold it yet: before the first module that
 // comes later in our usual mastering order (EQ, Dynamic EQ, Match EQ, Tone Balance, Definition, Smoother, Low Contrast,
-// Bass Shaper, Punch, Dynamics, Imager, Exciter, EQ 2, Maximizer). Returns the new order (unchanged if present).
+// Bass Shaper, Punch, Dynamics, Classic Compressor, Passive EQ, Imager, Exciter, Tape, EQ 2, Classic Limiter,
+// Maximizer). Returns the new order (unchanged if present).
 std::vector<ModuleType> insertIntoChain (const std::vector<ModuleType>& order, ModuleType);
 
-// Every module spec the engine knows (the three families), and the spec for a key (tag or ElementID), or nullptr.
+// Every module spec the engine knows (the four families), and the spec for a key (tag or ElementID), or nullptr.
 std::vector<const ModuleSpec*> allModuleSpecs();
 const ModuleSpec* findModuleSpec (Key tagOrElementKey);
 
-// A short line for the UI: "Imported 9 modules, 214 settings. Skipped: tape emulation, de-limiter."
+// A short line for the UI: "Imported 9 modules, 214 settings. Skipped: de-limiter."
 std::string summariseReport (const ImportPlan&);
 } // namespace ps::imp

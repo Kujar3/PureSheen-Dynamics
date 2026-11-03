@@ -22,6 +22,10 @@
 //   "Gentle Acoustic Master" within 1.5 LU of the input.
 // - Module preset names are unique across all scopes (the DSP owners' "Soft Sheen" / "Air Lift" proposals became
 //   "Gentle Balance" / "Airy Detail", since a global and an EQ preset already carry those names).
+//
+// Phase 3 (vintage-style modules): 4-5 presets per module, built on the module defaults (which are the reference's,
+// not neutral: e.g. the Classic Compressor's auto gain stays on). Stereo presets set both channel sets as above; the
+// Mid-Side ones turn Link off. Not fitted to the reference's renders yet, so the amounts stay moderate.
 namespace psplug
 {
 namespace
@@ -236,6 +240,34 @@ struct Builder
         both ("meq", "smooth", smooth);
         both ("meq", "boost", boost);
         return both ("meq", "cut", cut);
+    }
+
+    // (phase 3) Classic Compressor core controls on the channel sets listed in `sets` ("a", "b" or "ab"); makeup 0,
+    // auto gain on (the module defaults).
+    Builder& classicComp (const std::string& sets, float thr, float ratio, float attackMs, float releaseMs,
+                          ps::ClassicCompMode m)
+    {
+        for (char s : sets)
+        {
+            const std::string p = std::string ("ccmp.") + s + ".";
+            set (p + "thr", thr);
+            set (p + "ratio", ratio);
+            set (p + "attack", attackMs);
+            set (p + "release", releaseMs);
+            set (p + "mode", (float) m);
+        }
+        return *this;
+    }
+
+    // (phase 3) Tape controls.
+    Builder& tape (ps::TapeSpeed speed, float driveDb, float bias, float harmonics, float lowEmph, float highEmph)
+    {
+        set ("tape.speed", (float) speed);
+        set ("tape.drive", driveDb);
+        set ("tape.bias", bias);
+        set ("tape.harmonics", harmonics);
+        set ("tape.lowEmph", lowEmph);
+        return set ("tape.highEmph", highEmph);
     }
 };
 
@@ -733,6 +765,107 @@ std::vector<FactoryPreset> build()
         Builder()
             .set ("bass.balance", -1.5f).set ("bass.punch", 1.0f)
             .set ("bass.peak.on", 1.0f).set ("bass.peak.thr", -8.0f).set ("bass.peak.char", 100.0f)));
+
+    //==============================================================================
+    // (phase 3) Classic Compressor presets (thresholds in sine-peak dBFS of the detector; 1-3 dB of reduction on a
+    // -20 LUFS premaster)
+    using CM = ps::ClassicCompMode;
+    all.push_back (modulePreset ("Bus Glue", "Glue", ModuleType::ClassicComp,
+        Builder()
+            .classicComp ("ab", -18.0f, 1.5f, 30.0f, 200.0f, CM::Smooth)
+            .both ("ccmp", "sc.hpf", 90.0f)));
+    all.push_back (modulePreset ("Transient Snap", "Punch", ModuleType::ClassicComp,
+        Builder()
+            .classicComp ("ab", -16.0f, 3.0f, 25.0f, 60.0f, CM::Sharp)
+            .both ("ccmp", "sc.hpf", 120.0f)));
+    all.push_back (modulePreset ("Slow Leveler", "Glue", ModuleType::ClassicComp,
+        Builder()
+            .classicComp ("ab", -22.0f, 2.0f, 50.0f, 600.0f, CM::Smooth)
+            .both ("ccmp", "sc.hpf", 60.0f)));
+    all.push_back (modulePreset ("Soft on Harshness", "Tone", ModuleType::ClassicComp,
+        Builder()
+            .classicComp ("ab", -20.0f, 2.5f, 5.0f, 120.0f, CM::Balanced)
+            .both ("ccmp", "sc.hpf", 150.0f)
+            .both ("ccmp", "sc.bellHz", 3500.0f).both ("ccmp", "sc.bellDb", 4.0f)
+            .both ("ccmp", "sc.shelfHz", 8000.0f).both ("ccmp", "sc.shelfDb", 3.0f)));
+    all.push_back (modulePreset ("Mid Glue, Free Sides", "Mid-Side", ModuleType::ClassicComp,
+        Builder()
+            .channelMode (ModuleType::ClassicComp, ChannelMode::MidSide)
+            .set ("ccmp.link", 0.0f)
+            .classicComp ("a", -18.0f, 2.0f, 20.0f, 150.0f, CM::Balanced)
+            .classicComp ("b", -24.0f, 1.3f, 40.0f, 300.0f, CM::Smooth)
+            .both ("ccmp", "sc.hpf", 100.0f)));
+
+    //==============================================================================
+    // (phase 3) Passive EQ presets (amounts on the 0..10 knobs: the mids reach 10 dB at 10, the top section's
+    // boost / cut 13.5 .. 17.5 dB)
+    all.push_back (modulePreset ("Low Boost and Dip", "Bass", ModuleType::PassiveEq,
+        Builder()
+            .both ("peq", "lowHz", 3.0f)          // 60 Hz
+            .both ("peq", "lowBoost", 3.0f).both ("peq", "lowCut", 2.0f)));
+    all.push_back (modulePreset ("Silky Top", "Air", ModuleType::PassiveEq,
+        Builder()
+            .both ("peq", "highHz", 5.0f)         // 12 kHz
+            .both ("peq", "highBoost", 2.5f).both ("peq", "highBw", 7.0f)
+            .both ("peq", "highCutHz", 2.0f)      // 20 kHz
+            .both ("peq", "highCut", 1.0f)));
+    all.push_back (modulePreset ("Midrange Clean-Up", "Tone", ModuleType::PassiveEq,
+        Builder()
+            .both ("peq", "midHz", 2.0f)          // 500 Hz
+            .both ("peq", "midCut", 2.5f)
+            .both ("peq", "hmHz", 2.0f)           // 3 kHz
+            .both ("peq", "hmBoost", 1.5f)));
+    all.push_back (modulePreset ("Tube Warmth", "Color", ModuleType::PassiveEq,
+        Builder()
+            .set ("peq.drive", 3.0f)
+            .both ("peq", "lowHz", 4.0f)          // 100 Hz
+            .both ("peq", "lowBoost", 1.5f)
+            .both ("peq", "highCutHz", 2.0f)      // 20 kHz
+            .both ("peq", "highCut", 1.5f)));
+    all.push_back (modulePreset ("Solid Center, Airy Sides", "Mid-Side", ModuleType::PassiveEq,
+        Builder()
+            .channelMode (ModuleType::PassiveEq, ChannelMode::MidSide)
+            .set ("peq.link", 0.0f)
+            .set ("peq.a.lowHz", 2.0f)            // Mid: 45 Hz
+            .set ("peq.a.lowBoost", 2.0f)
+            .set ("peq.b.highHz", 4.0f)           // Side: 10 kHz
+            .set ("peq.b.highBoost", 3.0f).set ("peq.b.highBw", 6.0f)));
+
+    //==============================================================================
+    // (phase 3) Classic Limiter presets (Threshold below the Ceiling = gain into the limiter)
+    using LMode = ps::ClassicLimiterMode;
+    all.push_back (modulePreset ("Tube Glue Limit", "Limiting", ModuleType::ClassicLimiter,
+        Builder()
+            .set ("clim.mode", (float) LMode::Tube).set ("clim.thr", -3.0f).set ("clim.ceiling", -1.0f)
+            .set ("clim.character", 6.0f).set ("clim.truePeak", 1.0f)));
+    all.push_back (modulePreset ("Fast Analog Catch", "Limiting", ModuleType::ClassicLimiter,
+        Builder()
+            .set ("clim.mode", (float) LMode::Analog).set ("clim.thr", -2.0f).set ("clim.ceiling", -0.5f)
+            .set ("clim.character", 1.0f).set ("clim.truePeak", 1.0f)));
+    all.push_back (modulePreset ("Modern Tube Push", "Loudness", ModuleType::ClassicLimiter,
+        Builder()
+            .set ("clim.mode", (float) LMode::Modern).set ("clim.thr", -5.0f).set ("clim.ceiling", -1.0f)
+            .set ("clim.character", 3.0f).set ("clim.truePeak", 1.0f)));
+    all.push_back (modulePreset ("Slow Tube Leveling", "Limiting", ModuleType::ClassicLimiter,
+        Builder()
+            .set ("clim.mode", (float) LMode::Tube).set ("clim.thr", -4.0f).set ("clim.ceiling", -1.0f)
+            .set ("clim.character", 9.0f).set ("clim.truePeak", 1.0f)));
+
+    //==============================================================================
+    // (phase 3) Tape presets (the output level follows the input whatever the drive; High Emphasis 4 = flat highs)
+    using TS = ps::TapeSpeed;
+    all.push_back (modulePreset ("Clean 30 ips", "Tape", ModuleType::Tape,
+        Builder()
+            .tape (TS::Ips30, -6.0f, 2.0f, 1.0f, 3.0f, 4.0f)));
+    all.push_back (modulePreset ("Warm 15 ips", "Tape", ModuleType::Tape,
+        Builder()
+            .tape (TS::Ips15, 4.0f, 0.0f, 3.0f, 6.0f, 3.5f)));
+    all.push_back (modulePreset ("Dusty 7.5 ips", "Color", ModuleType::Tape,
+        Builder()
+            .tape (TS::Ips7_5, 8.0f, -3.0f, 5.0f, 7.0f, 2.5f)));
+    all.push_back (modulePreset ("Tape Glue", "Glue", ModuleType::Tape,
+        Builder()
+            .tape (TS::Ips30, 2.0f, 4.0f, 2.0f, 4.0f, 4.5f)));
 
     return all;
 }

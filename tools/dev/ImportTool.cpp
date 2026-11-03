@@ -376,7 +376,7 @@ const Aliases& testAliases()
         m["LimitChain"] = specOf (ps::ModuleType::Maximizer).elementKey;
         m["Common"] = kGlobalSectionKey;
         m["Order"] = kChainBlobKey;
-        m["Tape"] = skippedModuleKey ("tape emulation");
+        m["Restorer"] = skippedModuleKey ("de-limiter");
         m["Width #"] = key (img, "band width");
         m["Present #"] = key (img, "band present");
         m["Edge #"] = key (img, "crossover frequency");
@@ -435,13 +435,13 @@ const char* const kChainFile =
     "        <Unknown Thing=\"1\"><Deeper/></Unknown>\r\n"
     "    </Spread>\r\n"
     "    <Limit Enabled=\"1\" />\r\n"
-    "    <Tape Enabled=\"1\" />\r\n"
+    "    <Restorer Enabled=\"1\" />\r\n"
     "    <Late Enabled=\"1\" />\r\n"
     "</Root>\r\n";
 
 juce::String chainFileText()
 {
-    return juce::String (kChainFile).replace ("%CHAIN%", chainData ({ "Tape", "ToneChain", "SpreadChain", "LimitChain" }));
+    return juce::String (kChainFile).replace ("%CHAIN%", chainData ({ "Restorer", "ToneChain", "SpreadChain", "LimitChain" }));
 }
 
 juce::String moduleFileText (const juce::String& version)
@@ -848,14 +848,14 @@ int runImportTests()
         check (plan.ok, "import: a whole-chain file parses (entities, CRLF, decimal commas)", plan.error);
         check (plan.order == std::vector<ps::ModuleType> { ps::ModuleType::Equalizer1, ps::ModuleType::Imager, ps::ModuleType::Maximizer },
                "import: our chain follows the file's chain order, skipped module dropped");
-        check (plan.report.skipped == std::vector<std::string> { "tape emulation" }, "import: skipped module in our words");
+        check (plan.report.skipped == std::vector<std::string> { "de-limiter" }, "import: skipped module in our words");
         check (std::abs (valueOf (plan, "img.xover1") - 250.0f) < 0.01f && std::abs (valueOf (plan, "img.b2.width") - 40.5f) < 0.01f,
                "import: decimal-comma values", std::to_string (valueOf (plan, "img.xover1")));
         check (std::abs (valueOf (plan, "img.b.b1.width") + 20.0f) < 0.01f, "import: set B prefix -> set B");
         check (valueOf (plan, "img.chMode") == 1.0f, "import: channel mode");
         check (plan.report.mapped == 5 && plan.report.unmapped == 1, "import: counts (one unknown control)",
                std::to_string (plan.report.mapped) + " / " + std::to_string (plan.report.unmapped));
-        check (ps::imp::summariseReport (plan) == "Imported 3 modules, 5 settings (1 not imported). Skipped: tape emulation.",
+        check (ps::imp::summariseReport (plan) == "Imported 3 modules, 5 settings (1 not imported). Skipped: de-limiter.",
                "import: summary line", ps::imp::summariseReport (plan));
     }
 

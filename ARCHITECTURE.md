@@ -20,8 +20,9 @@ Later phases (enums are append-only, so they slot in):
   Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
 - Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
 - Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (done, from RefMatch, see
-  "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (contracts done, see
-  "Vintage-style modules (phase 3)" below), a de-limiter, and one plug-in per module ("PureSheen EQ", ...)
+  "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (done, not yet
+  fitted to the reference, see "Vintage-style modules (phase 3)" below), a de-limiter, and one plug-in per module
+  ("PureSheen EQ", ...)
 - Phase 4: MCP bridge
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
@@ -64,13 +65,14 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
   Quadrature.h/.cpp       ripple-free envelope for Punch / Bass Shaper
   DynamicEq, MatchEq (+ MatchAnalysis, CurveFir), ToneBalance (+ ToneTargets), Definition, Smoother, Punch,
   LowContrast, BassShaper .h/.cpp   one contract header + implementation per module
-  (phase 3) ClassicComp, PassiveEq, ClassicLimiter, Tape .h/.cpp   the vintage-style modules (contract + stub)
+  (phase 3) ClassicComp, PassiveEq (+ PassiveEqDesign.h), ClassicLimiter, Tape .h/.cpp   the vintage-style modules
 src/plugin/               PluginProcessor.h/.cpp (+ PluginState, UndoHistory, Presets, FactoryPresets, MatchEqState;
                           MatchEqStateTests.cpp is compiled into the dev tool only)
 src/plugin/Assistant.*    (phase 3) the Assistant on the processor side: capture, worker, state child, macro edits
 src/plugin/TrackReferencing.*  (phase 3) Track Referencing: reference list, loader + analysis threads, A/B playback
 src/plugin/import/        preset importer: ImportCommon / ImportEngine (pure C++, also in CoreTests), mapping tables
-                          ImportMapEq / ImportMapCore / ImportMapPhase2, XmlPresetImport (JUCE side, file chooser)
+                          ImportMapEq / ImportMapCore / ImportMapPhase2 / ImportMapPhase3 (vintage-style family),
+                          XmlPresetImport (JUCE side, file chooser)
 src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, ModulePanel, ModulePanels),
                           PluginEditor, HeaderBar, ChainStrip, IoPanel, DitherPanel, HelpOverlay,
                           EqPanel, DynamicsPanel, ImagerPanel, ExciterPanel, MaximizerPanel, MultibandDisplay
@@ -80,7 +82,8 @@ src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, M
                           LowRegionDisplay), BassShaperPanel (+ BassScope), LowEndWidgets
                           (phase 3) AssistantPanel (the Assistant page), the header's Assistant | Chain | Reference switch;
                           ReferencePanel, RefWaveform, RefComparison (Track Referencing); ClassicCompPanel,
-                          PassiveEqPanel, ClassicLimiterPanel, TapePanel (vintage-style modules)
+                          PassiveEqPanel, ClassicLimiterPanel (+ ClassicLimiterViews), TapePanel (+ TapeViews)
+                          (vintage-style modules)
 tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators);
                           ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
@@ -375,7 +378,7 @@ menus, and the dev tool's `import` / `importkey` / `importtest` and `render --im
   module sections holding `<Param ElementID ParamID Value>` and `<ExtraBytes ElementID Data>`. Exactly one enabled
   module section = a single-module file; otherwise a whole chain in the order of the decoded chain blob (sections not
   in the chain hold stale settings and are never read). Modules we do not have are skipped and named in our words
-  (analog-style compressor / EQ / limiter, tape emulation, de-limiter, stem-separation EQ, mix rebalancing). A
+  (de-limiter, stem-separation EQ, mix rebalancing). A
   well-formed empty chain is refused as holding no modules (`ImportPlan::holdsNoModules`).
 - Module power (whole-chain files) comes from the section's own power switch (`kSectionBypassKey`, any module type,
   >= 0.5 = off, absent = on; counted as an imported setting), handled once in `ModuleImport::run`. The chain entries'
@@ -685,9 +688,7 @@ Tape silver), Help ("More modules"), GenericModulePanel stubs in `src/ui/<Name>P
 ("-- Vintage-style modules": added before the Maximizer at their defaults, realtime groups with every parameter moved in every channel
 mode, the contract latency in every mode at 44.1 / 48 kHz, nulls at the neutral settings, a 0.5.0 state loading
 unchanged), snapshots (`17_*`, `PURESHEEN_SNAPSHOT_ONLY=vintage`), one test file per module. The CMake globs pick the
-new files up (no CMakeLists change). The preset importer still skips the four sections as modules we do not have
-(`tests/XmlPresetImportTests.cpp` expects specs for every type before the Classic Compressor) until the integration
-adds their maps.
+new files up (no CMakeLists change). The integration added the importer maps (see "Status (vintage integration)").
 
 Ownership for the module wave (only edit your files; ask the lead for contract changes):
 - mod-ccmp: ClassicComp.h/.cpp, tests/ClassicCompTests.cpp ("ccmp."), ui/ClassicCompPanel.h/.cpp
@@ -696,5 +697,101 @@ Ownership for the module wave (only edit your files; ask the lead for contract c
 - mod-tape: Tape.h/.cpp, tests/TapeTests.cpp ("tape."), ui/TapePanel.h/.cpp
 - lead (contracts) / integration: Types.h, Params.h, ParamTable.cpp, Chain.cpp, Widgets.cpp, ChainStrip.cpp,
   ModulePanels.cpp, HelpOverlay.cpp, FactoryPresets.cpp, SelfTest.cpp, Snapshot.cpp, ParamTests / ParamCompatTests,
-  the importer maps; module owners report needed changes. Factory presets (3-5 per module), the importer map, the
-  status section and version 0.6.0 come with the integration.
+  the importer maps; module owners report needed changes. Factory presets (3-5 per module), the importer map and
+  the status section came with the integration (below); version 0.6.0 comes with the release after the fit.
+
+## Status (vintage integration)
+
+Done: the four vintage-style modules with real DSP, their own tests and a dedicated panel each (no stubs left), 18
+factory presets (Classic Compressor 5, Passive EQ 5, Classic Limiter 4, Tape 4), the importer map, selftest coverage
+and snapshots. **Not yet fitted to the reference's renders:** every module is built from first principles of its
+circuit class, with every coefficient in the constant block at the top of its .cpp, and the parameter ranges and
+defaults are still the contract's (TBC) values (see Known limitations). Nothing is installed; the version is
+unchanged.
+
+What is real (per module; numbers from its CoreTests on the module owner's build and this integration's rerun):
+- Classic Compressor (`ccmp.`, 18 tests): feedback gain stage with gain-referred RMS / peak followers (they average
+  d / g and are read at the latest g; output-referred followers overshot a hit by 26 dB), knee 2 / 6 / 12 dB, c =
+  ratio - 1, attack divided by 1 + the local slope so the knob is the closed-loop attack at any ratio (1.3 / 10.7 /
+  50.7 ms measured for 1 / 10 / 50 ms, the same at ratio 2 and 20), program-dependent release (knob 200 ms: 278 ms
+  after a short hit, 643 ms after 3 s of reduction), saturator above -30 dBFS scaled by the reduction (Sharp below
+  -117 dBc, Balanced about -62, Smooth about -52 dBc), auto gain over 3 s (within 0.008 dB), detector listen. Neutral
+  bit-exact; steady tones on `staticCurveDb` within 0.047 dB; glides per sample (block-size independent); click
+  ratio <= 1.94; about 300x realtime. Latency 0.
+- Passive EQ (`peq.`, 23 tests): seven matched sections per channel with 10 ms glides (low boost +13.7 dB at 10,
+  boost 10 + cut 5 = +5.9 dB at 30 Hz / -4.3 dB at 100 Hz; high boost 16.02 dB, 0.38 .. 4.91 octaves over the
+  bandwidth knob), the 2x oversampled tube stage (Drive 10: H2 -30.4 dBc, H3 -53.1 dBc, aliasing below -91 dBc; only
+  its residual fades when Drive crosses 0). Neutral = input delayed by exactly 3 samples in every mode; the panel curve
+  (shared designs, `dsp/PassiveEqDesign.h`) matches the audio within 7e-7 dB; parameter-step splatter <= -83.5 dB;
+  about 140x realtime at 96 kHz. Latency 3 at every rate and drive; T/S twin.
+- Classic Limiter (`clim.`, 22 tests): input gain Ceiling - Threshold (20 ms glide), stereo-linked variable-mu
+  feedback stage g = 1 / (1 + u^2) with the 10 dB soft knee (effective ratio 1.34 .. 2.38, static curve within 0.04
+  dB), attack 0.17 .. 15 ms and release 63 .. 2538 ms over the modes and Character, Tube / Modern saturation at 2x
+  (+3 dBFS Tube: H2 -37, H3 -46 dBc; Analog H2 below -90 dBc; worst alias -105 dBc), then the Maximizer's brickwall
+  (1.5 ms) and guard (0.5 ms), run per sample so the history display is exact (about 20 % CPU; 111x realtime). 216
+  torture runs: the sample peak never above the ceiling, worst true peak -0.020 dB re ceiling. Neutral = input
+  delayed exactly in all three modes. Latency 109 / 117 / 213 samples at 44.1 / 48 / 96 kHz.
+- Tape (`tape.`, 20 tests): all at 4x minimum phase: record pre-emphasis at the speed's equal-distortion corner
+  (500 Hz / 1 kHz / 2 kHz), a blend of three saturator curves over bias with rate-independent hysteresis on the
+  residual, the even-harmonic offset (its DC removed in output units), exact reciprocal de-emphasis, the head bump
+  (40 / 60 / 110 Hz bell on its roll-off; +10.00 dB at Low Emphasis 10), one net high shelf (High Emphasis 4 = exactly
+  flat) and a static make-up for -18 dBFS pink noise (within 0.145 dB over 90 drive / speed / bias / harmonics
+  settings). Flat settings 200 Hz .. 10 kHz at +0.295 dB +-0.0006; measured response vs `responseDb` within 0.14 dB;
+  THD of a 200 Hz tone at -6 dBFS -96.8 / -37.8 / -13.9 dB at drive -30 / 0 / +20; H2 -36.5 .. -26.6 dBc over
+  Harmonics 2.5 .. 10; glides at fixed control positions (block sizes 1 .. 512 identical), click ratio <= 1.49;
+  non-finite or huge input samples are zeroed before the oversampler (they poisoned its recursion), about 72x realtime.
+  Latency 5 at every rate (the group delay 1.5 .. 4 kHz within 0.2 sample).
+
+Integration checks (selftest "-- Vintage-style modules" and "-- Presets"):
+- every module alone in every channel mode it offers reports its contract latency and nulls at its neutral settings
+  (44.1 / 48 kHz); the latency reported to the host equals the MEASURED delay (group delay of two quiet tones at
+  2.0 / 2.1 kHz, both channels, every mode, 44.1 / 48 / 96 kHz: worst 0.056 sample);
+- a chain of the four (Classic Compressor in M/S, Passive EQ in T/S, every module and set on) with random values
+  round-trips through the state, plays the same non-silent audio (within 1e-6) and reports the same latency (135
+  samples at 48 kHz);
+- realtime: every parameter of the four automated at 96 kHz with odd block sizes (1 .. 512), the detector listen and
+  the limiter's Delta toggled: allocation free and finite; the existing groups (every parameter, every channel mode;
+  T/S of the Passive EQ at 44.1 / 96 kHz) pass too;
+- every vintage module preset loads as exactly one undo step, changes its module and plays finite audio; undo and
+  redo restore the parameter values and chain order.
+
+Importer (`src/plugin/import/ImportMapPhase3.cpp`, CoreTests "import.vint.", 8 cases): the four sections map by
+hash key as the other families; every foreign default sits in ONE marked block (`vdef`) at the top of the file (Known
+where sparse storage proves it, Likely = screenshot values the files agree with, Guess = read off a curve; all 21
+Likely / Guess rows are listed in `out/importer/defaults-to-confirm.md`). Decisions: values 1:1 on our scales and
+clamped (counted) where the foreign ranges reach further (compressor threshold -60, makeup +-30, bell 9 kHz; tape drive
++30); Passive EQ amounts 1:1 onto our 0..10 knobs; its high-boost "Q" is inverted onto our bandwidth (renders: Q 0 =
+broad); tape speed index reversed (theirs 0 = 30 ips). Corpus: the reference's 56 factory presets of the four modules
+(writer 9030) import with 0 unmapped / 0 clamped values and play finite audio; the user's 49 one-change check saves
+(writer 120000) import with 0 unmapped (1 clamped: drive +30). A single-module import inserts the Classic Compressor
+and Passive EQ after Dynamics, Tape after the Exciter, the Classic Limiter before the Maximizer.
+
+Final review-and-fix pass over the whole diff (independent reviewer): corrupt input samples (non-finite or beyond
+1e6) are zeroed before the recursive state of the Classic Compressor, Passive EQ and Classic Limiter (Tape already
+did so); the Classic Compressor's auto-gain clock now runs every 64 samples across host blocks (identical output for
+blocks of 1 / 17 / 64 / 511); the integration checks were tightened (audible delay probes, an active-chain state
+round trip, all 79 vintage parameters automated, exact one-step undo / redo of every module preset). It found no
+defect in channel-mode resets, M/S / L/R routing, the T/S twin, the limiter's Delta, the detector listen, latency,
+the importer tables or the panels.
+
+Verification (after that pass; build-v-int CoreTests / PureSheenDev, build PureSheen_VST3 / PureSheen_CLAP; 0
+warnings in our sources): CoreTests 675 test cases, 0 failed (83 "ccmp." / "peq." / "clim." / "tape." cases, 8
+"import.vint."; the CPU benchmarks of other modules fail while the machine is busy and pass when rerun alone);
+`PureSheenDev selftest` 326 passed, 0 failed; `PureSheenDev importtest` all passed (191 checks); `PureSheenDev
+import` of the 56 factory presets: 56 imported, 0 unmapped, 0 clamped, all finite; `PureSheenDev snapshot`
+(`PURESHEEN_SNAPSHOT_ONLY=vintage`): the four panels at 980x600 / 1180x720 / 1800x1100, Passive EQ in M/S and T/S,
+Classic Compressor in M/S, the strip with all 18 modules, Help, reviewed by eye.
+
+Known limitations (vintage):
+- Not yet fitted to the reference's renders: curves, ballistics, saturation and knob laws are first-principles
+  values. The factory presets were chosen from the models' behaviour, not by listening, and need a listening pass
+  after the fit.
+- Ranges and defaults are the contract's (TBC) values, not yet the confirmed ones in the private spec (e.g. compressor
+  ratio default 1.5, release 30 .. 150 ms, threshold to -60 dB, gain +-30 dB; tape drive to +30 dB, speed default 30
+  ips, low emphasis 2; limiter Tube / -2 / 0 / Character 2; Passive EQ 45 Hz / 500 Hz / 1.5 kHz, high Q). Applying
+  them changes the vintage fingerprint in `tests/ParamCompatTests.cpp` (update the printed hash).
+- Classic Compressor: the saturator is not oversampled (latency 0); its harmonics are bounded (>= 40 dB down at 0 dBFS),
+  not filtered.
+- Passive EQ: Drive is our addition (no foreign counterpart; the importer leaves it at 0).
+- Classic Limiter: the per-sample brickwall costs about 20 % more CPU than a block-wise one (still 111x realtime).
+- Not done: pluginval / clap-validator on this build, renders against the reference, listening tests in FL Studio.

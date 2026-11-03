@@ -32,6 +32,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <complex>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -1349,6 +1350,213 @@ void testVintage()
                chainText (c.proc.getChainOrder()));
         check (vintageDefault, "vintage: a 0.5.0 state leaves every vintage parameter at its default", firstOff);
     }
+
+    // (integration) the latency reported to the host equals the MEASURED delay: the group delay between two quiet tones
+    // (2.0 / 2.1 kHz, L and R in different phases) through every vintage module alone, in every channel mode, at 44.1
+    // / 48 / 96 kHz, at its neutral settings (Tape: lowest drive, no head bump, flat highs, where it is linear)
+    {
+        std::string failures, worst;
+        bool allOk = true;
+        double worstErr = 0.0;
+        for (double rate : { 44100.0, 48000.0, 96000.0 })
+            for (auto t : vintageTypes())
+            {
+                bool hasNull = false;
+                auto neutral = vintageNeutralConfig (t, hasNull);
+                if (t == ps::ModuleType::Tape)
+                    neutral = { { "tape.drive", -30.0f }, { "tape.lowEmph", 0.0f }, { "tape.highEmph", 4.0f },
+                                { "tape.bias", 0.0f }, { "tape.harmonics", 0.0f } };
+                for (auto mode : ps::supportedChannelModes (t))
+                {
+                    Host h (rate);
+                    h.prepare();
+                    h.proc.setChainOrder ({ t });
+                    for (const auto& [id, v] : neutral)
+                        h.set (id, v);
+                    for (const auto& [id, v] : channelModeConfig (t, mode))
+                        h.set (id, v);
+                    const long long settle = (long long) (rate * 0.5), len = (long long) (rate * 0.5);
+                    const auto in = recordInput (settle + len, [rate] (long long n, float& l, float& r)
+                    {
+                        const double w1 = juce::MathConstants<double>::twoPi * 2000.0 / rate;
+                        const double w2 = juce::MathConstants<double>::twoPi * 2100.0 / rate;
+                        l = (float) (0.02 * std::sin (w1 * (double) n) + 0.02 * std::sin (w2 * (double) n));
+                        r = (float) (0.02 * std::sin (w1 * (double) n + 1.0) + 0.015 * std::sin (w2 * (double) n + 2.0));
+                    });
+                    h.stream (4096, {});
+                    h.proc.flushPendingChanges (true);
+                    const auto out = h.stream (settle + len, replay (in));
+                    const int lat = h.proc.getCurrentLatencySamples();
+                    double tau[2] {};
+                    bool signalOk = true;
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        const auto& x = ch == 0 ? in.l : in.r;
+                        const auto& y = ch == 0 ? out.l : out.r;
+                        double phase[2] {};
+                        for (int k = 0; k < 2; ++k)
+                        {
+                            const double w = juce::MathConstants<double>::twoPi * (k == 0 ? 2000.0 : 2100.0) / rate;
+                            std::complex<double> xi, yo;
+                            for (long long i = 0; i < len; ++i)
+                            {
+                                const long long n = settle + i;
+                                const double win = 0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * (double) i / (double) len);
+                                const auto e = std::polar (win, -w * (double) n);
+                                xi += (double) x[(size_t) n] * e;
+                                yo += (double) y[(size_t) n] * e;
+                            }
+                            const double inputMagnitude = std::abs (xi), outputMagnitude = std::abs (yo);
+                            signalOk = signalOk && std::isfinite (outputMagnitude) && inputMagnitude > 1.0
+                                       && outputMagnitude > 0.5 * inputMagnitude && outputMagnitude < 2.0 * inputMagnitude;
+                            phase[k] = std::arg (yo / xi);
+                        }
+                        double dphi = phase[1] - phase[0];
+                        while (dphi > juce::MathConstants<double>::pi) dphi -= juce::MathConstants<double>::twoPi;
+                        while (dphi <= -juce::MathConstants<double>::pi) dphi += juce::MathConstants<double>::twoPi;
+                        tau[ch] = -dphi / (juce::MathConstants<double>::twoPi * 100.0 / rate);
+                    }
+                    const double err = std::max (std::abs (tau[0] - lat), std::abs (tau[1] - lat));
+                    if (err > worstErr)
+                    {
+                        worstErr = err;
+                        worst = str (ps::moduleInfo (t).idPrefix, " mode ", (int) mode, " at ", rate, " Hz");
+                    }
+                    if (! signalOk || ! std::isfinite (tau[0]) || ! std::isfinite (tau[1])
+                        || ! (err < 0.5) || h.proc.getLatencySamples() != lat || ! allFinite (out))
+                    {
+                        allOk = false;
+                        failures += str (ps::moduleInfo (t).idPrefix, " mode ", (int) mode, " ", rate, " Hz: measured ",
+                                         tau[0], " / ", tau[1], ", reported ", h.proc.getLatencySamples(), " ");
+                    }
+                }
+            }
+        check (allOk, str ("[dsp] vintage: every module alone in every channel mode at 44.1 / 48 / 96 kHz: the reported "
+                           "latency equals the measured delay (within 0.5 sample; worst ",
+                           std::round (worstErr * 1000.0) / 1000.0, ", ", worst, ")"),
+               failures);
+    }
+
+    // (integration) a chain with all four vintage modules (the Classic Compressor in M/S, the Passive EQ in T/S) and
+    // random values everywhere round-trips through the state and plays finite audio at the same latency
+    {
+        Host a;
+        a.prepare();
+        Lcg lcg { 1931 };
+        const auto& specs = ps::paramSpecs();
+        for (size_t i = (size_t) ps::kNumParams_0_5_0; i < specs.size(); ++i)
+        {
+            const auto& s = specs[i];
+            const float u = 0.5f * (lcg.next() + 1.0f);
+            a.set (s.id, psplug::sanitiseValue ((int) i, s.minValue + u * (s.maxValue - s.minValue)));
+        }
+        const std::vector<ps::ModuleType> order { ps::ModuleType::PassiveEq, ps::ModuleType::ClassicComp,
+                                                  ps::ModuleType::Tape, ps::ModuleType::ClassicLimiter };
+        a.proc.setChainOrder (order);
+        // Keep every processor audible: random power switches would reduce this to a bypass test.
+        for (const auto t : vintageTypes())
+        {
+            const std::string prefix = ps::moduleInfo (t).idPrefix;
+            a.set (prefix + ".on", 1.0f);
+            for (const char* suffix : { ".a.on", ".b.on" })
+                if (ps::paramIndex (prefix + suffix) >= 0)
+                    a.set (prefix + suffix, 1.0f);
+        }
+        for (const auto& [id, v] : channelModeConfig (ps::ModuleType::ClassicComp, ps::ChannelMode::MidSide))
+            a.set (id, v);
+        for (const auto& [id, v] : channelModeConfig (ps::ModuleType::PassiveEq, ps::ChannelMode::TransientSustain))
+            a.set (id, v);
+        a.proc.flushPendingChanges (true);
+        const auto values = currentValues (a.proc);
+        juce::MemoryBlock blob;
+        a.proc.getStateInformation (blob);
+
+        Host b;
+        b.prepare();
+        b.proc.setStateInformation (blob.getData(), (int) blob.getSize());
+        b.proc.flushPendingChanges (true);
+        std::string first;
+        const int diffs = countDifferences (values, currentValues (b.proc), &first);
+        const auto restored = currentValues (b.proc);
+        ps::SlotParams ccmpSlot, peqSlot;
+        ps::readSlotParams (restored.data(), ps::ModuleType::ClassicComp, ccmpSlot);
+        ps::readSlotParams (restored.data(), ps::ModuleType::PassiveEq, peqSlot);
+        check (diffs == 0 && b.proc.getChainOrder() == order && ccmpSlot.channelMode == ps::ChannelMode::MidSide
+                   && peqSlot.channelMode == ps::ChannelMode::TransientSustain,
+               "vintage: a chain of the four modules with random values round trips (values, chain, channel modes)",
+               str (diffs, " differ, e.g. ", first, "; chain ", chainText (b.proc.getChainOrder())));
+        const auto out = b.stream (48000, musicLikeInput (0.2f));
+        b.proc.flushPendingChanges (true);
+        const auto original = a.stream (48000, musicLikeInput (0.2f));
+        a.proc.flushPendingChanges (true);
+        double error = 0.0, energy = 0.0;
+        for (size_t i = 0; i < out.l.size(); ++i)
+        {
+            error = std::max (error, std::abs ((double) out.l[i] - original.l[i]));
+            error = std::max (error, std::abs ((double) out.r[i] - original.r[i]));
+            energy += (double) out.l[i] * out.l[i] + (double) out.r[i] * out.r[i];
+        }
+        check (allFinite (out) && allFinite (original) && energy > 1.0e-6 && error < 1.0e-6,
+               "vintage: the restored four-module chain reproduces finite, non-silent audio", str ("max error ", error));
+        const int want = ps::kPassiveEqLatency + ps::TransientSplitter::latencyFor (kRate)
+                         + ps::ClassicLimiter::latencyFor (kRate) + ps::kTapeLatency;
+        check (b.proc.getLatencySamples() == b.proc.getCurrentLatencySamples()
+                   && b.proc.getLatencySamples() == a.proc.getCurrentLatencySamples() && b.proc.getLatencySamples() == want,
+               str ("vintage: the restored four-module chain reports the same latency to the host (", want, ")"),
+               str (b.proc.getLatencySamples(), " / ", b.proc.getCurrentLatencySamples(), " / ", a.proc.getCurrentLatencySamples()));
+    }
+
+    // (integration) realtime safety at 96 kHz with odd block sizes: all four in the chain, host automation of every
+    // vintage parameter, channel-mode switches, power cycling, the compressor's detector listen and the limiter's Delta
+    {
+        Host h (96000.0, 256);
+        h.prepare();
+        for (auto t : vintageTypes())
+            h.proc.addModule (t);
+        h.proc.flushPendingChanges (true);
+        std::vector<size_t> ids;
+        const auto& specs = ps::paramSpecs();
+        for (size_t i = (size_t) ps::kNumParams_0_5_0; i < specs.size(); ++i)
+            ids.push_back (i);
+        const auto input = musicLikeInput (0.3f);
+        Lcg lcg { 4242 };
+        int edits = 0;
+        size_t nextParam = 0;
+        std::vector<bool> visited (ids.size(), false);
+        const auto before = psdev::getAllocationCounts();
+        const auto out = h.stream (96000 * 2, input, { 256, 100, 1, 512, 37 }, [&] (int block)
+        {
+            if (block % 3 != 0)
+                return;
+            ++edits;
+            for (int k = 0; k < 4; ++k)
+            {
+                const size_t slot = nextParam++ % ids.size();
+                const size_t i = ids[slot];
+                visited[slot] = true;
+                const auto& s = specs[i];
+                const float u = 0.5f * (lcg.next() + 1.0f);
+                h.set (s.id, psplug::sanitiseValue ((int) i, s.minValue + u * (s.maxValue - s.minValue)));
+            }
+            if (block % 9 == 0)
+            {
+                ps::ModuleMonitor m;
+                m.soloDetectionFilter = (block / 9) % 2 == 1;
+                h.proc.setMonitor (ps::ModuleType::ClassicComp, m);
+                h.proc.setDelta (ps::ModuleType::ClassicLimiter, (block / 9) % 3 == 1);
+            }
+        });
+        h.proc.setMonitor (ps::ModuleType::ClassicComp, {});
+        h.proc.setDelta (ps::ModuleType::ClassicLimiter, false);
+        const auto after = psdev::getAllocationCounts();
+        check (! visited.empty() && std::all_of (visited.begin(), visited.end(), [] (bool v) { return v; }),
+               str ("realtime: all ", visited.size(), " vintage parameters exercised at 96 kHz"));
+        check (after.allocations == before.allocations && after.frees == before.frees,
+               str ("realtime: the four vintage modules at 96 kHz, every parameter automated (", edits, " edits), listen "
+                    "and Delta, allocation free"),
+               str (after.allocations - before.allocations, " allocations"));
+        check (allFinite (out), "realtime: the four vintage modules at 96 kHz output finite");
+    }
 }
 
 //==============================================================================
@@ -1907,14 +2115,15 @@ void testPresets()
 
         bool perModule = true;
         std::string counts;
-        // (the vintage-style modules get their 3-5 presets at their integration; until then none)
-        for (int t = 0; t < ps::kFirstVintageModuleType; ++t)
+        // (the vintage-style modules: 3-5 each)
+        for (int t = 0; t < ps::kNumModuleTypes; ++t)
         {
             const auto n = p.getPresets (t).size();
             counts += str (ps::moduleInfo ((ps::ModuleType) t).idPrefix, "=", n, " ");
-            perModule = perModule && n >= 2 && n <= 6;
+            perModule = perModule && (t < ps::kFirstVintageModuleType ? n >= 2 && n <= 6 : n >= 3 && n <= 5);
         }
-        check (perModule, "presets: 2-6 factory presets per module, phase 2 included (EQ 1 / EQ 2 share theirs)", counts);
+        check (perModule, "presets: 2-6 factory presets per module, 3-5 per vintage-style module (EQ 1 / EQ 2 share "
+                          "theirs)", counts);
 
         // Every factory preset loads and produces finite audio.
         bool allLoad = true, finite = true;
@@ -1927,24 +2136,30 @@ void testPresets()
         check (allLoad && finite, "presets: every factory preset loads and plays finite audio");
     }
 
-    // Every phase 2 module preset, with its module in the chain: it loads as one step, moves at least one of the
-    // module's parameters off its default, and the module plays finite audio with it (in its preset channel mode).
+    // Every phase 2 and vintage-style module preset, with its module in the chain: it loads as one step, moves at
+    // least one of the module's parameters off its default, and the module plays finite audio with it (in its preset
+    // channel mode).
+    for (const auto& types : { phase2Types(), vintageTypes() })
     {
+        const bool vintage = types == vintageTypes();
         Host m;
         m.prepare();
-        for (auto t : phase2Types())
+        for (auto t : types)
             m.proc.addModule (t);
         m.proc.flushPendingChanges (true);
         const auto defaults = currentValues (m.proc);
         bool ok = true;
         int count = 0;
         std::string bad;
-        for (auto t : phase2Types())
+        for (auto t : types)
             for (const auto& info : m.proc.getPresets ((int) t))
             {
                 if (! info.factory)
                     continue;
                 ++count;
+                m.proc.clearHistory();
+                const auto beforeValues = currentValues (m.proc);
+                const auto beforeOrder = m.proc.getChainOrder();
                 const bool loaded = m.proc.loadPreset ((int) t, info);
                 m.proc.flushPendingChanges (true);
                 const auto v = currentValues (m.proc);
@@ -1954,20 +2169,29 @@ void testPresets()
                     if (specs[i].module == (int) t && ! psplug::sameValue ((int) i, v[i], defaults[i]))
                         moved = true;
                 const bool finiteOut = allFinite (m.stream (12000, musicLikeInput (0.2f)));
-                const bool oneStep = m.proc.getHistory().back().description.startsWith ("Loaded ")
-                                     && m.proc.getHistoryPosition() + 1 == (int) m.proc.getHistory().size();
-                if (! (loaded && moved && finiteOut && oneStep))
+                const bool oneStep = m.proc.getHistory().size() == 2 && m.proc.getHistoryPosition() == 1
+                                     && m.proc.getHistory().back().description.startsWith ("Loaded ");
+                m.proc.undo();
+                m.proc.flushPendingChanges (true);
+                const bool undoOk = countDifferences (beforeValues, currentValues (m.proc)) == 0
+                                    && m.proc.getChainOrder() == beforeOrder && m.proc.getHistoryPosition() == 0;
+                m.proc.redo();
+                m.proc.flushPendingChanges (true);
+                const bool redoOk = countDifferences (v, currentValues (m.proc)) == 0
+                                    && m.proc.getChainOrder() == beforeOrder && m.proc.getHistoryPosition() == 1;
+                if (! (loaded && moved && finiteOut && oneStep && undoOk && redoOk))
                 {
                     ok = false;
                     bad += str (ps::moduleInfo (t).idPrefix, ":", info.name.toStdString(), " ");
                 }
                 m.proc.loadPreset (-1, m.proc.getPresets (-1)[0]);   // Default: back to neutral
-                for (auto t2 : phase2Types())
+                for (auto t2 : types)
                     m.proc.addModule (t2);
                 m.proc.flushPendingChanges (true);
             }
-        check (ok && count >= 4 * (int) phase2Types().size(),
-               str ("presets: all ", count, " phase 2 module presets load, change their module and play finite audio"),
+        check (ok && count >= (vintage ? 3 : 4) * (int) types.size(),
+               str ("presets: all ", count, vintage ? " vintage-style" : " phase 2",
+                    " module presets load as one step, change their module and play finite audio"),
                bad);
     }
 
