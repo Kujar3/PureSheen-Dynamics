@@ -450,27 +450,29 @@ void readBassShaperParams (ParamValues, BassShaperParams&) noexcept;
 
 //==============================================================================
 //==============================================================================
-// Vintage-style modules (phase 3). Ranges and defaults marked (TBC) are first-principles choices to be confirmed
-// against the reference before release; the parameter table keeps them in one place (ParamTable.cpp reads these
-// struct defaults). Unlike the phase 2 modules, their defaults are the reference's defaults, not neutral settings: the
-// neutral settings are documented in each module's header.
+// Vintage-style modules (phase 3). Ranges, defaults, choice lists and units are the reference's (confirmed from the
+// user's screenshots, min-max notes and saved presets), so every control shows the number the reference's control
+// shows for the same setting; the few values still marked (TBC) were read off a screenshot curve or not seen at an
+// end stop. The parameter table keeps them in one place (ParamTable.cpp reads these struct defaults). Unlike the
+// phase 2 modules, their defaults are the reference's defaults, not neutral settings: the neutral settings are
+// documented in each module's header.
 
 //==============================================================================
 // Classic Compressor ("ccmp.", Stereo / M/S; per channel set "<a|b>.<name>", Stereo uses set A)
 struct ClassicCompSetParams
 {
-    float thresholdDb = -12.0f;       // "thr"        -40..0 (TBC)
-    float ratio = 2.0f;               // "ratio"      1..20, skew centre 4, ":1" (TBC)
-    float attackMs = 10.0f;           // "attack"     0.1..100 log (TBC)
-    float releaseMs = 100.0f;         // "release"    30..3000 log (TBC): the transient release; sustained reduction
+    float thresholdDb = -12.0f;       // "thr"        -60..0
+    float ratio = 1.5f;               // "ratio"      1..20, skew centre 4, ":1"
+    float attackMs = 20.0f;           // "attack"     0.1..100 log
+    float releaseMs = 50.0f;          // "release"    30..150 log: the transient release; sustained reduction
                                       //              releases slower (ClassicComp.h)
-    ClassicCompMode mode = ClassicCompMode::Balanced;   // "mode" Sharp / Balanced / Smooth (TBC)
-    float makeupDb = 0.0f;            // "makeup"     -12..+24
-    bool autoGain = true;             // "autoGain"   (TBC)
-    float scHighPassHz = 20.0f;       // "sc.hpf"     20..500 log: 12 dB/oct high-pass on the detector (TBC)
-    float scBellHz = 1000.0f;         // "sc.bellHz"  200..8000 log: wide bell (Q 0.7) on the detector
+    ClassicCompMode mode = ClassicCompMode::Balanced;   // "mode" Sharp / Balanced / Smooth
+    float makeupDb = 0.0f;            // "makeup"     -30..+30 (the reference's Gain)
+    bool autoGain = true;             // "autoGain"
+    float scHighPassHz = 45.0f;       // "sc.hpf"     20..400 log: high-pass on the detector, fixed shape (45: TBC)
+    float scBellHz = 2000.0f;         // "sc.bellHz"  800..9000 log: wide bell on the detector, fixed shape (2 k: TBC)
     float scBellDb = 0.0f;            // "sc.bellDb"  -8..+8
-    float scShelfHz = 6000.0f;        // "sc.shelfHz" 2000..16000 log: high shelf on the detector
+    float scShelfHz = 6000.0f;        // "sc.shelfHz" 4000..12000 log: high shelf on the detector, fixed shape (6 k: TBC)
     float scShelfDb = 0.0f;           // "sc.shelfDb" -8..+8
 };
 struct ClassicCompParams
@@ -481,29 +483,31 @@ void readClassicCompParams (ParamValues, ClassicCompParams&) noexcept;
 
 //==============================================================================
 // Passive EQ ("peq.", Stereo / M/S / L/R / T/S; per channel set "<a|b>.<name>"). The frequency selectors are choices
-// whose index points into the kPassiveEq*Hz arrays of Types.h; the amount knobs run 0..10 (0 = no effect).
+// whose index points into the kPassiveEq*Hz arrays of Types.h; the boost / cut amounts run 0..10 dB as the reference
+// labels them (0 = no effect); the gain they really give follows the reference's measured knob law (PassiveEq.cpp).
 struct PassiveEqSetParams
 {
     // top section (passive LC program EQ)
-    int lowHzIndex = 3;               // "lowHz"      kPassiveEqLowHz: 20 / 30 / 45 / 60 / 100 Hz (60, TBC)
-    float lowBoost = 0.0f;            // "lowBoost"   0..10
-    float lowCut = 0.0f;              // "lowCut"     0..10
-    int highHzIndex = 3;              // "highHz"     kPassiveEqHighHz: 3 / 4 / 5 / 8 / 10 / 12 / 16 kHz (8 k, TBC)
-    float highBoost = 0.0f;           // "highBoost"  0..10
-    float highBandwidth = 5.0f;       // "highBw"     0 (sharp) .. 10 (broad) (TBC)
-    int highCutHzIndex = 1;           // "highCutHz"  kPassiveEqHighCutHz: 5 / 10 / 20 kHz (10 k, TBC)
-    float highCut = 0.0f;             // "highCut"    0..10
+    int lowHzIndex = 2;               // "lowHz"      kPassiveEqLowHz: 20 / 30 / 45 / 60 / 100 Hz (45)
+    float lowBoost = 0.0f;            // "lowBoost"   0..10 dB (label)
+    float lowCut = 0.0f;              // "lowCut"     0..10 dB (label)
+    int highHzIndex = 3;              // "highHz"     kPassiveEqHighHz: 3 / 4 / 5 / 8 / 10 / 12 / 16 kHz (8 k)
+    float highBoost = 0.0f;           // "highBoost"  0..10 dB (label)
+    float highQ = 0.0f;               // "highQ"      0 (broad) .. 10 (narrow)
+    int highCutHzIndex = 1;           // "highCutHz"  kPassiveEqHighCutHz: 5 / 10 / 20 kHz (10 k)
+    float highCut = 0.0f;             // "highCut"    0..10 dB (label)
     // bottom section (passive midrange EQ)
-    int lowMidHzIndex = 1;            // "lmHz"       kPassiveEqLowMidHz: 200 / 300 / 500 / 700 / 1000 Hz (300, TBC)
-    float lowMidBoost = 0.0f;         // "lmBoost"    0..10
-    int midHzIndex = 4;               // "midHz"      kPassiveEqMidHz: 200 Hz .. 7 kHz, 11 steps (1 k, TBC)
-    float midCut = 0.0f;              // "midCut"     0..10
-    int highMidHzIndex = 2;           // "hmHz"       kPassiveEqHighMidHz: 1.5 / 2 / 3 / 4 / 5 kHz (3 k, TBC)
-    float highMidBoost = 0.0f;        // "hmBoost"    0..10
+    int lowMidHzIndex = 2;            // "lmHz"       kPassiveEqLowMidHz: 200 / 300 / 500 / 700 / 1000 Hz (500)
+    float lowMidBoost = 0.0f;         // "lmBoost"    0..10 dB (label)
+    int midHzIndex = 5;               // "midHz"      kPassiveEqMidHz: 200 Hz .. 7 kHz, 11 steps (1.5 k)
+    float midCut = 0.0f;              // "midCut"     0..10 dB (label)
+    int highMidHzIndex = 2;           // "hmHz"       kPassiveEqHighMidHz: 1.5 / 2 / 3 / 4 / 5 kHz (3 k)
+    float highMidBoost = 0.0f;        // "hmBoost"    0..10 dB (label)
 };
 struct PassiveEqParams
 {
-    float drive = 0.0f;               // "drive"      0..10 tube make-up stage (shared by both sets; 0 = no colour)
+    float drive = 0.0f;               // "drive"      0..10 tube make-up stage (shared by both sets; 0 = no colour;
+                                      //              ours: the reference has no drive and is linear)
     PassiveEqSetParams sets[kNumChannelSets];        // "<a|b>.<name>"
 };
 void readPassiveEqParams (ParamValues, PassiveEqParams&) noexcept;
@@ -512,11 +516,11 @@ void readPassiveEqParams (ParamValues, PassiveEqParams&) noexcept;
 // Classic Limiter ("clim.", Stereo only: slot = "clim.on")
 struct ClassicLimiterParams
 {
-    float thresholdDb = 0.0f;         // "thr"        -12..0 (TBC): gain before the limiter = ceiling - threshold
-    float ceilingDb = -0.1f;          // "ceiling"    -12..0 dBFS (TBC)
-    float character = 5.0f;           // "character"  0 (fast) .. 10 (slow) (TBC)
-    ClassicLimiterMode mode = ClassicLimiterMode::Analog;   // "mode" Analog / Tube / Modern (TBC)
-    bool truePeak = false;            // "truePeak"   (TBC)
+    float thresholdDb = -2.0f;        // "thr"        -12..0 (range TBC): gain before the limiter = ceiling - threshold
+    float ceilingDb = 0.0f;           // "ceiling"    -12..0 dBFS (range TBC)
+    float character = 2.0f;           // "character"  0 (fast) .. 10 (slow)
+    ClassicLimiterMode mode = ClassicLimiterMode::Tube;   // "mode" Analog / Tube / Modern
+    bool truePeak = false;            // "truePeak"
     bool linkThresholdCeiling = false;   // "link"    UI: Threshold and Ceiling move together (no DSP effect)
 };
 void readClassicLimiterParams (ParamValues, ClassicLimiterParams&) noexcept;
@@ -525,11 +529,12 @@ void readClassicLimiterParams (ParamValues, ClassicLimiterParams&) noexcept;
 // Tape ("tape.", Stereo only: slot = "tape.on")
 struct TapeParams
 {
-    TapeSpeed speed = TapeSpeed::Ips15;   // "speed"     7.5 / 15 / 30 ips (TBC)
-    float driveDb = 0.0f;             // "drive"      -30..+20 dB into the tape model (output level compensated)
+    TapeSpeed speed = TapeSpeed::Ips30;   // "speed"     7.5 / 15 / 30 ips (30)
+    float driveDb = 0.0f;             // "drive"      -30..+30 dB into the tape model (output level compensated;
+                                      //              the -30 end TBC)
     float bias = 0.0f;                // "bias"       -10..+10
-    float harmonics = 0.0f;           // "harmonics"  0..10 even-order harmonics (TBC)
-    float lowEmphasis = 5.0f;         // "lowEmph"    0..10 head bump (0 = no peak, roll-off kept; 10 = +10 dB) (TBC)
+    float harmonics = 0.0f;           // "harmonics"  0..10 even-order harmonics
+    float lowEmphasis = 2.0f;         // "lowEmph"    0..10 head bump (0 = no peak, roll-off kept; 10 = +10 dB)
     float highEmphasis = 4.0f;        // "highEmph"   0..10 (4 = flat highs)
 };
 void readTapeParams (ParamValues, TapeParams&) noexcept;

@@ -579,10 +579,10 @@ TEST_CASE ("ccmp. sidechain EQ: the listen output follows detectorResponseDb and
         }
         note ("listen output vs detectorResponseDb, 40 Hz .. 16 kHz @" + std::to_string ((int) sr) + ": worst (dB)", worst);
     }
-    // defaults: flat in the band, the 20 Hz high-pass -3 dB at its corner
+    // defaults: flat in the band, the 45 Hz high-pass -3 dB at its corner
     const ClassicCompSetParams def;
     CHECK_NEAR (ClassicComp::detectorResponseDb (def, 1000.0), 0.0, 0.01);
-    CHECK_NEAR (ClassicComp::detectorResponseDb (def, 20.0), -3.01, 0.02);
+    CHECK_NEAR (ClassicComp::detectorResponseDb (def, (double) def.scHighPassHz), -3.01, 0.02);
 
     // the high-pass keeps a loud 60 Hz tone from driving the compressor
     auto reductionAt = [&] (double hz, const std::function<void (Values&)>& setup) {
@@ -595,15 +595,15 @@ TEST_CASE ("ccmp. sidechain EQ: the listen output follows detectorResponseDb and
         run (*m, vals, dual (pstest::sine (hz, -10.0, 1.5, kSr)));
         return (double) m->getMeters().gainReductionDb[0].load();
     };
-    const double hp20 = reductionAt (60.0, [] (Values&) {});
-    const double hp500 = reductionAt (60.0, [] (Values& v) { v.setBoth ("sc.hpf", 500.0f); });
+    const double hp20 = reductionAt (60.0, [] (Values& v) { v.setBoth ("sc.hpf", 20.0f); });
+    const double hp400 = reductionAt (60.0, [] (Values& v) { v.setBoth ("sc.hpf", 400.0f); });
     note ("60 Hz at -10 dBFS: reduction with sc.hpf 20 Hz (dB)", hp20);
-    note ("    with sc.hpf 500 Hz (dB)", hp500);
-    CHECK (hp500 > hp20 + 8.0);
+    note ("    with sc.hpf 400 Hz (dB)", hp400);
+    CHECK (hp400 > hp20 + 8.0);
     // a bell boost on the detector at 1 kHz compresses a 1 kHz tone harder, a cut lighter
     const double flat = reductionAt (1000.0, [] (Values&) {});
-    const double up = reductionAt (1000.0, [] (Values& v) { v.setBoth ("sc.bellDb", 8.0f); });
-    const double down = reductionAt (1000.0, [] (Values& v) { v.setBoth ("sc.bellDb", -8.0f); });
+    const double up = reductionAt (1000.0, [] (Values& v) { v.setBoth ("sc.bellHz", 1000.0f); v.setBoth ("sc.bellDb", 8.0f); });
+    const double down = reductionAt (1000.0, [] (Values& v) { v.setBoth ("sc.bellHz", 1000.0f); v.setBoth ("sc.bellDb", -8.0f); });
     note ("1 kHz: reduction flat / bell +8 / bell -8 (dB)", flat);
     note ("    bell +8", up);
     note ("    bell -8", down);
@@ -721,9 +721,9 @@ TEST_CASE ("ccmp. parameter changes are click-free")
         v.setBoth ("ratio", 4.0f);
     };
     const std::vector<Move> moves {
-        { "threshold 0 -> -40 jump", [&] (Values& v) { base (v); v.setBoth ("thr", 0.0f); },
-          [&] (Values& v) { base (v); v.setBoth ("thr", -40.0f); } },
-        { "threshold -40 -> 0 jump", [&] (Values& v) { base (v); v.setBoth ("thr", -40.0f); },
+        { "threshold 0 -> -60 jump", [&] (Values& v) { base (v); v.setBoth ("thr", 0.0f); },
+          [&] (Values& v) { base (v); v.setBoth ("thr", -60.0f); } },
+        { "threshold -60 -> 0 jump", [&] (Values& v) { base (v); v.setBoth ("thr", -60.0f); },
           [&] (Values& v) { base (v); v.setBoth ("thr", 0.0f); } },
         { "ratio 1 -> 20 jump", [&] (Values& v) { base (v); v.setBoth ("ratio", 1.0f); },
           [&] (Values& v) { base (v); v.setBoth ("ratio", 20.0f); } },
@@ -731,23 +731,25 @@ TEST_CASE ("ccmp. parameter changes are click-free")
           [&] (Values& v) { base (v); v.setBoth ("mode", 2.0f); } },
         { "mode Smooth -> Sharp", [&] (Values& v) { base (v); v.setBoth ("mode", 2.0f); },
           [&] (Values& v) { base (v); v.setBoth ("mode", 0.0f); } },
-        { "makeup -12 -> +24 jump", [&] (Values& v) { base (v); v.setBoth ("makeup", -12.0f); },
-          [&] (Values& v) { base (v); v.setBoth ("makeup", 24.0f); }, -24.0 },
+        { "makeup -30 -> +30 jump", [&] (Values& v) { base (v); v.setBoth ("makeup", -30.0f); },
+          [&] (Values& v) { base (v); v.setBoth ("makeup", 30.0f); }, -30.0 },
         { "attack 100 -> 0.1 jump", [&] (Values& v) { base (v); v.setBoth ("attack", 100.0f); },
           [&] (Values& v) { base (v); v.setBoth ("attack", 0.1f); } },
-        { "release 3000 -> 30 jump", [&] (Values& v) { base (v); v.setBoth ("release", 3000.0f); },
+        { "release 150 -> 30 jump", [&] (Values& v) { base (v); v.setBoth ("release", 150.0f); },
           [&] (Values& v) { base (v); v.setBoth ("release", 30.0f); } },
-        { "sidechain high-pass 20 -> 500 Hz", [&] (Values& v) { base (v); },
-          [&] (Values& v) { base (v); v.setBoth ("sc.hpf", 500.0f); } },
-        { "sidechain bell -8 -> +8 dB", [&] (Values& v) { base (v); v.setBoth ("sc.bellHz", 200.0f); v.setBoth ("sc.bellDb", -8.0f); },
-          [&] (Values& v) { base (v); v.setBoth ("sc.bellHz", 200.0f); v.setBoth ("sc.bellDb", 8.0f); } },
-        { "sidechain shelf 2 kHz -8 -> 16 kHz +8", [&] (Values& v) { base (v); v.setBoth ("sc.shelfHz", 2000.0f); v.setBoth ("sc.shelfDb", -8.0f); },
-          [&] (Values& v) { base (v); v.setBoth ("sc.shelfHz", 16000.0f); v.setBoth ("sc.shelfDb", 8.0f); } },
+        { "sidechain high-pass 20 -> 400 Hz", [&] (Values& v) { base (v); v.setBoth ("sc.hpf", 20.0f); },
+          [&] (Values& v) { base (v); v.setBoth ("sc.hpf", 400.0f); } },
+        { "sidechain bell -8 -> +8 dB", [&] (Values& v) { base (v); v.setBoth ("sc.bellHz", 800.0f); v.setBoth ("sc.bellDb", -8.0f); },
+          [&] (Values& v) { base (v); v.setBoth ("sc.bellHz", 800.0f); v.setBoth ("sc.bellDb", 8.0f); } },
+        { "sidechain shelf 4 kHz -8 -> 12 kHz +8", [&] (Values& v) { base (v); v.setBoth ("sc.shelfHz", 4000.0f); v.setBoth ("sc.shelfDb", -8.0f); },
+          [&] (Values& v) { base (v); v.setBoth ("sc.shelfHz", 12000.0f); v.setBoth ("sc.shelfDb", 8.0f); } },
         { "auto gain on", [&] (Values& v) { base (v); },
           [&] (Values& v) { base (v); v.setBoth ("autoGain", 1.0f); } },
         { "auto gain off", [&] (Values& v) { base (v); v.setBoth ("autoGain", 1.0f); },
           [&] (Values& v) { base (v); } },
-        { "detector solo on", [&] (Values& v) { base (v); }, [&] (Values& v) { base (v); }, -6.0, 1 },
+        // (the 20 Hz high-pass keeps the detector signal close to the 100 Hz input: the switch itself is measured)
+        { "detector solo on", [&] (Values& v) { base (v); v.setBoth ("sc.hpf", 20.0f); },
+          [&] (Values& v) { base (v); v.setBoth ("sc.hpf", 20.0f); }, -6.0, 1 },
     };
 
     const auto tSwitch = (size_t) (3.0 * kSr);

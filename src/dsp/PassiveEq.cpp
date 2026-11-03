@@ -57,8 +57,8 @@ namespace
     constexpr double kLowCutRatio = 1.6;         // the cut's corner = this x the boost's corner
     constexpr double kLowCutQ = 0.6;             // the cut's Q (gentle)
     constexpr double kHighBoostMaxDb = 16.0;     // high peak at highBoost 10
-    constexpr double kHighQSharp = 2.5;          // high peak Q at highBw 0
-    constexpr double kHighQBroad = 0.4;          // high peak Q at highBw 10 (log interpolation in between)
+    constexpr double kHighQBroad = 0.4;          // high peak Q at highQ 0
+    constexpr double kHighQSharp = 2.5;          // high peak Q at highQ 10 (log interpolation in between)
     constexpr double kBwBoostCoupling = 0.5;     // Q x (1 + this x law (highBoost / 10)): narrower as the boost rises
     constexpr double kHighCutMaxDb = 16.0;       // high shelf cut at highCut 10
     constexpr double kHighCutQ = 0.5;            // its Q (gentle, close to a first-order slope)
@@ -127,7 +127,7 @@ namespace
         {
             case kLowBoost:  return { p.lowHzIndex, p.lowBoost, 0.0f };
             case kLowCut:    return { p.lowHzIndex, p.lowCut, 0.0f };
-            case kHighBoost: return { p.highHzIndex, p.highBoost, p.highBandwidth };
+            case kHighBoost: return { p.highHzIndex, p.highBoost, p.highQ };
             case kHighCut:   return { p.highCutHzIndex, p.highCut, 0.0f };
             case kLowMid:    return { p.lowMidHzIndex, p.lowMidBoost, 0.0f };
             case kMidCut:    return { p.midHzIndex, p.midCut, 0.0f };
@@ -135,10 +135,10 @@ namespace
         }
     }
 
-    double highBoostQ (float bandwidth, float boost) noexcept
+    double highBoostQ (float highQ, float boost) noexcept
     {
-        const double bw = std::isfinite (bandwidth) ? std::clamp ((double) bandwidth, 0.0, 10.0) : 5.0;
-        const double q0 = kHighQSharp * std::pow (kHighQBroad / kHighQSharp, bw / 10.0);
+        const double hq = std::isfinite (highQ) ? std::clamp ((double) highQ, 0.0, 10.0) : 0.0;
+        const double q0 = kHighQBroad * std::pow (kHighQSharp / kHighQBroad, hq / 10.0);
         return q0 * (1.0 + kBwBoostCoupling * knobLaw (boost));
     }
 
@@ -168,7 +168,7 @@ namespace
                       -kLowCutMaxDb * knobLaw (p.lowCut) };
                 break;
             case kHighBoost:
-                s = { Kind::Peak, pick (kPassiveEqHighHz, p.highHzIndex), highBoostQ (p.highBandwidth, p.highBoost),
+                s = { Kind::Peak, pick (kPassiveEqHighHz, p.highHzIndex), highBoostQ (p.highQ, p.highBoost),
                       kHighBoostMaxDb * knobLaw (p.highBoost) };
                 break;
             case kHighCut:
@@ -194,7 +194,7 @@ namespace
     bool sameSet (const PassiveEqSetParams& a, const PassiveEqSetParams& b) noexcept
     {
         return a.lowHzIndex == b.lowHzIndex && a.lowBoost == b.lowBoost && a.lowCut == b.lowCut
-               && a.highHzIndex == b.highHzIndex && a.highBoost == b.highBoost && a.highBandwidth == b.highBandwidth
+               && a.highHzIndex == b.highHzIndex && a.highBoost == b.highBoost && a.highQ == b.highQ
                && a.highCutHzIndex == b.highCutHzIndex && a.highCut == b.highCut && a.lowMidHzIndex == b.lowMidHzIndex
                && a.lowMidBoost == b.lowMidBoost && a.midHzIndex == b.midHzIndex && a.midCut == b.midCut
                && a.highMidHzIndex == b.highMidHzIndex && a.highMidBoost == b.highMidBoost;

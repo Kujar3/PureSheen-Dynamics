@@ -195,7 +195,7 @@ struct PeqIdx
     int drive = -1;
     struct Set
     {
-        int lowHz = -1, lowBoost = -1, lowCut = -1, highHz = -1, highBoost = -1, highBw = -1, highCutHz = -1,
+        int lowHz = -1, lowBoost = -1, lowCut = -1, highHz = -1, highBoost = -1, highQ = -1, highCutHz = -1,
             highCut = -1, lmHz = -1, lmBoost = -1, midHz = -1, midCut = -1, hmHz = -1, hmBoost = -1;
     } sets[kNumChannelSets];
 };
@@ -1010,17 +1010,17 @@ void addClassicComp (Builder& b, CcmpIdx& x)
         const std::string id = p + "." + setLetter (set) + ".";
         const std::string sx = setSuffix (set);
         auto& si = x.sets[set];
-        si.thr       = b.addFloat (id + "thr", n + " Threshold" + sx, -40.0f, 0.0f, sd.thresholdDb, "dB", m);
+        si.thr       = b.addFloat (id + "thr", n + " Threshold" + sx, -60.0f, 0.0f, sd.thresholdDb, "dB", m);
         si.ratio     = b.addFloat (id + "ratio", n + " Ratio" + sx, 1.0f, 20.0f, sd.ratio, ":1", m, 4.0f);
         si.attack    = b.addLog (id + "attack", n + " Attack" + sx, 0.1f, 100.0f, sd.attackMs, "ms", m);
-        si.release   = b.addLog (id + "release", n + " Release" + sx, 30.0f, 3000.0f, sd.releaseMs, "ms", m);
+        si.release   = b.addLog (id + "release", n + " Release" + sx, 30.0f, 150.0f, sd.releaseMs, "ms", m);
         si.mode      = b.addChoice (id + "mode", n + " Mode" + sx, { "Sharp", "Balanced", "Smooth" }, (int) sd.mode, m);
-        si.makeup    = b.addFloat (id + "makeup", n + " Makeup" + sx, -12.0f, 24.0f, sd.makeupDb, "dB", m);
+        si.makeup    = b.addFloat (id + "makeup", n + " Gain" + sx, -30.0f, 30.0f, sd.makeupDb, "dB", m);
         si.autoGain  = b.addBool (id + "autoGain", n + " Auto Gain" + sx, sd.autoGain, m);
-        si.scHpf     = b.addLog (id + "sc.hpf", n + " Sidechain High Pass" + sx, 20.0f, 500.0f, sd.scHighPassHz, "Hz", m);
-        si.scBellHz  = b.addLog (id + "sc.bellHz", n + " Sidechain Bell Freq" + sx, 200.0f, 8000.0f, sd.scBellHz, "Hz", m);
+        si.scHpf     = b.addLog (id + "sc.hpf", n + " Sidechain High Pass" + sx, 20.0f, 400.0f, sd.scHighPassHz, "Hz", m);
+        si.scBellHz  = b.addLog (id + "sc.bellHz", n + " Sidechain Bell Freq" + sx, 800.0f, 9000.0f, sd.scBellHz, "Hz", m);
         si.scBellDb  = b.addFloat (id + "sc.bellDb", n + " Sidechain Bell Gain" + sx, -8.0f, 8.0f, sd.scBellDb, "dB", m);
-        si.scShelfHz = b.addLog (id + "sc.shelfHz", n + " Sidechain Shelf Freq" + sx, 2000.0f, 16000.0f, sd.scShelfHz,
+        si.scShelfHz = b.addLog (id + "sc.shelfHz", n + " Sidechain Shelf Freq" + sx, 4000.0f, 12000.0f, sd.scShelfHz,
                                  "Hz", m);
         si.scShelfDb = b.addFloat (id + "sc.shelfDb", n + " Sidechain Shelf Gain" + sx, -8.0f, 8.0f, sd.scShelfDb, "dB", m);
     }
@@ -1043,23 +1043,23 @@ void addPassiveEq (Builder& b, PeqIdx& x)
         const std::string sx = setSuffix (set);
         auto& si = x.sets[set];
         si.lowHz     = b.addChoice (id + "lowHz", n + " Low Freq" + sx, hzLabels (kPassiveEqLowHz), sd.lowHzIndex, m);
-        si.lowBoost  = b.addFloat (id + "lowBoost", n + " Low Boost" + sx, 0.0f, 10.0f, sd.lowBoost, "", m);
-        si.lowCut    = b.addFloat (id + "lowCut", n + " Low Cut" + sx, 0.0f, 10.0f, sd.lowCut, "", m);
+        si.lowBoost  = b.addFloat (id + "lowBoost", n + " Low Boost" + sx, 0.0f, 10.0f, sd.lowBoost, "dB", m);
+        si.lowCut    = b.addFloat (id + "lowCut", n + " Low Cut" + sx, 0.0f, 10.0f, sd.lowCut, "dB", m);
         si.highHz    = b.addChoice (id + "highHz", n + " High Boost Freq" + sx, hzLabels (kPassiveEqHighHz),
                                     sd.highHzIndex, m);
-        si.highBoost = b.addFloat (id + "highBoost", n + " High Boost" + sx, 0.0f, 10.0f, sd.highBoost, "", m);
-        si.highBw    = b.addFloat (id + "highBw", n + " High Bandwidth" + sx, 0.0f, 10.0f, sd.highBandwidth, "", m);
+        si.highBoost = b.addFloat (id + "highBoost", n + " High Boost" + sx, 0.0f, 10.0f, sd.highBoost, "dB", m);
+        si.highQ     = b.addFloat (id + "highQ", n + " High Q" + sx, 0.0f, 10.0f, sd.highQ, "", m);
         si.highCutHz = b.addChoice (id + "highCutHz", n + " High Cut Freq" + sx, hzLabels (kPassiveEqHighCutHz),
                                     sd.highCutHzIndex, m);
-        si.highCut   = b.addFloat (id + "highCut", n + " High Cut" + sx, 0.0f, 10.0f, sd.highCut, "", m);
+        si.highCut   = b.addFloat (id + "highCut", n + " High Cut" + sx, 0.0f, 10.0f, sd.highCut, "dB", m);
         si.lmHz      = b.addChoice (id + "lmHz", n + " Low-Mid Freq" + sx, hzLabels (kPassiveEqLowMidHz),
                                     sd.lowMidHzIndex, m);
-        si.lmBoost   = b.addFloat (id + "lmBoost", n + " Low-Mid Boost" + sx, 0.0f, 10.0f, sd.lowMidBoost, "", m);
+        si.lmBoost   = b.addFloat (id + "lmBoost", n + " Low-Mid Boost" + sx, 0.0f, 10.0f, sd.lowMidBoost, "dB", m);
         si.midHz     = b.addChoice (id + "midHz", n + " Mid Freq" + sx, hzLabels (kPassiveEqMidHz), sd.midHzIndex, m);
-        si.midCut    = b.addFloat (id + "midCut", n + " Mid Cut" + sx, 0.0f, 10.0f, sd.midCut, "", m);
+        si.midCut    = b.addFloat (id + "midCut", n + " Mid Cut" + sx, 0.0f, 10.0f, sd.midCut, "dB", m);
         si.hmHz      = b.addChoice (id + "hmHz", n + " High-Mid Freq" + sx, hzLabels (kPassiveEqHighMidHz),
                                     sd.highMidHzIndex, m);
-        si.hmBoost   = b.addFloat (id + "hmBoost", n + " High-Mid Boost" + sx, 0.0f, 10.0f, sd.highMidBoost, "", m);
+        si.hmBoost   = b.addFloat (id + "hmBoost", n + " High-Mid Boost" + sx, 0.0f, 10.0f, sd.highMidBoost, "dB", m);
     }
 }
 
@@ -1088,7 +1088,7 @@ void addTape (Builder& b, TapeIdx& x)
     const TapeParams d;
 
     x.speed     = b.addChoice (p + ".speed", n + " Speed", { "7.5 ips", "15 ips", "30 ips" }, (int) d.speed, m);
-    x.drive     = b.addFloat (p + ".drive", n + " Drive", -30.0f, 20.0f, d.driveDb, "dB", m);
+    x.drive     = b.addFloat (p + ".drive", n + " Drive", -30.0f, 30.0f, d.driveDb, "dB", m);
     x.bias      = b.addFloat (p + ".bias", n + " Bias", -10.0f, 10.0f, d.bias, "", m);
     x.harmonics = b.addFloat (p + ".harmonics", n + " Harmonics", 0.0f, 10.0f, d.harmonics, "", m);
     x.lowEmph   = b.addFloat (p + ".lowEmph", n + " Low Emphasis", 0.0f, 10.0f, d.lowEmphasis, "", m);
@@ -1697,7 +1697,7 @@ void readPassiveEqParams (ParamValues v, PassiveEqParams& p) noexcept
         s.lowCut = readFloat (v, si.lowCut);
         s.highHzIndex = readInt (v, si.highHz, 0, (int) kPassiveEqHighHz.size() - 1);
         s.highBoost = readFloat (v, si.highBoost);
-        s.highBandwidth = readFloat (v, si.highBw);
+        s.highQ = readFloat (v, si.highQ);
         s.highCutHzIndex = readInt (v, si.highCutHz, 0, (int) kPassiveEqHighCutHz.size() - 1);
         s.highCut = readFloat (v, si.highCut);
         s.lowMidHzIndex = readInt (v, si.lmHz, 0, (int) kPassiveEqLowMidHz.size() - 1);

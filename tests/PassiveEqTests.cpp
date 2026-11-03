@@ -234,7 +234,7 @@ TEST_CASE ("peq. neutral at the defaults: the input delayed by exactly 3 samples
         const int k = (int) (start / 256);
         v.set ("a.lowHz", (float) (k % 5));
         v.set ("b.highHz", (float) (k % 7));
-        v.set ("a.highBw", (float) (k % 11));
+        v.set ("a.highQ", (float) (k % 11));
         v.set ("b.midHz", (float) (k % 11));
         v.set ("a.highCutHz", (float) (k % 3));
     });
@@ -328,27 +328,27 @@ TEST_CASE ("peq. low boost and low cut: shelves, and both together give a boost 
     }
 }
 
-TEST_CASE ("peq. high boost: gain, bandwidth knob and the boost / bandwidth interaction")
+TEST_CASE ("peq. high boost: gain, High Q knob and the boost / bandwidth interaction")
 {
     Values v;
     v.set ("a.highHz", 3.0f);   // 8 kHz
     v.set ("a.highBoost", 10.0f);
-    v.set ("a.highBw", 5.0f);
+    v.set ("a.highQ", 5.0f);
     const auto r = measure (kSr, v);
     note ("high boost 10 at 8 kHz: dB at 8 kHz", r.at (8000.0));
     CHECK_NEAR (r.at (8000.0), 16.0, 0.3);
     CHECK_RANGE (r.at (500.0), -0.1, 0.3);
 
-    v.set ("a.highBw", 0.0f);
+    v.set ("a.highQ", 10.0f);
     const double sharp = halfGainWidthOct (measure (96000.0, v), 8000.0);
-    v.set ("a.highBw", 10.0f);
+    v.set ("a.highQ", 0.0f);
     const double broad = halfGainWidthOct (measure (96000.0, v), 8000.0);
-    note ("half-gain width at 96 kHz (oct), bandwidth 0 (sharp)", sharp);
-    note ("    bandwidth 10 (broad)", broad);
+    note ("half-gain width at 96 kHz (oct), High Q 10 (narrow)", sharp);
+    note ("    High Q 0 (broad)", broad);
     CHECK (broad > 3.0 * sharp);
 
     // the peak narrows as the boost rises (passive circuit interaction)
-    v.set ("a.highBw", 5.0f);
+    v.set ("a.highQ", 5.0f);
     v.set ("a.highBoost", 3.0f);
     const double w3 = halfGainWidthOct (measure (kSr, v), 8000.0);
     v.set ("a.highBoost", 10.0f);
@@ -436,7 +436,7 @@ TEST_CASE ("peq. getMagnitudeDb matches the audio at 44.1 / 48 / 96 kHz")
         v.set ("a.lowCut", 3.0f);
         v.set ("a.highHz", 5.0f);
         v.set ("a.highBoost", 6.0f);
-        v.set ("a.highBw", 2.0f);
+        v.set ("a.highQ", 8.0f);
         v.set ("a.highCutHz", 1.0f);
         v.set ("a.highCut", 4.0f);
         v.set ("a.lmBoost", 5.0f);
@@ -739,7 +739,7 @@ TEST_CASE ("peq. parameter changes glide over 10 ms without clicks")
     // at the step: what a click sounds like).
     struct Step { const char* id; float from, to; };
     const Step steps[] { { "a.lowBoost", 0.0f, 10.0f }, { "a.lowHz", 0.0f, 4.0f }, { "a.lowCut", 10.0f, 0.0f },
-                         { "a.highBoost", 10.0f, 0.0f }, { "a.highHz", 0.0f, 6.0f }, { "a.highBw", 0.0f, 10.0f },
+                         { "a.highBoost", 10.0f, 0.0f }, { "a.highHz", 0.0f, 6.0f }, { "a.highQ", 10.0f, 0.0f },
                          { "a.highCut", 0.0f, 10.0f }, { "a.highCutHz", 0.0f, 2.0f }, { "a.lmBoost", 0.0f, 10.0f },
                          { "a.lmHz", 4.0f, 0.0f }, { "a.midCut", 0.0f, 10.0f }, { "a.midHz", 0.0f, 10.0f },
                          { "a.hmBoost", 10.0f, 0.0f }, { "a.hmHz", 0.0f, 4.0f }, { "drive", 0.0f, 10.0f } };
@@ -752,6 +752,10 @@ TEST_CASE ("peq. parameter changes glide over 10 ms without clicks")
         // the amounts of every section at 6, so frequency / bandwidth steps move a live curve
         for (const char* amount : { "a.lowBoost", "a.highBoost", "a.highCut", "a.lmBoost", "a.midCut", "a.hmBoost" })
             v.set (amount, 6.0f);
+        v.set ("a.lowHz", 3.0f);   // 60 Hz, 300 Hz low-mid, 1 kHz mid: sections close to the 220 Hz tone
+        v.set ("a.lmHz", 1.0f);
+        v.set ("a.midHz", 4.0f);
+        v.set ("a.highQ", 5.0f);
         auto steadyRun = [&] (float value) {
             Values w = v;
             w.set (s.id, value);
@@ -800,7 +804,7 @@ TEST_CASE ("peq. extremes and fast automation stay stable and finite")
             for (const char* amount : { "lowBoost", "lowCut", "highBoost", "highCut", "lmBoost", "midCut", "hmBoost" })
                 v.set (p + amount, 10.0f);
             v.set (p + "highHz", 6.0f);
-            v.set (p + "highBw", 0.0f);
+            v.set (p + "highQ", 10.0f);
             v.set (p + "highCutHz", 2.0f);
             v.set (p + "lowHz", 0.0f);
         }
@@ -816,7 +820,7 @@ TEST_CASE ("peq. extremes and fast automation stay stable and finite")
             {
                 const std::string p (s);
                 for (const char* amount : { "lowBoost", "lowCut", "highBoost", "highCut", "lmBoost", "midCut", "hmBoost",
-                                            "highBw" })
+                                            "highQ" })
                     vals.set (p + amount, 5.0f + 5.0f * lcg.next());
                 vals.set (p + "lowHz", (float) std::floor (2.5f + 2.49f * lcg.next()));
                 vals.set (p + "highHz", (float) std::floor (3.5f + 3.49f * lcg.next()));
@@ -967,7 +971,8 @@ TEST_CASE ("peq. the shared section designs (panel curves) sum to getMagnitudeDb
     CHECK (worst < 1.0e-9);
     CHECK (peq::isSectionActive (peq::kLowBoost, p.sets[0]));
     CHECK (! peq::isSectionActive (peq::kLowMid, p.sets[0]));
-    CHECK_NEAR (peq::sectionHz (peq::kLowCut, p.sets[0], 44100.0), 60.0 * 1.6, 1.0e-9);
+    CHECK_NEAR (peq::sectionHz (peq::kLowCut, p.sets[0], 44100.0), kPassiveEqLowHz[(size_t) p.sets[0].lowHzIndex] * 1.6,
+                1.0e-9);
     p.sets[1].highCutHzIndex = 2;   // 20 kHz: clamped to 0.45 x the rate
     CHECK_NEAR (peq::sectionHz (peq::kHighCut, p.sets[1], 44100.0), 0.45 * 44100.0, 1.0e-9);
 }

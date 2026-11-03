@@ -6,6 +6,7 @@
 #include <cmath>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Parameter table tests (dsp/ParamTable.cpp). Prefix "params.".
@@ -100,7 +101,7 @@ std::vector<std::string> documentedIds()
         for (const char* n : { "thr", "ratio", "attack", "release", "mode", "makeup", "autoGain", "sc.hpf", "sc.bellHz",
                                "sc.bellDb", "sc.shelfHz", "sc.shelfDb" })
             ids.push_back ("ccmp." + sp + n);
-        for (const char* n : { "lowHz", "lowBoost", "lowCut", "highHz", "highBoost", "highBw", "highCutHz", "highCut",
+        for (const char* n : { "lowHz", "lowBoost", "lowCut", "highHz", "highBoost", "highQ", "highCutHz", "highCut",
                                "lmHz", "lmBoost", "midHz", "midCut", "hmHz", "hmBoost" })
             ids.push_back ("peq." + sp + n);
     }
@@ -955,6 +956,19 @@ TEST_CASE ("params. vintage defaults reproduce the struct defaults")
             CHECK_EQ (x.scShelfDb, y.scShelfDb);
         }
         CHECK_EQ (paramSpecs()[(size_t) paramIndex ("ccmp.a.ratio")].skewCentre, 4.0f);
+        // the confirmed ranges (the same numbers as the reference's controls)
+        const auto range = [] (const char* id)
+        {
+            const auto& sp = paramSpecs()[(size_t) paramIndex (id)];
+            return std::make_pair (sp.minValue, sp.maxValue);
+        };
+        CHECK (range ("ccmp.b.thr") == std::make_pair (-60.0f, 0.0f));
+        CHECK (range ("ccmp.a.release") == std::make_pair (30.0f, 150.0f));
+        CHECK (range ("ccmp.a.makeup") == std::make_pair (-30.0f, 30.0f));
+        CHECK (range ("ccmp.a.sc.hpf") == std::make_pair (20.0f, 400.0f));
+        CHECK (range ("ccmp.a.sc.bellHz") == std::make_pair (800.0f, 9000.0f));
+        CHECK (range ("ccmp.a.sc.shelfHz") == std::make_pair (4000.0f, 12000.0f));
+        CHECK (range ("tape.drive") == std::make_pair (-30.0f, 30.0f));
     }
     {
         PassiveEqParams r, d;
@@ -970,7 +984,7 @@ TEST_CASE ("params. vintage defaults reproduce the struct defaults")
             CHECK_EQ (x.lowCut, 0.0f);
             CHECK_EQ (x.highHzIndex, y.highHzIndex);
             CHECK_EQ (x.highBoost, 0.0f);
-            CHECK_EQ (x.highBandwidth, y.highBandwidth);
+            CHECK_EQ (x.highQ, 0.0f);   // broadest
             CHECK_EQ (x.highCutHzIndex, y.highCutHzIndex);
             CHECK_EQ (x.highCut, 0.0f);
             CHECK_EQ (x.lowMidHzIndex, y.lowMidHzIndex);
@@ -980,7 +994,7 @@ TEST_CASE ("params. vintage defaults reproduce the struct defaults")
             CHECK_EQ (x.highMidHzIndex, y.highMidHzIndex);
             CHECK_EQ (x.highMidBoost, 0.0f);
         }
-        // the frequency choices list the Types.h arrays; the defaults point at 60 Hz, 8 kHz, 10 kHz, 300 Hz, 1 kHz, 3 kHz
+        // the frequency choices list the Types.h arrays; the defaults point at 45 Hz, 8 kHz, 10 kHz, 500 Hz, 1.5 kHz, 3 kHz
         const auto& specs = paramSpecs();
         CHECK_EQ (specs[(size_t) paramIndex ("peq.a.lowHz")].choices.size(), kPassiveEqLowHz.size());
         CHECK_EQ (specs[(size_t) paramIndex ("peq.b.highHz")].choices.size(), kPassiveEqHighHz.size());
@@ -992,13 +1006,21 @@ TEST_CASE ("params. vintage defaults reproduce the struct defaults")
         {
             return specs[(size_t) paramIndex (id)].choices[(size_t) index];
         };
-        CHECK_EQ (label ("peq.a.lowHz", d.sets[0].lowHzIndex), std::string ("60 Hz"));
+        CHECK_EQ (label ("peq.a.lowHz", d.sets[0].lowHzIndex), std::string ("45 Hz"));
         CHECK_EQ (label ("peq.a.highHz", d.sets[0].highHzIndex), std::string ("8 kHz"));
         CHECK_EQ (label ("peq.a.highCutHz", d.sets[0].highCutHzIndex), std::string ("10 kHz"));
-        CHECK_EQ (label ("peq.a.lmHz", d.sets[0].lowMidHzIndex), std::string ("300 Hz"));
-        CHECK_EQ (label ("peq.a.midHz", d.sets[0].midHzIndex), std::string ("1 kHz"));
-        CHECK_EQ (label ("peq.a.midHz", 5), std::string ("1.5 kHz"));
+        CHECK_EQ (label ("peq.a.lmHz", d.sets[0].lowMidHzIndex), std::string ("500 Hz"));
+        CHECK_EQ (label ("peq.a.midHz", d.sets[0].midHzIndex), std::string ("1.5 kHz"));
+        CHECK_EQ (label ("peq.a.midHz", 4), std::string ("1 kHz"));
         CHECK_EQ (label ("peq.a.hmHz", d.sets[0].highMidHzIndex), std::string ("3 kHz"));
+        // the boost / cut amounts are shown in dB, as labelled on the reference
+        for (const char* amount : { "lowBoost", "lowCut", "highBoost", "highCut", "lmBoost", "midCut", "hmBoost" })
+        {
+            const auto& sp = specs[(size_t) paramIndex (std::string ("peq.a.") + amount)];
+            CHECK_EQ (sp.unit, std::string ("dB"));
+            CHECK_EQ (sp.minValue, 0.0f);
+            CHECK_EQ (sp.maxValue, 10.0f);
+        }
     }
     {
         ClassicLimiterParams r, d;
@@ -1021,7 +1043,7 @@ TEST_CASE ("params. vintage defaults reproduce the struct defaults")
         CHECK_EQ (r.harmonics, d.harmonics);
         CHECK_EQ (r.lowEmphasis, d.lowEmphasis);
         CHECK_EQ (r.highEmphasis, 4.0f);   // flat highs (documented)
-        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("tape.speed")].choices[(size_t) d.speed], std::string ("15 ips"));
+        CHECK_EQ (paramSpecs()[(size_t) paramIndex ("tape.speed")].choices[(size_t) d.speed], std::string ("30 ips"));
     }
 }
 
@@ -1030,7 +1052,7 @@ TEST_CASE ("params. vintage reads map to the right fields and clamp the stepped 
     auto v = defaultValues();
     setValue (v, "ccmp.b.sc.shelfDb", -5.5f);
     setValue (v, "ccmp.b.mode", 99.0f);       // clamped to Smooth
-    setValue (v, "ccmp.a.release", 750.0f);
+    setValue (v, "ccmp.a.release", 120.0f);
     setValue (v, "peq.b.midHz", 99.0f);       // clamped to 7 kHz
     setValue (v, "peq.a.hmBoost", 6.5f);
     setValue (v, "peq.drive", 2.0f);
@@ -1044,7 +1066,7 @@ TEST_CASE ("params. vintage reads map to the right fields and clamp the stepped 
     CHECK_EQ (cc.sets[1].scShelfDb, -5.5f);
     CHECK_EQ (cc.sets[0].scShelfDb, 0.0f);
     CHECK_EQ (cc.sets[1].mode, ClassicCompMode::Smooth);
-    CHECK_EQ (cc.sets[0].releaseMs, 750.0f);
+    CHECK_EQ (cc.sets[0].releaseMs, 120.0f);
 
     PassiveEqParams pe;
     readPassiveEqParams (v.data(), pe);

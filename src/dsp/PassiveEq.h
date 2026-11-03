@@ -17,7 +17,7 @@
 //   2. low cut     low shelf cut at f x kLowCutRatio, gain -kLowCutMaxDb (17.5) x law (lowCut / 10), Q kLowCutQ; with
 //                  1 and 2 together the response is the classic boost with a dip just above it (they never cancel)
 //   3. high boost  peak at kPassiveEqHighHz[highHz], gain kHighBoostMaxDb (16) x law (highBoost / 10);
-//                  Q = kHighQSharp (2.5) at highBw 0 .. kHighQBroad (0.4) at highBw 10 (log interpolation), then
+//                  Q = kHighQBroad (0.4) at highQ 0 .. kHighQSharp (2.5) at highQ 10 (log interpolation), then
 //                  narrowed as the boost rises: Q x (1 + kBwBoostCoupling x law (highBoost / 10))
 //   4. high cut    high shelf cut at kPassiveEqHighCutHz[highCutHz], gain -kHighCutMaxDb (16) x law (highCut / 10)
 //   5. low-mid     peak boost at kPassiveEqLowMidHz[lmHz], up to kMidMaxDb (10) dB

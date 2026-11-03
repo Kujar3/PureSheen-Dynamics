@@ -632,8 +632,9 @@ Four modules modelled on classic analog circuit classes, under our own names: a 
 program EQ with a passive midrange EQ and a tube make-up stage, a variable-mu feedback tube limiter with a brickwall
 stage, and a two-head tape machine. Clean room: public documentation and black-box renders only. Until the renders are
 fitted, every module is built from first principles of its circuit class with every coefficient in one named constant
-block (`k...` in an anonymous namespace at the top of its .cpp), so the fit only changes numbers. Ranges and defaults
-marked (TBC) in `Params.h` are confirmed before release; nothing is installed before that.
+block (`k...` in an anonymous namespace at the top of its .cpp), so the fit only changes numbers. The ranges, defaults,
+choice lists and units are the reference's, confirmed from the user's screenshots, min-max notes and saved presets
+(2026-11-03; table below); nothing is installed before the fit.
 
 | ModuleType | prefix | display name (short) | channel modes | T/S twin | params | latency (44.1 / 48 kHz) | owner |
 |---|---|---|---|---|---|---|---|
@@ -650,11 +651,48 @@ marked (TBC) in `Params.h` are confirmed before release; nothing is installed be
 its own params in struct order (shared params first, then set A, then set B). The Classic Compressor's controls are all
 per channel set; the Passive EQ's Drive is shared (the tube stage), its two sections per set. The Passive EQ frequency
 selectors are choices indexing `kPassiveEq*Hz` (Types.h); `ClassicCompMode`, `ClassicLimiterMode` and `TapeSpeed`
-(`kTapeSpeedIps`) are their choice enums. Unlike the phase 2 modules, the defaults are the reference's (TBC), not
-neutral settings: each header documents its neutral settings. The processor gives the appendix APVTS version hint 3
+(`kTapeSpeedIps`) are their choice enums. Unlike the phase 2 modules, the defaults are the reference's, not neutral
+settings: each header documents its neutral settings. The processor gives the appendix APVTS version hint 3
 (`kNumParams_0_5_0` = 841 marks its start). `tests/ParamCompatTests.cpp` freezes the 0.2 .. 0.5 table (841 entries,
-count + fingerprint) and the vintage appendix (79 entries, count + fingerprint of its own entries; update that hash
-when a (TBC) value is confirmed, the test prints it).
+count + fingerprint) and the vintage appendix (79 entries, count + fingerprint of its own entries; the appendix is
+unreleased, so a change to it updates that hash, the test prints it).
+
+Confirmed ranges and defaults (every control shows the number the reference's control shows for the same setting;
+per channel set where the module has two; TBC = read off a screenshot curve or not seen at an end stop):
+
+| module | control (id) | range / choices | default | unit |
+|---|---|---|---|---|
+| Classic Compressor | Threshold (`thr`) | -60 .. 0 | -12 | dB |
+| | Ratio (`ratio`) | 1 .. 20 (skew centre 4) | 1.5 | :1 |
+| | Attack (`attack`) | 0.1 .. 100 (log) | 20 | ms |
+| | Release (`release`) | 30 .. 150 (log), the transient release | 50 | ms |
+| | Mode (`mode`) | Sharp, Balanced, Smooth (0..2) | Balanced | |
+| | Gain (`makeup`) | -30 .. +30 | 0 | dB |
+| | Auto Gain (`autoGain`) | off / on | on | |
+| | detection high-pass (`sc.hpf`) | 20 .. 400 (log), fixed shape | 45 (TBC) | Hz |
+| | detection bell (`sc.bellHz` / `sc.bellDb`) | 800 .. 9000 (log) / -8 .. +8, fixed shape | 2000 (TBC) / 0 | Hz / dB |
+| | detection high shelf (`sc.shelfHz` / `sc.shelfDb`) | 4000 .. 12000 (log) / -8 .. +8, fixed shape | 6000 (TBC) / 0 | Hz / dB |
+| Passive EQ | Low frequency (`lowHz`) | 20, 30, 45, 60, 100 | 45 | Hz |
+| | Low Boost / Low Cut (`lowBoost` / `lowCut`) | 0 .. 10 (the labels; the gain follows the knob law) | 0 | dB |
+| | High Boost frequency (`highHz`) | 3, 4, 5, 8, 10, 12, 16 | 8 | kHz |
+| | High Boost (`highBoost`) | 0 .. 10 (label) | 0 | dB |
+| | High Q (`highQ`) | 0 (broad) .. 10 (narrow) | 0 | |
+| | High Cut frequency / High Cut (`highCutHz` / `highCut`) | 5, 10, 20 kHz / 0 .. 10 (label) | 10 kHz / 0 | kHz / dB |
+| | Low-Mid (`lmHz` / `lmBoost`) | 200, 300, 500, 700, 1000 Hz / 0 .. 10 (label) | 500 Hz / 0 | Hz / dB |
+| | Mid (`midHz` / `midCut`) | 200 Hz .. 7 kHz (11 steps) / 0 .. 10 (label) | 1.5 kHz / 0 | Hz / dB |
+| | High-Mid (`hmHz` / `hmBoost`) | 1.5, 2, 3, 4, 5 kHz / 0 .. 10 (label) | 3 kHz / 0 | Hz / dB |
+| | Drive (`drive`, ours, shared) | 0 .. 10 | 0 | |
+| Classic Limiter | Threshold (`thr`) | -12 .. 0 (range TBC) | -2 | dB |
+| | Ceiling (`ceiling`) | -12 .. 0 (range TBC) | 0 | dBFS |
+| | Character (`character`) | 0 (fast) .. 10 (slow) | 2 | |
+| | Mode (`mode`) | Analog, Tube, Modern (0..2) | Tube | |
+| | True Peak / Link (`truePeak` / `link`) | off / on | off / off (Link TBC) | |
+| Tape | Speed (`speed`) | 7.5, 15, 30 ips (ours 0..2; the reference stores 0 = 30, 1 = 15, 2 = 7.5) | 30 ips | ips |
+| | Drive (`drive`) | -30 (TBC) .. +30 | 0 | dB |
+| | Bias (`bias`) | -10 .. +10 | 0 | |
+| | Harmonics (`harmonics`) | 0 .. 10 | 0 | |
+| | Low Emphasis (`lowEmph`, head bump) | 0 .. 10 | 2 | |
+| | High Emphasis (`highEmph`) | 0 .. 10 (4 = flat) | 4 | |
 
 **Contracts** (headers are contracts, rule 1; the stubs pass audio through delayed by the contract's latency):
 - `ClassicComp.h`: feedback detector (the gain-stage output of the previous sample through the sidechain EQ: 12 dB/oct
@@ -705,9 +743,8 @@ Ownership for the module wave (only edit your files; ask the lead for contract c
 Done: the four vintage-style modules with real DSP, their own tests and a dedicated panel each (no stubs left), 18
 factory presets (Classic Compressor 5, Passive EQ 5, Classic Limiter 4, Tape 4), the importer map, selftest coverage
 and snapshots. **Not yet fitted to the reference's renders:** every module is built from first principles of its
-circuit class, with every coefficient in the constant block at the top of its .cpp, and the parameter ranges and
-defaults are still the contract's (TBC) values (see Known limitations). Nothing is installed; the version is
-unchanged.
+circuit class, with every coefficient in the constant block at the top of its .cpp. The parameter ranges, defaults,
+choice lists and units are the confirmed ones (table above). Nothing is installed; the version is unchanged.
 
 What is real (per module; numbers from its CoreTests on the module owner's build and this integration's rerun):
 - Classic Compressor (`ccmp.`, 18 tests): feedback gain stage with gain-referred RMS / peak followers (they average
@@ -720,7 +757,7 @@ What is real (per module; numbers from its CoreTests on the module owner's build
   ratio <= 1.94; about 300x realtime. Latency 0.
 - Passive EQ (`peq.`, 23 tests): seven matched sections per channel with 10 ms glides (low boost +13.7 dB at 10,
   boost 10 + cut 5 = +5.9 dB at 30 Hz / -4.3 dB at 100 Hz; high boost 16.02 dB, 0.38 .. 4.91 octaves over the
-  bandwidth knob), the 2x oversampled tube stage (Drive 10: H2 -30.4 dBc, H3 -53.1 dBc, aliasing below -91 dBc; only
+  High Q knob), the 2x oversampled tube stage (Drive 10: H2 -30.4 dBc, H3 -53.1 dBc, aliasing below -91 dBc; only
   its residual fades when Drive crosses 0). Neutral = input delayed by exactly 3 samples in every mode; the panel curve
   (shared designs, `dsp/PassiveEqDesign.h`) matches the audio within 7e-7 dB; parameter-step splatter <= -83.5 dB;
   about 140x realtime at 96 kHz. Latency 3 at every rate and drive; T/S twin.
@@ -736,7 +773,8 @@ What is real (per module; numbers from its CoreTests on the module owner's build
   residual, the even-harmonic offset (its DC removed in output units), exact reciprocal de-emphasis, the head bump
   (40 / 60 / 110 Hz bell on its roll-off; +10.00 dB at Low Emphasis 10), one net high shelf (High Emphasis 4 = exactly
   flat) and a static make-up for -18 dBFS pink noise (within 0.145 dB over 90 drive / speed / bias / harmonics
-  settings). Flat settings 200 Hz .. 10 kHz at +0.295 dB +-0.0006; measured response vs `responseDb` within 0.14 dB;
+  settings up to drive +20; 0.32 dB at drive +30, the top of the confirmed range). Flat settings 200 Hz .. 10 kHz
+  at +0.295 dB +-0.0006; measured response vs `responseDb` within 0.14 dB;
   THD of a 200 Hz tone at -6 dBFS -96.8 / -37.8 / -13.9 dB at drive -30 / 0 / +20; H2 -36.5 .. -26.6 dBc over
   Harmonics 2.5 .. 10; glides at fixed control positions (block sizes 1 .. 512 identical), click ratio <= 1.49;
   non-finite or huge input samples are zeroed before the oversampler (they poisoned its recursion), about 72x realtime.
@@ -757,14 +795,15 @@ Integration checks (selftest "-- Vintage-style modules" and "-- Presets"):
 
 Importer (`src/plugin/import/ImportMapPhase3.cpp`, CoreTests "import.vint.", 8 cases): the four sections map by
 hash key as the other families; every foreign default sits in ONE marked block (`vdef`) at the top of the file (Known
-where sparse storage proves it, Likely = screenshot values the files agree with, Guess = read off a curve; all 21
-Likely / Guess rows are listed in `out/importer/defaults-to-confirm.md`). Decisions: values 1:1 on our scales and
-clamped (counted) where the foreign ranges reach further (compressor threshold -60, makeup +-30, bell 9 kHz; tape drive
-+30); Passive EQ amounts 1:1 onto our 0..10 knobs; its high-boost "Q" is inverted onto our bandwidth (renders: Q 0 =
-broad); tape speed index reversed (theirs 0 = 30 ips). Corpus: the reference's 56 factory presets of the four modules
-(writer 9030) import with 0 unmapped / 0 clamped values and play finite audio; the user's 49 one-change check saves
-(writer 120000) import with 0 unmapped (1 clamped: drive +30). A single-module import inserts the Classic Compressor
-and Passive EQ after Dynamics, Tape after the Exciter, the Classic Limiter before the Maximizer.
+where sparse storage proves it, documented or confirmed by the user; Guess = read off a curve; the 4 Guess rows, the
+compressor's three detection-filter frequencies and the limiter's Link, are listed in
+`out/importer/defaults-to-confirm.md`). Decisions: our ranges, units and defaults are the foreign ones, so values map
+1:1 (a value outside the range is clamped and counted); the Passive EQ amounts are the labelled dB on both sides; High Q
+1:1 (same direction, 0 = broad); tape speed index reversed (theirs 0 = 30 ips). Corpus: the reference's 56 factory
+presets of the four modules (writer 9030) import with 0 unmapped / 0 clamped values and play finite audio; the user's
+105 vintage check saves of render rounds V1 + V2 (writer 120000) import with 0 unmapped / 0 clamped. A single-module
+import inserts the Classic Compressor and Passive EQ after Dynamics, Tape after the Exciter, the Classic Limiter
+before the Maximizer.
 
 Final review-and-fix pass over the whole diff (independent reviewer): corrupt input samples (non-finite or beyond
 1e6) are zeroed before the recursive state of the Classic Compressor, Passive EQ and Classic Limiter (Tape already
@@ -786,10 +825,11 @@ Known limitations (vintage):
 - Not yet fitted to the reference's renders: curves, ballistics, saturation and knob laws are first-principles
   values. The factory presets were chosen from the models' behaviour, not by listening, and need a listening pass
   after the fit.
-- Ranges and defaults are the contract's (TBC) values, not yet the confirmed ones in the private spec (e.g. compressor
-  ratio default 1.5, release 30 .. 150 ms, threshold to -60 dB, gain +-30 dB; tape drive to +30 dB, speed default 30
-  ips, low emphasis 2; limiter Tube / -2 / 0 / Character 2; Passive EQ 45 Hz / 500 Hz / 1.5 kHz, high Q). Applying
-  them changes the vintage fingerprint in `tests/ParamCompatTests.cpp` (update the printed hash).
+- Ranges and defaults are confirmed except: the compressor's detection-filter default frequencies (45 Hz / 2 kHz /
+  6 kHz, read off a curve), the limiter's Threshold / Ceiling ranges (-12 .. 0 kept) and Link default, the tape
+  drive's low end (-30 kept). The Passive EQ amounts are labelled in dB, but until the fit the DSP's knob law is still
+  the first-principles one (the measured law gives e.g. +8.7 dB of low shelf at label 5); the Classic Compressor
+  presets' releases were moved into 30 .. 150 ms (Bus Glue 120, Slow Leveler 150, the M/S one 100 / 150).
 - Classic Compressor: the saturator is not oversampled (latency 0); its harmonics are bounded (>= 40 dB down at 0 dBFS),
   not filtered.
 - Passive EQ: Drive is our addition (no foreign counterpart; the importer leaves it at 0).

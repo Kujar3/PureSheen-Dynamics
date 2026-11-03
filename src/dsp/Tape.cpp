@@ -43,10 +43,10 @@
 //   with sigma = G * sigma_pre * 10^(-18 / 20) (sigma_pre = the pre-emphasis's RMS gain on that pink noise). By
 //   quadrature, the curve output (c + e, DC removed) splits into its linear part (Bussgang gain a) and the distortion;
 //   the de-emphasis returns the linear part to the input's level, and keeps kDistortionShare of the distortion power
-//   (fitted on band-limited pink noise: within 0.15 dB from drive -30 to +20, every speed / bias / harmonics). The
-//   hysteresis is not in the estimate (its deficit is small at -18 dBFS). The make-up also undoes the pink-noise loss
-//   of the fixed linear parts (the speed's roll-off and the bias's HF tilt; the emphasis controls stay pure EQ), so the
-//   small-signal mid band sits a few tenths of a dB above 0 dB (+0.3 dB at 15 ips, drive 0).
+//   (fitted on band-limited pink noise: within 0.15 dB from drive -30 to +20, 0.32 dB at +30, every speed / bias /
+//   harmonics). The hysteresis is not in the estimate (its deficit is small at -18 dBFS). The make-up also undoes
+//   the pink-noise loss of the fixed linear parts (the speed's roll-off and the bias's HF tilt; the emphasis controls
+//   stay pure EQ), so the small-signal mid band sits a few tenths of a dB above 0 dB (+0.3 dB at 15 ips, drive 0).
 // - Controls: drive (dB), bias, harmonics, lowEmph and highEmph glide (a critically damped two-stage one-pole, 90 %
 //   of a step after kGlideMs, no corner at either end), evaluated once per control period of kControl base samples (at
 //   fixed sample positions, so the output does not depend on the host's block size) and interpolated per sample inside
@@ -68,6 +68,8 @@ namespace
     constexpr double kGlideMs = 20.0;          // drive / bias / harmonics / emphasis glide: 90 % of a step
     constexpr double kGlideStageRatio = 0.257; // stage time constant / kGlideMs (two stages: 90 % after 3.89 tau)
     constexpr double kSpeedFadeMs = 20.0;      // speed crossfade
+    constexpr double kDriveMinDb = -30.0;      // the drive control's range (Params.h)
+    constexpr double kDriveMaxDb = 30.0;
 
     // record EQ (pre-emphasis) and its exact inverse
     constexpr double kPreEmphasisHz[3] { 500.0, 1000.0, 2000.0 };   // 7.5 / 15 / 30 ips: equal distortion (docs)
@@ -491,7 +493,7 @@ struct Tape::Impl
 
     void snapAll() noexcept
     {
-        drive.snap (std::clamp ((double) target.driveDb, -30.0, 20.0));
+        drive.snap (std::clamp ((double) target.driveDb, kDriveMinDb, kDriveMaxDb));
         bias.snap (std::clamp ((double) target.bias, -10.0, 10.0));
         harmonics.snap (std::clamp ((double) target.harmonics, 0.0, 10.0));
         lowEmph.snap (std::clamp ((double) target.lowEmphasis, 0.0, 10.0));
@@ -739,7 +741,7 @@ void Tape::setParams (ParamValues v) noexcept
         return;
     }
 
-    m.drive.setTarget (std::clamp ((double) p.driveDb, -30.0, 20.0));
+    m.drive.setTarget (std::clamp ((double) p.driveDb, kDriveMinDb, kDriveMaxDb));
     m.bias.setTarget (std::clamp ((double) p.bias, -10.0, 10.0));
     m.harmonics.setTarget (std::clamp ((double) p.harmonics, 0.0, 10.0));
     m.lowEmph.setTarget (std::clamp ((double) p.lowEmphasis, 0.0, 10.0));

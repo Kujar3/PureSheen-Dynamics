@@ -7,19 +7,17 @@
 // here (`PureSheenDev importkey "<ParamID>"` prints the template and key of a stored name).
 //
 // Every table's "def" column is the FOREIGN default of the writer version (sparse files: an absent value takes it).
-// The defaults of this family are NOT confirmed yet: they come from the user's screenshots and min-max notes of the
-// real product, checked against sparse storage (the one-change check saves of writer 120000 and the factory presets
-// of writer 9030 never store them). Known = proven by sparse storage or documented; Likely = a screenshot value the
-// files agree with; Guess = read off a screenshot curve. Every Likely / Guess row is listed in
+// The defaults of this family come from the user's screenshots, min-max notes and saved presets of the real product
+// (confirmed 2026-11-03), checked against sparse storage (the one-change check saves of writer 120000 and the factory
+// presets of writer 9030 never store them). Known = proven by sparse storage, documented or confirmed; Likely = a
+// screenshot value the files agree with; Guess = read off a screenshot curve. Every Likely / Guess row is listed in
 // out/importer/defaults-to-confirm.md ("Vintage-style family") and by `PureSheenDev import --defaults`.
 //
 // Decisions:
-// - Values are read on our scales 1:1 and clamped into our ranges (counted as clamped): the foreign Classic
-//   Compressor threshold / gain and the Tape drive reach further than ours (-60 dB / +-30 dB / +30 dB), the Passive
-//   EQ boost / cut amounts (0..10, shown in dB there) land on our 0..10 knobs. Our modules are not fitted to the
-//   reference's renders yet, so the same numbers do not sound identical yet.
-// - Passive EQ high-boost bandwidth: the foreign control is a Q (0 = broad .. 10 = narrow, black-box renders of the
-//   check saves), ours a bandwidth (0 = sharp .. 10 = broad): ours = 10 - theirs.
+// - Our ranges, units and defaults are the foreign ones, so values are read 1:1 (a value outside our range is
+//   clamped and counted). The Passive EQ boost / cut amounts are the labelled dB (0..10) on both sides; the gain they
+//   really give comes from the module's knob law.
+// - Passive EQ High Q: the same control in the same direction (0 = broad .. 10 = narrow): read 1:1.
 // - Tape speed: the foreign index runs 0 = 30 ips (its default), 1 = 15, 2 = 7.5 (check saves); ours is the reverse.
 // - The Passive EQ tube drive and the Classic Compressor's sidechain shape have no foreign counterpart: our defaults.
 namespace ps::imp
@@ -42,47 +40,48 @@ double indexUpTo (double v, int last)
 }
 
 //==============================================================================
-// FOREIGN DEFAULTS OF THE VINTAGE-STYLE FAMILY (not confirmed yet; the one place to correct them).
+// FOREIGN DEFAULTS OF THE VINTAGE-STYLE FAMILY (confirmed 2026-11-03 except the Guess rows; the one place to correct
+// them).
 // Each value is the reference's default in the reference's own units / index, as the table rows read it.
 namespace vdef
 {
     // Classic Compressor (per set)
-    constexpr Def compThreshold  = likely (-12.0);   // dB (screenshot)
-    constexpr Def compRatio      = likely (1.5);     // :1 (screenshot)
-    constexpr Def compAttack     = likely (20.0);    // ms (screenshot)
-    constexpr Def compRelease    = likely (50.0);    // ms (screenshot)
+    constexpr Def compThreshold  = known (-12.0);    // dB (confirmed)
+    constexpr Def compRatio      = known (1.5);      // :1 (confirmed)
+    constexpr Def compAttack     = known (20.0);     // ms (confirmed)
+    constexpr Def compRelease    = known (50.0);     // ms (confirmed)
     constexpr Def compKneeMode   = known (1.0);      // Balanced (a Balanced check save stores no mode)
-    constexpr Def compMakeup     = likely (0.0);     // dB (screenshot)
+    constexpr Def compMakeup     = known (0.0);      // dB (confirmed)
     constexpr Def compAutoGain   = known (1.0);      // on (the check save that turns it off stores 0)
     constexpr Def compChMode     = known (0.0);      // stereo (the mid/side check save stores 1)
     constexpr Def compScHpf      = guess (45.0);     // Hz (read off the detection-filter curve)
     constexpr Def compScBellHz   = guess (2000.0);   // Hz (read off the curve; a check save stores 1000)
-    constexpr Def compScBellDb   = likely (0.0);     // dB
+    constexpr Def compScBellDb   = known (0.0);      // dB (confirmed)
     constexpr Def compScShelfHz  = guess (6000.0);   // Hz (read off the curve)
-    constexpr Def compScShelfDb  = likely (0.0);     // dB
+    constexpr Def compScShelfDb  = known (0.0);      // dB (confirmed)
     // Passive EQ (per set; frequencies are indices into the foreign lists, which equal ours)
-    constexpr Def eqLowHz        = likely (2.0);     // 45 Hz (screenshot; check saves store 20 / 60 / 100 Hz)
+    constexpr Def eqLowHz        = known (2.0);      // 45 Hz (confirmed; check saves store 20 / 60 / 100 Hz)
     constexpr Def eqAmount       = known (0.0);      // every boost / cut (the default render is flat)
     constexpr Def eqHighHz       = known (3.0);      // 8 kHz (the 8 kHz check save stores no frequency)
     constexpr Def eqHighQ        = known (0.0);      // broadest (the "minimum" check save stores no Q)
     constexpr Def eqHighCutHz    = known (1.0);      // 10 kHz (check saves store 5 k and 20 k)
-    constexpr Def eqLowMidHz     = likely (2.0);     // 500 Hz (screenshot; a check save stores 300 Hz)
-    constexpr Def eqMidHz        = likely (5.0);     // 1.5 kHz (screenshot; a check save stores 1 kHz)
-    constexpr Def eqHighMidHz    = likely (2.0);     // 3 kHz (screenshot)
+    constexpr Def eqLowMidHz     = known (2.0);      // 500 Hz (confirmed; a check save stores 300 Hz)
+    constexpr Def eqMidHz        = known (5.0);      // 1.5 kHz (confirmed; a check save stores 1 kHz)
+    constexpr Def eqHighMidHz    = known (2.0);      // 3 kHz (confirmed)
     constexpr Def eqChMode       = known (0.0);      // stereo
     // Classic Limiter
-    constexpr Def limThreshold   = likely (-2.0);    // dB (screenshot)
-    constexpr Def limCeiling     = likely (0.0);     // dB (screenshot)
-    constexpr Def limCharacter   = likely (2.0);     // 0..10 (screenshot; check saves store 0 / 5 / 10)
+    constexpr Def limThreshold   = known (-2.0);     // dB (confirmed)
+    constexpr Def limCeiling     = known (0.0);      // dB (confirmed)
+    constexpr Def limCharacter   = known (2.0);      // 0..10 (confirmed; check saves store 0 / 5 / 10)
     constexpr Def limMode        = known (1.0);      // Tube (the Tube check save stores no mode)
     constexpr Def limTruePeak    = known (0.0);      // off (the true-peak check save stores 1)
     constexpr Def limLink        = guess (0.0);      // off (never stored)
     // Tape
     constexpr Def tapeSpeed      = known (0.0);      // index 0 = 30 ips (the 15 / 7.5 ips check saves store 1 / 2)
-    constexpr Def tapeDrive      = likely (0.0);     // dB (screenshot)
-    constexpr Def tapeBias       = likely (0.0);     // (screenshot)
+    constexpr Def tapeDrive      = known (0.0);      // dB (confirmed)
+    constexpr Def tapeBias       = known (0.0);      // (confirmed)
     constexpr Def tapeHarmonics  = known (0.0);      // (the 0 check save stores nothing)
-    constexpr Def tapeLowEmph    = likely (2.0);     // head bump (screenshot)
+    constexpr Def tapeLowEmph    = known (2.0);      // head bump (confirmed)
     constexpr Def tapeHighEmph   = known (4.0);      // flat highs (documented)
 } // namespace vdef
 
@@ -155,8 +154,6 @@ double eqHighCutHz (double v, ModuleImport&, int, int) { return indexUpTo (v, (i
 double eqLowMidHz (double v, ModuleImport&, int, int) { return indexUpTo (v, (int) kPassiveEqLowMidHz.size() - 1); }
 double eqMidHz (double v, ModuleImport&, int, int) { return indexUpTo (v, (int) kPassiveEqMidHz.size() - 1); }
 double eqHighMidHz (double v, ModuleImport&, int, int) { return indexUpTo (v, (int) kPassiveEqHighMidHz.size() - 1); }
-// Their sharpness (0 broad .. 10 narrow) -> our bandwidth (0 sharp .. 10 broad).
-double eqHighBandwidth (double v, ModuleImport&, int, int) { return 10.0 - v; }
 
 //------------------------------------------------------------------------------------------------------------------
 // PASSIVE EQ TABLE
@@ -169,7 +166,7 @@ const std::vector<Rule>& passiveEqRules()
         { kEqLowCut,        Act::Map,          0, 0, Band::Same, "~.a.lowCut",     "~.b.lowCut",     nullptr,         vdef::eqAmount,     "low cut" },
         { kEqHighHz,        Act::Map,          0, 0, Band::Same, "~.a.highHz",     "~.b.highHz",     eqHighHz,        vdef::eqHighHz,     "high boost frequency" },
         { kEqHighBoost,     Act::Map,          0, 0, Band::Same, "~.a.highBoost",  "~.b.highBoost",  nullptr,         vdef::eqAmount,     "high boost" },
-        { kEqHighQ,         Act::Map,          0, 0, Band::Same, "~.a.highBw",     "~.b.highBw",     eqHighBandwidth, vdef::eqHighQ,      "high boost bandwidth" },
+        { kEqHighQ,         Act::Map,          0, 0, Band::Same, "~.a.highQ",      "~.b.highQ",      nullptr,         vdef::eqHighQ,      "high boost Q" },
         { kEqHighCutHz,     Act::Map,          0, 0, Band::Same, "~.a.highCutHz",  "~.b.highCutHz",  eqHighCutHz,     vdef::eqHighCutHz,  "high cut frequency" },
         { kEqHighCut,       Act::Map,          0, 0, Band::Same, "~.a.highCut",    "~.b.highCut",    nullptr,         vdef::eqAmount,     "high cut" },
         { kEqLowMidHz,      Act::Map,          0, 0, Band::Same, "~.a.lmHz",       "~.b.lmHz",       eqLowMidHz,      vdef::eqLowMidHz,   "low-mid frequency" },

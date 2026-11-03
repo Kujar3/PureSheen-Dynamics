@@ -25,7 +25,9 @@
 //
 // Phase 3 (vintage-style modules): 4-5 presets per module, built on the module defaults (which are the reference's,
 // not neutral: e.g. the Classic Compressor's auto gain stays on). Stereo presets set both channel sets as above; the
-// Mid-Side ones turn Link off. Not fitted to the reference's renders yet, so the amounts stay moderate.
+// Mid-Side ones turn Link off. Every preset sets each control it relies on, so the confirmed defaults changed
+// nothing they use; the Classic Compressor releases moved into the confirmed 30..150 ms range in the same order, and
+// the Passive EQ high-boost widths became High Q values (0 = broad). Amounts stay moderate.
 namespace psplug
 {
 namespace
@@ -768,11 +770,12 @@ std::vector<FactoryPreset> build()
 
     //==============================================================================
     // (phase 3) Classic Compressor presets (thresholds in sine-peak dBFS of the detector; 1-3 dB of reduction on a
-    // -20 LUFS premaster)
+    // -20 LUFS premaster; the release knob is the transient release, 30..150 ms: sustained reduction recovers slower on
+    // its own)
     using CM = ps::ClassicCompMode;
     all.push_back (modulePreset ("Bus Glue", "Glue", ModuleType::ClassicComp,
         Builder()
-            .classicComp ("ab", -18.0f, 1.5f, 30.0f, 200.0f, CM::Smooth)
+            .classicComp ("ab", -18.0f, 1.5f, 30.0f, 120.0f, CM::Smooth)
             .both ("ccmp", "sc.hpf", 90.0f)));
     all.push_back (modulePreset ("Transient Snap", "Punch", ModuleType::ClassicComp,
         Builder()
@@ -780,7 +783,7 @@ std::vector<FactoryPreset> build()
             .both ("ccmp", "sc.hpf", 120.0f)));
     all.push_back (modulePreset ("Slow Leveler", "Glue", ModuleType::ClassicComp,
         Builder()
-            .classicComp ("ab", -22.0f, 2.0f, 50.0f, 600.0f, CM::Smooth)
+            .classicComp ("ab", -22.0f, 2.0f, 50.0f, 150.0f, CM::Smooth)
             .both ("ccmp", "sc.hpf", 60.0f)));
     all.push_back (modulePreset ("Soft on Harshness", "Tone", ModuleType::ClassicComp,
         Builder()
@@ -792,13 +795,12 @@ std::vector<FactoryPreset> build()
         Builder()
             .channelMode (ModuleType::ClassicComp, ChannelMode::MidSide)
             .set ("ccmp.link", 0.0f)
-            .classicComp ("a", -18.0f, 2.0f, 20.0f, 150.0f, CM::Balanced)
-            .classicComp ("b", -24.0f, 1.3f, 40.0f, 300.0f, CM::Smooth)
+            .classicComp ("a", -18.0f, 2.0f, 20.0f, 100.0f, CM::Balanced)
+            .classicComp ("b", -24.0f, 1.3f, 40.0f, 150.0f, CM::Smooth)
             .both ("ccmp", "sc.hpf", 100.0f)));
 
     //==============================================================================
-    // (phase 3) Passive EQ presets (amounts on the 0..10 knobs: the mids reach 10 dB at 10, the top section's
-    // boost / cut 13.5 .. 17.5 dB)
+    // (phase 3) Passive EQ presets (amounts in the classic dB markings, 0..10; High Q 0 = broad .. 10 = narrow)
     all.push_back (modulePreset ("Low Boost and Dip", "Bass", ModuleType::PassiveEq,
         Builder()
             .both ("peq", "lowHz", 3.0f)          // 60 Hz
@@ -806,7 +808,7 @@ std::vector<FactoryPreset> build()
     all.push_back (modulePreset ("Silky Top", "Air", ModuleType::PassiveEq,
         Builder()
             .both ("peq", "highHz", 5.0f)         // 12 kHz
-            .both ("peq", "highBoost", 2.5f).both ("peq", "highBw", 7.0f)
+            .both ("peq", "highBoost", 2.5f).both ("peq", "highQ", 3.0f)
             .both ("peq", "highCutHz", 2.0f)      // 20 kHz
             .both ("peq", "highCut", 1.0f)));
     all.push_back (modulePreset ("Midrange Clean-Up", "Tone", ModuleType::PassiveEq,
@@ -829,7 +831,7 @@ std::vector<FactoryPreset> build()
             .set ("peq.a.lowHz", 2.0f)            // Mid: 45 Hz
             .set ("peq.a.lowBoost", 2.0f)
             .set ("peq.b.highHz", 4.0f)           // Side: 10 kHz
-            .set ("peq.b.highBoost", 3.0f).set ("peq.b.highBw", 6.0f)));
+            .set ("peq.b.highBoost", 3.0f).set ("peq.b.highQ", 4.0f)));
 
     //==============================================================================
     // (phase 3) Classic Limiter presets (Threshold below the Ceiling = gain into the limiter)

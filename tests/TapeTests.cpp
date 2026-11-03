@@ -404,7 +404,7 @@ TEST_CASE ("tape. make-up: -18 dBFS pink noise comes out at -18 dBFS at every dr
     for (int speed = 0; speed < 3; ++speed)
         for (const float bias : { -10.0f, 0.0f, 10.0f })
             for (const float harm : { 0.0f, 10.0f })
-                for (const float drive : { -30.0f, -10.0f, 0.0f, 10.0f, 20.0f })
+                for (const float drive : { -30.0f, -10.0f, 0.0f, 10.0f, 20.0f, 30.0f })
                 {
                     Values v = flatValues();
                     v.set ("speed", (float) speed);
@@ -421,7 +421,7 @@ TEST_CASE ("tape. make-up: -18 dBFS pink noise comes out at -18 dBFS at every dr
                                   + ": out - in (dB)",
                               d);
                 }
-    note ("worst |out - in| over 90 settings (dB)", worst);
+    note ("worst |out - in| over 108 settings (dB)", worst);
     CHECK (worst <= 0.5);
 }
 

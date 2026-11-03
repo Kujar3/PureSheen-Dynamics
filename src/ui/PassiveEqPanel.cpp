@@ -63,7 +63,7 @@ ps::PassiveEqSetParams readSet (const PureSheenProcessor& p, int set)
     s.lowCut = f ("lowCut");
     s.highHzIndex = i ("highHz");
     s.highBoost = f ("highBoost");
-    s.highBandwidth = f ("highBw");
+    s.highQ = f ("highQ");
     s.highCutHzIndex = i ("highCutHz");
     s.highCut = f ("highCut");
     s.lowMidHzIndex = i ("lmHz");
@@ -78,7 +78,7 @@ ps::PassiveEqSetParams readSet (const PureSheenProcessor& p, int set)
 bool sameSet (const ps::PassiveEqSetParams& a, const ps::PassiveEqSetParams& b)
 {
     return a.lowHzIndex == b.lowHzIndex && a.lowBoost == b.lowBoost && a.lowCut == b.lowCut && a.highHzIndex == b.highHzIndex
-           && a.highBoost == b.highBoost && a.highBandwidth == b.highBandwidth && a.highCutHzIndex == b.highCutHzIndex
+           && a.highBoost == b.highBoost && a.highQ == b.highQ && a.highCutHzIndex == b.highCutHzIndex
            && a.highCut == b.highCut && a.lowMidHzIndex == b.lowMidHzIndex && a.lowMidBoost == b.lowMidBoost
            && a.midHzIndex == b.midHzIndex && a.midCut == b.midCut && a.highMidHzIndex == b.highMidHzIndex
            && a.highMidBoost == b.highMidBoost;
@@ -523,28 +523,29 @@ struct KnobSpec
 
 const KnobSpec kKnobs[] {
     { "lowHz", "Freq", kGroupLow, true, "Low frequency: where the low boost and the low cut act (20, 30, 45, 60 or 100 Hz)." },
-    { "lowBoost", "Boost", kGroupLow, false, "Low boost: a broad lift of everything below the low frequency (up to about "
-                                              "+13.5 dB at 10)." },
-    { "lowCut", "Cut", kGroupLow, false, "Low cut: lowers the lows from just above the low frequency (up to -17.5 dB). "
-                                          "With the boost it adds the classic dip above the boost, which tightens the "
-                                          "low end." },
+    { "lowBoost", "Boost", kGroupLow, false, "Low boost: a broad lift of everything below the low frequency (0 to 10 dB "
+                                              "on the classic markings; the real lift grows faster than the marking)." },
+    { "lowCut", "Cut", kGroupLow, false, "Low cut: lowers the lows from just above the low frequency (0 to 10 dB on the "
+                                          "classic markings, deeper in reality). With the boost it adds the classic dip "
+                                          "above the boost, which tightens the low end." },
     { "highHz", "Freq", kGroupHighBoost, true, "High boost frequency: the centre of the high boost (3 to 16 kHz)." },
-    { "highBoost", "Boost", kGroupHighBoost, false, "High boost: a bell-shaped lift around the high boost frequency (up "
-                                                    "to +16 dB). It gets a little narrower the more you boost." },
-    { "highBw", "Width", kGroupHighBoost, false, "Bandwidth of the high boost: left is sharp and focused, right is "
-                                                 "broad and smooth." },
+    { "highBoost", "Boost", kGroupHighBoost, false, "High boost: a bell-shaped lift around the high boost frequency (0 "
+                                                    "to 10 dB on the classic markings). It gets a little narrower the "
+                                                    "more you boost." },
+    { "highQ", "Q", kGroupHighBoost, false, "Q of the high boost: 0 is broad and smooth, 10 is narrower and more "
+                                           "focused." },
     { "highCutHz", "Freq", kGroupHighCut, true, "High cut frequency: where the high cut shelf starts (5, 10 or 20 kHz)." },
     { "highCut", "Cut", kGroupHighCut, false, "High cut: a gentle shelf that softens everything above the high cut "
-                                              "frequency (up to -16 dB)." },
+                                              "frequency (0 to 10 dB on the classic markings)." },
     { "lmHz", "Freq", kGroupLowMid, true, "Low-mid frequency: the centre of the low-mid boost (200 Hz to 1 kHz)." },
-    { "lmBoost", "Boost", kGroupLowMid, false, "Low-mid boost: body and warmth (up to +10 dB). Broad when you start, "
-                                               "narrower as you turn it up." },
+    { "lmBoost", "Boost", kGroupLowMid, false, "Low-mid boost: body and warmth (0 to 10 dB on the classic markings). "
+                                               "Broad when you start, narrower as you turn it up." },
     { "midHz", "Freq", kGroupMidCut, true, "Mid cut frequency: the centre of the mid cut (200 Hz to 7 kHz)." },
-    { "midCut", "Cut", kGroupMidCut, false, "Mid cut: takes out boxiness or harshness (up to -10 dB). Broad when you "
-                                            "start, narrower as you turn it up." },
+    { "midCut", "Cut", kGroupMidCut, false, "Mid cut: takes out boxiness or harshness (0 to 10 dB on the classic "
+                                            "markings)." },
     { "hmHz", "Freq", kGroupHighMid, true, "High-mid frequency: the centre of the high-mid boost (1.5 to 5 kHz)." },
-    { "hmBoost", "Boost", kGroupHighMid, false, "High-mid boost: presence and clarity (up to +10 dB). Broad when you "
-                                                "start, narrower as you turn it up." },
+    { "hmBoost", "Boost", kGroupHighMid, false, "High-mid boost: presence and clarity (0 to 10 dB on the classic "
+                                                "markings). Broad when you start, narrower as you turn it up." },
     { "", "Drive", kGroupTube, false, "Drive: the tube make-up stage, shared by both channels. At 0 it is clean and "
                                       "exact; turning it up adds warm, mostly even harmonics at the same level." },
 };

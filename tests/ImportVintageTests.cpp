@@ -209,7 +209,7 @@ TEST_CASE ("import.vint. every module imports the foreign defaults table from an
         const std::string p = std::string ("peq.") + s + ".";
         CHECK (near (value (peq, p + "lowHz"), 2.0));       // 45 Hz
         CHECK (near (value (peq, p + "highHz"), 3.0));      // 8 kHz
-        CHECK (near (value (peq, p + "highBw"), 10.0));     // their broadest
+        CHECK (near (value (peq, p + "highQ"), 0.0));       // broadest
         CHECK (near (value (peq, p + "highCutHz"), 1.0));   // 10 kHz
         CHECK (near (value (peq, p + "lmHz"), 2.0));        // 500 Hz
         CHECK (near (value (peq, p + "midHz"), 5.0));       // 1.5 kHz
@@ -239,12 +239,13 @@ TEST_CASE ("import.vint. every module imports the foreign defaults table from an
     CHECK (near (value (tape, "tape.highEmph"), 4.0));
 }
 
-TEST_CASE ("import.vint. classic compressor: sets, mid/side, mode table, values clamped into our ranges")
+TEST_CASE ("import.vint. classic compressor: sets, mid/side, mode table, the same ranges, out-of-range values clamped")
 {
     const auto plan = moduleFile (ModuleType::ClassicComp,
                                   { { "channel mode", "1" }, { "threshold", "-18.5" }, { "ratio", "2.4" },
-                                    { "threshold", "-50", true }, { "ratio", "1.8", true }, { "mode", "2", true },
+                                    { "threshold", "-60", true }, { "ratio", "1.8", true }, { "mode", "2", true },
                                     { "mode", "0" }, { "attack", "0.1" }, { "release", "150" }, { "makeup", "1" },
+                                    { "release", "400", true },
                                     { "makeup", "-30", true }, { "auto gain", "0" }, { "sidechain high-pass", "400" },
                                     { "sidechain bell frequency", "9000" }, { "sidechain bell gain", "-8" },
                                     { "sidechain shelf frequency", "4000" }, { "sidechain shelf gain", "6.5" },
@@ -253,23 +254,24 @@ TEST_CASE ("import.vint. classic compressor: sets, mid/side, mode table, values 
     CHECK (near (value (plan, "ccmp.chMode"), 1.0));        // M/S
     CHECK (near (value (plan, "ccmp.a.thr"), -18.5));
     CHECK (near (value (plan, "ccmp.a.ratio"), 2.4));
-    CHECK (near (value (plan, "ccmp.b.thr"), -40.0));       // clamped (theirs reaches -60)
+    CHECK (near (value (plan, "ccmp.b.thr"), -60.0));       // the bottom of both ranges
     CHECK (near (value (plan, "ccmp.b.ratio"), 1.8));
     CHECK (near (value (plan, "ccmp.a.mode"), 0.0));        // Sharp
     CHECK (near (value (plan, "ccmp.b.mode"), 2.0));        // Smooth
     CHECK (near (value (plan, "ccmp.a.attack"), 0.1, 1.0e-4));
     CHECK (near (value (plan, "ccmp.a.release"), 150.0, 0.05));
+    CHECK (near (value (plan, "ccmp.b.release"), 150.0, 0.05));   // clamped (outside both ranges)
     CHECK (near (value (plan, "ccmp.a.makeup"), 1.0));
-    CHECK (near (value (plan, "ccmp.b.makeup"), -12.0));    // clamped (theirs reaches -30)
+    CHECK (near (value (plan, "ccmp.b.makeup"), -30.0));    // the bottom of both ranges
     CHECK (near (value (plan, "ccmp.a.autoGain"), 0.0));
     CHECK (near (value (plan, "ccmp.b.autoGain"), 1.0));    // set B keeps its default
     CHECK (near (value (plan, "ccmp.b.attack"), 20.0, 0.01));
     CHECK (near (value (plan, "ccmp.a.sc.hpf"), 400.0, 0.1));
-    CHECK (near (value (plan, "ccmp.a.sc.bellHz"), 8000.0, 1.0));   // clamped (theirs reaches 9 kHz)
+    CHECK (near (value (plan, "ccmp.a.sc.bellHz"), 9000.0, 1.0));   // the top of both ranges
     CHECK (near (value (plan, "ccmp.a.sc.bellDb"), -8.0));
     CHECK (near (value (plan, "ccmp.a.sc.shelfHz"), 4000.0, 1.0));
     CHECK (near (value (plan, "ccmp.a.sc.shelfDb"), 6.5));
-    CHECK_EQ (plan.report.clamped, 3);
+    CHECK_EQ (plan.report.clamped, 1);
     CHECK_EQ (plan.report.unmapped, 0);
     CHECK_EQ (plan.report.ignored, 1);                      // the view's selected set
 
@@ -280,11 +282,11 @@ TEST_CASE ("import.vint. classic compressor: sets, mid/side, mode table, values 
     CHECK (near (value (bad, "ccmp.a.mode"), (double) ps::ClassicCompMode::Balanced));
 }
 
-TEST_CASE ("import.vint. passive EQ: frequency tables, bandwidth inverted, set B, every channel mode")
+TEST_CASE ("import.vint. passive EQ: frequency tables, High Q 1:1, set B, every channel mode")
 {
     const auto plan = moduleFile (ModuleType::PassiveEq,
                                   { { "low frequency", "4" }, { "low boost", "5" }, { "low cut", "3" },
-                                    { "high boost frequency", "6" }, { "high boost", "4" }, { "high boost bandwidth", "4" },
+                                    { "high boost frequency", "6" }, { "high boost", "4" }, { "high boost Q", "4" },
                                     { "high cut frequency", "2" }, { "high cut", "2.5" }, { "low-mid frequency", "0" },
                                     { "low-mid boost", "4.5" }, { "mid frequency", "10" }, { "mid cut", "5.5" },
                                     { "high-mid frequency", "4" }, { "high-mid boost", "6" },
@@ -296,7 +298,7 @@ TEST_CASE ("import.vint. passive EQ: frequency tables, bandwidth inverted, set B
     CHECK (near (value (plan, "peq.a.lowCut"), 3.0));
     CHECK (near (value (plan, "peq.a.highHz"), 6.0));
     CHECK (near (value (plan, "peq.a.highBoost"), 4.0));
-    CHECK (near (value (plan, "peq.a.highBw"), 6.0));       // their sharpness 4 = our bandwidth 6
+    CHECK (near (value (plan, "peq.a.highQ"), 4.0));        // the same control, the same direction
     CHECK (near (value (plan, "peq.a.highCutHz"), 2.0));
     CHECK (near (value (plan, "peq.a.highCut"), 2.5));
     CHECK (near (value (plan, "peq.a.lmHz"), 0.0));
@@ -352,7 +354,7 @@ TEST_CASE ("import.vint. classic limiter: threshold, ceiling, character, mode ta
     CHECK (near (value (setB, "clim.thr"), -2.0));
 }
 
-TEST_CASE ("import.vint. tape: the speed index runs the other way, drive clamped, values 1:1")
+TEST_CASE ("import.vint. tape: the speed index runs the other way, values 1:1, drive clamped outside both ranges")
 {
     const double ours[] { 2.0, 1.0, 0.0 };   // their 30 / 15 / 7.5 ips
     for (int i = 0; i < 3; ++i)
@@ -369,12 +371,16 @@ TEST_CASE ("import.vint. tape: the speed index runs the other way, drive clamped
     const auto plan = moduleFile (ModuleType::Tape, { { "drive", "30" }, { "bias", "-6" }, { "harmonics", "3.2" },
                                                       { "low emphasis", "4.1" }, { "high emphasis", "5.6" } });
     REQUIRE (plan.ok);
-    CHECK (near (value (plan, "tape.drive"), 20.0));        // clamped (theirs reaches +30)
+    CHECK (near (value (plan, "tape.drive"), 30.0));        // the top of both ranges
     CHECK (near (value (plan, "tape.bias"), -6.0));
     CHECK (near (value (plan, "tape.harmonics"), 3.2));
     CHECK (near (value (plan, "tape.lowEmph"), 4.1));
     CHECK (near (value (plan, "tape.highEmph"), 5.6));
-    CHECK_EQ (plan.report.clamped, 1);
+    CHECK_EQ (plan.report.clamped, 0);
+    const auto hot = moduleFile (ModuleType::Tape, { { "drive", "36" } });
+    REQUIRE (hot.ok);
+    CHECK (near (value (hot, "tape.drive"), 30.0));         // clamped
+    CHECK_EQ (hot.report.clamped, 1);
 }
 
 TEST_CASE ("import.vint. whole chain: the four modules in the stored order, section power, stale sections ignored")

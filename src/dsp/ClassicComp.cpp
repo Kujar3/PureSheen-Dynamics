@@ -320,7 +320,7 @@ struct ClassicComp::Impl
             st.cT = std::max (0.0, (double) p.ratio - 1.0);
             st.kneeT = kKneeDb[m];
             st.driveT = kSatDrive[m];
-            st.makeupT = std::exp ((double) std::clamp (p.makeupDb, -24.0f, 36.0f) * kLn10Over20);
+            st.makeupT = std::exp ((double) std::clamp (p.makeupDb, -30.0f, 30.0f) * kLn10Over20);
             st.logAttT = std::log (std::max (0.01, (double) p.attackMs * kAttackScale[m]));
             st.logRelT = std::log (std::max (1.0, (double) p.releaseMs * kReleaseScale[m]));
             if (! designValid[s] || ! sameSidechain (p, designedFor.sets[s]))

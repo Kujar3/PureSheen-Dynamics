@@ -20,7 +20,8 @@ constexpr std::uint64_t kReleasedHash_0_1_1 = 12387188370879499014ull;    // FNV
 constexpr int kReleasedCount_0_5_0 = 841;             // entries of the 0.2 .. 0.5 table (phase 2 appendix included)
 constexpr std::uint64_t kReleasedHash_0_5_0 = 5899188831216511340ull;
 constexpr int kVintageCount = 79;                     // the vintage appendix: ccmp, peq, clim, tape
-constexpr std::uint64_t kVintageHash = 194287539300555884ull;   // FNV-1a over the fields of the appendix entries only
+constexpr std::uint64_t kVintageHash = 15095543237547662697ull;   // FNV-1a over the fields of the appendix entries only
+                                                                   // (confirmed ranges and defaults, 2026-11-03)
 
 struct Fnv
 {

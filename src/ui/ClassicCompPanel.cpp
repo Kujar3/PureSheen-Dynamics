@@ -300,7 +300,7 @@ private:
 class TransferView final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    static constexpr float kMinDb = -48.0f, kMaxDb = 6.0f;
+    static constexpr float kMinDb = -66.0f, kMaxDb = 6.0f;   // the threshold reaches -60
 
     explicit TransferView (PureSheenProcessor& p) : processor (p), gesture (p)
     {
@@ -459,7 +459,7 @@ public:
             return;
         const float scale = e.mods.isCtrlDown() ? 0.25f : 1.0f;
         const float db = startDb + (e.position.x - startX) * scale * (kMaxDb - kMinDb) / plotArea().getWidth();
-        gesture.set (0, juce::jlimit (-40.0f, 0.0f, db));
+        gesture.set (0, juce::jlimit (-60.0f, 0.0f, db));
         repaint();
     }
 
@@ -788,7 +788,7 @@ struct ClassicCompPanel::Impl
           grCard ("Gain Reduction", colour), transferCard ("Transfer", colour), scCard ("Detection Filter", colour),
           compCard ("Compressor", colour), transfer (p), sidechain (p),
           threshold (p, "ccmp.a.thr", "Threshold"), ratio (p, "ccmp.a.ratio", "Ratio"), attack (p, "ccmp.a.attack", "Attack"),
-          release (p, "ccmp.a.release", "Release"), makeup (p, "ccmp.a.makeup", "Makeup"),
+          release (p, "ccmp.a.release", "Release"), makeup (p, "ccmp.a.makeup", "Gain"),
           mode (p, "ccmp.a.mode", { "Sharp", "Balanced", "Smooth" }), autoGain (p, "ccmp.a.autoGain", "Auto Gain")
     {
         grMeter.setTooltip ("Gain reduction: how far the compressor turns the level down right now (the tick marks the "
@@ -801,7 +801,7 @@ struct ClassicCompPanel::Impl
                            "through.\nDrag to change (Ctrl: fine), double-click to reset.");
         release.setTooltip ("Release: how fast it recovers after a short hit. Long stretches of compression recover "
                             "slower on their own, which avoids pumping.\nDrag to change (Ctrl: fine), double-click to reset.");
-        makeup.setTooltip ("Makeup: output gain after the compressor (added on top of Auto Gain).\nDrag to change (Ctrl: "
+        makeup.setTooltip ("Gain: output gain after the compressor (added on top of Auto Gain).\nDrag to change (Ctrl: "
                            "fine), double-click to reset.");
         mode.setTooltip ("Mode: Sharp = crisp, a narrow knee, lets transients through, no colour. Balanced = a medium knee "
                          "with a little colour. Smooth = a wide knee, catches transients, a fuller, warmer sound.");
