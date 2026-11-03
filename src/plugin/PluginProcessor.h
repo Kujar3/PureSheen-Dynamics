@@ -5,7 +5,7 @@
 #include "dsp/Chain.h"
 
 namespace ps { struct MatchSpectrum; }
-namespace psplug { class Assistant; }
+namespace psplug { class Assistant; class TrackReferencing; }
 
 #include <functional>
 #include <memory>
@@ -27,6 +27,7 @@ namespace psplug { class Assistant; }
 //   - "Snapshots": A..D (each a full copy of params + chain), "editorW" / "editorH"
 //   - "presetName", "presetModified"
 //   - (phase 2) "MatchEq": the Match EQ spectra of both instances (normal + T/S twin), see the Match EQ section below
+//   - (phase 3) "Assistant" and "TrackReferencing" (see their sections below)
 // Undo history is NOT saved (reference-suite parity). States and presets store parameters by id and the chain by
 // module id prefix, so a 0.1.x state (six module types, 479 parameters) loads unchanged: every phase 2 parameter
 // takes its (neutral) default.
@@ -221,6 +222,13 @@ public:
     // single undo step and drives the macro controls. Its cards and targets are saved with the state ("Assistant"
     // child); undo, snapshots and presets do not touch them. Message thread.
     psplug::Assistant& getAssistant() noexcept;
+
+    //==============================================================================
+    // (phase 3) Track Referencing (src/plugin/TrackReferencing.h): up to 10 reference tracks with loops A-E, level-
+    // matched A/B against the master (played after the chain), and the master-vs-reference comparison. The Assistant's
+    // reference target comes from the same list and analysis. Saved with the state ("TrackReferencing" child: paths,
+    // loops, settings; not the audio); undo, snapshots and presets do not touch it. Message thread.
+    psplug::TrackReferencing& getTrackReferencing() noexcept;
 
 private:
     struct Impl;

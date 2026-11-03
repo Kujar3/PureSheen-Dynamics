@@ -2,6 +2,7 @@
 
 #include "dsp/ToneBalance.h"
 #include "plugin/Assistant.h"
+#include "plugin/TrackReferencing.h"
 #include "ui/Controls.h"
 
 #include <array>
@@ -100,27 +101,42 @@ private:
 };
 
 //==============================================================================
-// The target list: Auto, the reference (when loaded), every tone target. Scrolls with the wheel / drag.
+// The target list: Auto, one row per analysed reference of Track Referencing's list ("Ref: <name>"), "+ Reference
+// track...", every tone target. Scrolls with the wheel / drag.
 class TargetList final : public juce::Component
 {
 public:
+    // A reference row. id = its Track Referencing id; 0 = the Assistant's own reference whose file is not in the list
+    // (an older project): shown as "Reference: <name>". current = it is the Assistant's reference.
+    struct RefRow
+    {
+        int id = 0;
+        juce::String name;
+        bool current = false;
+
+        bool operator== (const RefRow& o) const { return id == o.id && name == o.name && current == o.current; }
+        bool operator!= (const RefRow& o) const { return ! (*this == o); }
+    };
+
     TargetList() { setRepaintsOnMouseActivity (true); }
 
     std::function<void (int profile)> onSelect;          // -1 = Auto
+    std::function<void (int referenceId)> onUseReference; // a reference row that is not the Assistant's reference yet
     std::function<void()> onRemoveReference, onAddReference, onSelectReference;
 
-    // referenceSelected: the loaded reference is the target (its row is highlighted instead of the profile's)
-    void set (int selectedProfile, ps::ToneTarget detected, const juce::String& referenceName, bool loading,
+    // referenceSelected: the Assistant's reference is the target (its row is highlighted instead of the profile's)
+    void set (int selectedProfile, ps::ToneTarget detected, const std::vector<RefRow>& references, bool loading,
               bool referenceSelected)
     {
-        if (selectedProfile != selected || detected != detectedTarget || referenceName != refName || loading != refLoading
+        if (selectedProfile != selected || detected != detectedTarget || references != refs || loading != refLoading
             || referenceSelected != refSelected)
         {
             selected = selectedProfile;
             detectedTarget = detected;
-            refName = referenceName;
+            refs = references;
             refLoading = loading;
             refSelected = referenceSelected;
+            scroll = juce::jlimit (0.0f, maxScroll(), scroll);
             repaint();
         }
     }
@@ -142,6 +158,7 @@ public:
 
         listArea = b.reduced (6.0f, 0.0f).withTrimmedBottom (6.0f);
         g.reduceClipRegion (listArea.toNearestInt());
+        const bool useRef = refSelected && hasCurrentReference();
         const int rows = numRows();
         for (int i = 0; i < rows; ++i)
         {
@@ -149,18 +166,33 @@ public:
             if (! row.intersects (listArea))
                 continue;
             const int id = rowId (i);
-            const bool useRef = refSelected && refName.isNotEmpty();
-            const bool isSel = id == kRefRow ? useRef : (! useRef && id == selected);
+            const bool isRef = id <= kRefRowBase;
+            const RefRow* ref = isRef ? &refs[(size_t) (kRefRowBase - id)] : nullptr;
+            const bool isSel = isRef ? (useRef && ref->current) : (id >= -1 && ! useRef && id == selected);
             const bool hover = hoverRow == i;
             if (isSel || hover)
             {
                 g.setColour (isSel ? blend (Col::panelRaised, Col::accent, 0.18f) : Col::panelHover.withAlpha (0.7f));
                 g.fillRoundedRectangle (row.reduced (0.0f, 1.0f), 5.0f);
             }
+            auto textArea = row.reduced (10.0f, 0.0f);
+            if (isRef)
+            {
+                // a lavender dot: a reference track (filled = the Assistant's reference)
+                const auto dot = juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ textArea.getX() + 3.0f, row.getCentreY() });
+                g.setColour (Col::reference.withAlpha (ref->current ? 1.0f : 0.6f));
+                if (ref->current)
+                    g.fillEllipse (dot);
+                else
+                    g.drawEllipse (dot.reduced (0.5f), 1.1f);
+                textArea.removeFromLeft (12.0f);
+                if (ref->current)
+                    textArea.removeFromRight (20.0f);
+            }
             g.setFont (font (12.5f, isSel ? 600 : 400));
             g.setColour (isSel ? Col::text : Col::textDim.brighter (0.1f));
-            g.drawText (rowText (id), row.reduced (10.0f, 0.0f), juce::Justification::centredLeft, true);
-            if (id == kRefRow && refName.isNotEmpty())
+            g.drawText (rowText (id), textArea, juce::Justification::centredLeft, true);
+            if (isRef && ref->current)
             {
                 g.setColour (hover ? Col::text : Col::textSubtle);
                 const auto x = row.withLeft (row.getRight() - 24.0f).withSizeKeepingCentre (8.0f, 8.0f);
@@ -209,14 +241,29 @@ public:
         if (r < 0)
             return;
         const int id = rowId (r);
-        if (id == kRefRow)
+        if (id == kAddRow)
         {
-            if (refName.isNotEmpty() && e.position.x > (float) getWidth() - 34.0f && onRemoveReference != nullptr)
-                onRemoveReference();
-            else if (refName.isNotEmpty() && onSelectReference != nullptr)
-                onSelectReference();
-            else if (refName.isEmpty() && onAddReference != nullptr)
+            if (! refLoading && onAddReference != nullptr)
                 onAddReference();
+            return;
+        }
+        if (id <= kRefRowBase)
+        {
+            const auto& ref = refs[(size_t) (kRefRowBase - id)];
+            if (ref.current && e.position.x > (float) getWidth() - 34.0f)
+            {
+                if (onRemoveReference != nullptr)
+                    onRemoveReference();
+            }
+            else if (ref.current)
+            {
+                if (onSelectReference != nullptr)
+                    onSelectReference();
+            }
+            else if (onUseReference != nullptr)
+            {
+                onUseReference (ref.id);
+            }
             return;
         }
         if (onSelect != nullptr)
@@ -224,17 +271,39 @@ public:
     }
 
 private:
-    static constexpr int kRefRow = -2;
+    static constexpr int kAddRow = -2, kRefRowBase = -100;   // reference row k has the id kRefRowBase - k
 
-    int numRows() const { return 2 + (int) ps::ToneTarget::Count; }
-    int rowId (int row) const { return row == 0 ? -1 : (row == 1 ? kRefRow : row - 2); }
+    bool hasCurrentReference() const
+    {
+        for (const auto& r : refs)
+            if (r.current)
+                return true;
+        return false;
+    }
+
+    int numRows() const { return 2 + (int) refs.size() + (int) ps::ToneTarget::Count; }
+    int rowId (int row) const
+    {
+        const int numRefs = (int) refs.size();
+        if (row == 0)
+            return -1;
+        if (row <= numRefs)
+            return kRefRowBase - (row - 1);
+        if (row == numRefs + 1)
+            return kAddRow;
+        return row - numRefs - 2;
+    }
     juce::String rowText (int id) const
     {
         if (id == -1)
             return "Auto (detected: " + juce::String (ps::assist::targetName (detectedTarget)) + ")";
-        if (id == kRefRow)
-            return refLoading ? juce::String ("Reference: analysing...")
-                              : (refName.isNotEmpty() ? "Reference: " + refName : juce::String ("+ Reference track..."));
+        if (id <= kRefRowBase)
+        {
+            const auto& r = refs[(size_t) (kRefRowBase - id)];
+            return (r.id == 0 ? "Reference: " : "Ref: ") + r.name;
+        }
+        if (id == kAddRow)
+            return refLoading ? juce::String ("Reference: analysing...") : juce::String ("+ Reference track...");
         return ps::assist::targetName ((ps::ToneTarget) id);
     }
     juce::Rectangle<float> rowBounds (int i) const
@@ -252,7 +321,7 @@ private:
 
     int selected = -1, hoverRow = -1;
     ps::ToneTarget detectedTarget = ps::ToneTarget::Balanced;
-    juce::String refName;
+    std::vector<RefRow> refs;
     bool refLoading = false, refSelected = false, plusHover = false;
     float scroll = 0.0f;
     juce::Rectangle<float> plusArea, listArea;
@@ -567,8 +636,10 @@ struct AssistantPanel::Impl
         // Custom page
         targets.onSelect = [this] (int profile) { setProfile (profile); };
         targets.onAddReference = [this] { chooseReference(); };
-        targets.onRemoveReference = [this] { assistant.clearReference(); };
+        targets.onRemoveReference = [this] { assistant.clearReference(); };   // (stays in Track Referencing's list)
         targets.onSelectReference = [this] { selectReference(); };
+        targets.onUseReference = [this] (int id) { useReference (id); };
+        resultsTargets.onUseReference = targets.onUseReference;
         resultsTargets.onSelect = targets.onSelect;
         resultsTargets.onSelectReference = targets.onSelectReference;
         resultsTargets.onAddReference = targets.onAddReference;
@@ -742,15 +813,50 @@ struct AssistantPanel::Impl
 
     void chooseReference()
     {
-        chooser = std::make_unique<juce::FileChooser> ("Reference track", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3");
+        chooser = std::make_unique<juce::FileChooser> ("Reference track", juce::File(),
+                                                       psplug::TrackReferencing::getSupportedWildcard());
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [this, safe = juce::Component::SafePointer<AssistantPanel> (&owner)] (const juce::FileChooser& fc) {
                                   if (safe == nullptr)
                                       return;
                                   const auto f = fc.getResult();
-                                  if (f.existsAsFile() && ! assistant.loadReferenceFile (f))
-                                      ctx.notify ("That reference file could not be read");
+                                  if (f.existsAsFile())
+                                      useReferenceFile (f);
                               });
+    }
+
+    // A reference for the Assistant goes into Track Referencing's list (one list, one analysis per file); it becomes
+    // the target when its analysis is done (at once when the file is already analysed).
+    void useReferenceFile (const juce::File& f)
+    {
+        auto& refs = proc.getTrackReferencing();
+        const int id = refs.addReference (f, refs.getSelectedId() == 0);
+        if (id == 0)
+        {
+            ctx.notify ("The reference list is full (10 tracks): remove one on the Reference page first");
+            return;
+        }
+        useReference (id);
+    }
+
+    void useReference (int id)
+    {
+        auto& refs = proc.getTrackReferencing();
+        const auto target = refs.getAssistantTarget (id);
+        if (target.valid)
+        {
+            assistant.setReference (target);
+            return;
+        }
+        for (const auto& e : refs.getInfo().entries)
+        {
+            if (e.id != id)
+                continue;
+            if (e.state == psplug::TrackReferencing::State::Error || e.state == psplug::TrackReferencing::State::Missing)
+                ctx.notify ("That reference file could not be read (" + e.error + ")");
+            else
+                assistant.awaitReference (e.file.getFullPathName(), e.name);
+        }
     }
 
     //==========================================================================
@@ -791,10 +897,10 @@ struct AssistantPanel::Impl
 
         const auto s = assistant.getSettings();
         const auto ref = assistant.getReference();
-        const auto refName = ref.valid ? juce::String (ref.name) : juce::String();
-        targets.set (s.engine.profile, assistant.getDetectedTarget(), refName, assistant.isLoadingReference(),
+        updateReferenceRows (ref);
+        targets.set (s.engine.profile, assistant.getDetectedTarget(), referenceRows, assistant.isLoadingReference(),
                      s.engine.useReference);
-        resultsTargets.set (s.engine.profile, assistant.getDetectedTarget(), refName, assistant.isLoadingReference(),
+        resultsTargets.set (s.engine.profile, assistant.getDetectedTarget(), referenceRows, assistant.isLoadingReference(),
                             s.engine.useReference);
 
         for (size_t i = 0; i < modulePills.size(); ++i)
@@ -892,6 +998,33 @@ struct AssistantPanel::Impl
         inputLufs = assistant.getInputLufs();
         outputLufs = proc.getChain().getIoMeters().outputShortTermLufs.load();
         owner.repaint();
+    }
+
+    // The target list's reference rows: every analysed reference of Track Referencing's list, the Assistant's own
+    // reference highlighted (matched by path); an Assistant reference whose file is not in the list (an older
+    // project) still shows as one row. Rebuilt only when the list or the Assistant's reference changes.
+    void updateReferenceRows (const ps::assist::ReferenceTarget& ref)
+    {
+        auto& refs = proc.getTrackReferencing();
+        const int version = refs.getInfoVersion();
+        const juce::String key = ref.valid ? juce::String (ref.path) + "|" + juce::String (ref.name) : juce::String();
+        if (version == rowsInfoVersion && key == rowsReferenceKey)
+            return;
+        rowsInfoVersion = version;
+        rowsReferenceKey = key;
+
+        referenceRows.clear();
+        bool found = false;
+        for (const auto& e : refs.getInfo().entries)
+        {
+            if (e.state != psplug::TrackReferencing::State::Ready)
+                continue;
+            const bool current = ref.valid && juce::String (ref.path) == e.file.getFullPathName();
+            found = found || current;
+            referenceRows.push_back ({ e.id, e.name, current });
+        }
+        if (ref.valid && ! found)
+            referenceRows.insert (referenceRows.begin(), { 0, juce::String (ref.name), true });
     }
 
     Macro macroOf (MacroControl* c) const
@@ -1338,6 +1471,9 @@ struct AssistantPanel::Impl
     std::unique_ptr<MacroControl> toneMatch, loudMacro, tilt;
     std::vector<std::unique_ptr<MacroControl>> extras, widths;
     std::unique_ptr<juce::FileChooser> chooser;
+    std::vector<TargetList::RefRow> referenceRows;
+    int rowsInfoVersion = -1;
+    juce::String rowsReferenceKey;
 
     juce::Rectangle<int> titleArea, customArea, listenArea, toneArea, loudArea, extrasArea, widthArea, bandArea, loudReadout;
     ps::ToneTarget bandTarget = ps::ToneTarget::Balanced;

@@ -1,6 +1,7 @@
 #include "ui/HeaderBar.h"
 
 #include "ui/Controls.h"
+#include "plugin/TrackReferencing.h"
 #include "plugin/import/XmlPresetImport.h"
 
 #include <map>
@@ -163,10 +164,13 @@ private:
 };
 
 //==============================================================================
-// (phase 3) Assistant | Chain view switch: two icon segments (sparkle = the Assistant page, tiles = the module panels).
-class ViewSwitch final : public juce::Component, public juce::SettableTooltipClient
+// (phase 3) Assistant | Chain | Reference view switch: three icon segments (sparkle = the Assistant page, tiles = the
+// module panels, two overlapping rings = the Track Referencing page).
+class ViewSwitch final : public juce::Component, public juce::TooltipClient
 {
 public:
+    enum View { assistantView = 0, chainView = 1, referenceView = 2 };
+
     ViewSwitch()
     {
         setWantsKeyboardFocus (false);
@@ -174,14 +178,26 @@ public:
         setRepaintsOnMouseActivity (true);
     }
 
-    std::function<void (bool assistant)> onSwitch;
+    std::function<void (int view)> onSwitch;
 
-    void set (bool assistant)
+    void set (int view)
     {
-        if (assistant != assistantOn)
+        if (view != current)
         {
-            assistantOn = assistant;
+            current = view;
             repaint();
+        }
+    }
+
+    juce::String getTooltip() override
+    {
+        switch (segmentAt (getMouseXYRelative().toFloat().x))
+        {
+            case assistantView: return "Assistant: build a master from what it hears, then shape it with a few macros.";
+            case chainView:     return "Chain: the modules of your master, one panel each.";
+            case referenceView: return "Reference: compare your master with songs you like, at the same loudness, with "
+                                       "loops and plain-language tips. Tip: drop audio files anywhere on PureSheen.";
+            default:            return {};
         }
     }
 
@@ -191,14 +207,15 @@ public:
         drawChip (g, b, b.getHeight() * 0.5f, Colours::background.darker (0.1f), Colours::outline);
         const auto mouse = getMouseXYRelative().toFloat();
         const bool hover = isMouseOver (true);
+        const float segW = b.getWidth() / 3.0f;
 
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < 3; ++i)
         {
-            const bool isAssistant = i == 0;
-            auto seg = b.withWidth (b.getWidth() * 0.5f).translated (isAssistant ? 0.0f : b.getWidth() * 0.5f, 0.0f).reduced (2.0f);
-            const bool on = isAssistant == assistantOn;
+            auto seg = juce::Rectangle<float> (b.getX() + segW * (float) i, b.getY(), segW, b.getHeight()).reduced (2.0f);
+            const bool on = i == current;
+            const auto tint = i == referenceView ? Colours::reference : Colours::accent;
             if (on)
-                drawChip (g, seg, seg.getHeight() * 0.5f, blend (Colours::panelRaised, Colours::accent, 0.22f), Colours::accent.withAlpha (0.7f));
+                drawChip (g, seg, seg.getHeight() * 0.5f, blend (Colours::panelRaised, tint, 0.22f), tint.withAlpha (0.7f));
             else if (hover && seg.contains (mouse))
             {
                 g.setColour (Colours::panelHover.withAlpha (0.8f));
@@ -206,8 +223,8 @@ public:
             }
 
             const auto c = seg.getCentre();
-            g.setColour (on ? Colours::accent.brighter (0.3f) : Colours::textDim);
-            if (isAssistant)
+            g.setColour (on ? tint.brighter (0.3f) : Colours::textDim);
+            if (i == assistantView)
             {
                 juce::Path p;
                 for (int k = 0; k < 4; ++k)
@@ -219,10 +236,24 @@ public:
                 p.addEllipse (juce::Rectangle<float> (2.6f, 2.6f).withCentre (c.translated (5.5f, -5.0f)));
                 g.fillPath (p);
             }
-            else
+            else if (i == chainView)
             {
                 for (int k = 0; k < 3; ++k)
                     g.fillRoundedRectangle (juce::Rectangle<float> (3.6f, 9.0f).withCentre (c.translated (-4.6f + 4.6f * (float) k, 0.0f)), 1.0f);
+            }
+            else
+            {
+                // Two overlapping rings (your master and the reference) with the overlap filled
+                const auto left = juce::Rectangle<float> (10.0f, 10.0f).withCentre (c.translated (-2.7f, 0.0f));
+                const auto right = left.translated (5.4f, 0.0f);
+                g.drawEllipse (left, 1.4f);
+                g.drawEllipse (right, 1.4f);
+                juce::Path lens, clip;
+                lens.addEllipse (left);
+                clip.addEllipse (right);
+                juce::Graphics::ScopedSaveState state (g);
+                g.reduceClipRegion (clip);
+                g.fillPath (lens);
             }
         }
     }
@@ -231,13 +262,82 @@ public:
     {
         if (! isLeftClick (e) || ! getLocalBounds().contains (e.getPosition()) || onSwitch == nullptr)
             return;
-        onSwitch (e.position.x < (float) getWidth() * 0.5f);
+        onSwitch (segmentAt (e.position.x));
     }
 
     void mouseMove (const juce::MouseEvent&) override { repaint(); }
 
 private:
-    bool assistantOn = false;
+    int segmentAt (float x) const { return juce::jlimit (0, 2, (int) (x * 3.0f / (float) juce::jmax (1, getWidth()))); }
+
+    int current = chainView;
+};
+
+//==============================================================================
+// (phase 3) REF: the always-visible A/B listen toggle of Track Referencing. Fills with lavender while the reference is
+// heard (it follows the A/B fade); dimmed when no reference is ready to play.
+class RefListenButton final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    RefListenButton()
+    {
+        setWantsKeyboardFocus (false);
+        setMouseClickGrabsKeyboardFocus (false);
+        setRepaintsOnMouseActivity (true);
+    }
+
+    std::function<void()> onClick;
+
+    void set (float listenPosition, bool available)
+    {
+        if (std::abs (listenPosition - position) > 0.004f || available != isAvailable)
+        {
+            position = listenPosition;
+            isAvailable = available;
+            repaint();
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced (0.5f, 9.0f);
+        const bool hover = isMouseOver (true) && isEnabled();
+        const float t = juce::jlimit (0.0f, 1.0f, position);
+        auto fill = blend (hover ? Colours::panelHover : Colours::panelRaised, Colours::reference, 0.85f * t);
+        auto outline = blend (Colours::outline.brighter (hover ? 0.2f : 0.0f), Colours::reference, t);
+        if (! isAvailable && t < 0.01f)
+        {
+            fill = fill.withMultipliedAlpha (0.5f);
+            outline = outline.withMultipliedAlpha (0.6f);
+        }
+        drawChip (g, b, b.getHeight() * 0.5f, fill, outline);
+
+        // A small ring left of the text, filled while the reference is heard
+        const auto f = font (11.0f, 700).withExtraKerningFactor (0.08f);
+        const float textW = textWidth (f, "REF");
+        const float x0 = b.getCentreX() - (textW + 11.0f) * 0.5f;
+        const auto dot = juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ x0 + 3.0f, b.getCentreY() });
+        const bool heard = t > 0.5f;
+        g.setColour (heard ? Colours::background : Colours::reference.withAlpha (isAvailable ? 0.9f : 0.35f));
+        if (heard)
+            g.fillEllipse (dot);
+        else
+            g.drawEllipse (dot.reduced (0.5f), 1.2f);
+        g.setFont (f);
+        g.setColour (heard ? Colours::background : (isAvailable ? Colours::text : Colours::textFaint));
+        g.drawText ("REF", juce::Rectangle<float> (x0 + 11.0f, b.getY(), textW + 4.0f, b.getHeight()),
+                    juce::Justification::centredLeft, false);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (isLeftClick (e) && isEnabled() && getLocalBounds().contains (e.getPosition()) && onClick != nullptr)
+            onClick();
+    }
+
+private:
+    float position = 0.0f;
+    bool isAvailable = false;
 };
 } // namespace
 
@@ -251,8 +351,18 @@ struct HeaderBar::Impl
         next.setTooltip ("Next preset");
         next.onClick = [this] { proc.loadNextPreset (1); update(); };
         presetName.onOpen = [this] { showPresetMenu(); };
-        view.setTooltip ("Assistant: build a master from what it hears, then shape it with a few macros. Chain: the modules.");
-        view.onSwitch = [this] (bool assistant) { ctx.select (assistant ? kAssistantSelection : kChainSelection); update(); };
+        view.onSwitch = [this] (int v)
+        {
+            ctx.select (v == ViewSwitch::assistantView ? kAssistantSelection
+                                                       : (v == ViewSwitch::referenceView ? kReferenceSelection : kChainSelection));
+            update();
+        };
+        refListen.onClick = [this]
+        {
+            auto& refs = proc.getTrackReferencing();
+            refs.setListening (! refs.isListening());
+            update();
+        };
         save.setTooltip ("Save the whole chain and every setting as a preset");
         save.onClick = [this] { savePresetAs(); };
         presetMenu.setTooltip ("Preset options");
@@ -276,7 +386,7 @@ struct HeaderBar::Impl
         help.setTooltip ("How to use PureSheen");
         help.onClick = [this] { ctx.toggleHelp(); };
 
-        for (juce::Component* comp : std::initializer_list<juce::Component*> { &view, &prev, &presetName, &next, &save, &presetMenu,
+        for (juce::Component* comp : std::initializer_list<juce::Component*> { &view, &refListen, &prev, &presetName, &next, &save, &presetMenu,
                                                                             &undo, &redo, &history, &options, &help })
             owner.addAndMakeVisible (comp);
 
@@ -545,6 +655,7 @@ struct HeaderBar::Impl
         menu.addSeparator();
         menu.addItem (3200, "Show tooltips", true, o.showTooltips);
         menu.addItem (3201, "Dim bypassed modules", true, o.dimBypassed);
+        menu.addItem (3202, "Show the reference in the analysers", true, o.showReferenceSpectrum);
 
         options.setToggleState (true, juce::dontSendNotification);
         showMenu (menu, options, [this] (int r)
@@ -582,6 +693,7 @@ struct HeaderBar::Impl
             else if (r >= 3100 && r < 3105) n.historyDepth = depthL[r - 3100];
             else if (r == 3200)             n.showTooltips = ! n.showTooltips;
             else if (r == 3201)             n.dimBypassed = ! n.dimBypassed;
+            else if (r == 3202)             n.showReferenceSpectrum = ! n.showReferenceSpectrum;
 
             ctx.applyOptions (n);
         });
@@ -595,12 +707,50 @@ struct HeaderBar::Impl
         redo.setEnabled (proc.canRedo());
         history.setToggleState (ctx.isHistoryOpen(), juce::dontSendNotification);
         help.setToggleState (ctx.isHelpOpen(), juce::dontSendNotification);
-        view.set (ctx.getSelection() == kAssistantSelection);
+        const int sel = ctx.getSelection();
+        view.set (sel == kAssistantSelection ? ViewSwitch::assistantView
+                                             : (sel == kReferenceSelection ? ViewSwitch::referenceView : ViewSwitch::chainView));
+        updateRefListen();
 
         const int active = proc.getActiveSnapshot();
 
         for (int i = 0; i < PureSheenProcessor::kNumSnapshots; ++i)
             snapshots[(size_t) i]->set (proc.hasSnapshot (i), active == i);
+    }
+
+    // REF pill: on while the reference is heard; usable when the selected reference is ready (or to switch back).
+    void updateRefListen()
+    {
+        auto& refs = proc.getTrackReferencing();
+        const auto info = refs.getInfo();
+        const auto* sel = info.selected >= 0 && info.selected < (int) info.entries.size() ? &info.entries[(size_t) info.selected]
+                                                                                          : nullptr;
+        const bool ready = sel != nullptr && sel->state == psplug::TrackReferencing::State::Ready;
+        const bool listening = refs.isListening();
+        refListen.setEnabled (ready || listening);
+        refListen.set (refs.getListenPosition(), ready);
+
+        juce::String tip;
+        if (sel == nullptr)
+            tip = "REF: listen to a reference track instead of your master. Add one first: drop an audio file on "
+                  "PureSheen, or open the Reference page.";
+        else if (! ready)
+            tip = "REF: listen to the reference \"" + sel->name + "\" instead of your master (once it is loaded).";
+        else
+        {
+            tip = listening ? "You are hearing the reference \"" + sel->name + "\". Click to go back to your master."
+                            : "Click to hear the reference \"" + sel->name + "\" instead of your master.";
+            const float gainDb = refs.getMatchGainDb();
+            if (refs.getSettings().levelMatch == ps::LevelMatch::Off)
+                tip << " Level match is off: the reference plays at its own level.";
+            else if (std::abs (gainDb) < 0.05f)
+                tip << " It plays at the same loudness as your master.";
+            else
+                tip << " Reference turned " << (gainDb < 0.0f ? "down " : "up ") << juce::String (std::abs (gainDb), 1)
+                    << " dB to match your master.";
+        }
+        if (tip != refListen.getTooltip())
+            refListen.setTooltip (tip);
     }
 
     void paintBrand (juce::Graphics& g) const
@@ -636,6 +786,7 @@ struct HeaderBar::Impl
     IconButton next { "Next preset", IconButton::Icon::next };
     PresetName presetName;
     ViewSwitch view;
+    RefListenButton refListen;
     IconButton save { "Save preset", IconButton::Icon::save };
     IconButton presetMenu { "Preset options", IconButton::Icon::options };
     IconButton undo { "Undo", IconButton::Icon::undo };
@@ -713,8 +864,8 @@ void HeaderBar::resized()
     d.showWordmark = true;
     d.showSubtitle = true;
     auto brandWidth = [&] { return 30 + (d.showWordmark ? 9 + wordW + (d.showSubtitle ? subW : 0) : 0); };
-    const int viewW = 72;
-    auto required = [&] { return brandWidth() + 6 * groupGap + viewW + presetMin + presetTools + middleTools + fixedRight; };
+    const int viewW = 102, refW = 50;
+    auto required = [&] { return brandWidth() + 6 * groupGap + viewW + 6 + refW + presetMin + presetTools + middleTools + fixedRight; };
 
     if (required() > r.getWidth()) d.showSubtitle = false;
     if (required() > r.getWidth()) groupGap = 10;
@@ -726,6 +877,8 @@ void HeaderBar::resized()
     d.separators.push_back (r.getX());
     r.removeFromLeft (groupGap);
     d.view.setBounds (r.removeFromLeft (viewW));
+    r.removeFromLeft (6);
+    d.refListen.setBounds (r.removeFromLeft (refW));
     r.removeFromLeft (groupGap);
     d.separators.push_back (r.getX());
     r.removeFromLeft (groupGap);

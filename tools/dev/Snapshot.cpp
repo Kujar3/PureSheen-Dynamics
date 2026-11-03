@@ -11,6 +11,8 @@
 #include "plugin/PluginProcessor.h"
 #include "ui/AssistantPanel.h"                       // assistant block
 #include "ui/EditorContext.h"                        // assistant block
+#include "plugin/TrackReferencing.h"                 // reference block
+#include "ui/ReferencePanel.h"                       // reference block
 #include "plugin/import/XmlPresetImport.h"   // importer block
 #include "ui/Controls.h"                      // importer block (MenuChip)
 #include "ui/ChainStrip.h"
@@ -320,6 +322,64 @@ juce::String snapshotChainFile (const juce::StringArray& chain)
     return text + "</Root>\n";
 }
 
+// (reference block) A synthetic, music-like reference track: the snapshot song with sections (intro, build, drop,
+// break, drop), coloured darker or brighter, driven into a soft clipper like a loud master. Written as a 24-bit WAV.
+bool writeSyntheticReference (const juce::File& f, double seconds, int variant)
+{
+    SongGenerator song;
+    song.rng.state = 0x9e3779b9u + (juce::uint32) variant * 7919u;
+    const int total = (int) (seconds * kSampleRate);
+    juce::AudioBuffer<float> audio (2, total);
+    song.render (audio.getWritePointer (0), audio.getWritePointer (1), total);
+
+    {
+        // Width: the left channel above ~300 Hz, delayed 9 ms, as a side signal (mids and highs wider, the bass mono)
+        auto* l = audio.getWritePointer (0);
+        auto* r = audio.getWritePointer (1);
+        const int delay = (int) (0.009 * kSampleRate);
+        const float hpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 300.0f / (float) kSampleRate);
+        std::vector<float> high ((size_t) total);
+        float lowL = 0.0f;
+        for (int i = 0; i < total; ++i)
+        {
+            lowL += hpA * (l[i] - lowL);
+            high[(size_t) i] = l[i] - lowL;
+        }
+        const float amount = variant == 1 ? 0.18f : 0.32f;
+        for (int i = delay; i < total; ++i)
+        {
+            const float side = amount * high[(size_t) (i - delay)];
+            l[i] += side;
+            r[i] -= side;
+        }
+    }
+
+    const float a = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * (variant == 1 ? 2500.0f : 3500.0f) / (float) kSampleRate);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        auto* x = audio.getWritePointer (ch);
+        float lp = 0.0f;
+        for (int i = 0; i < total; ++i)
+        {
+            const double t = (double) i / kSampleRate;
+            const float section = t < 8.0 ? 0.45f : (t < 16.0 ? (float) (0.45 + 0.4 * (t - 8.0) / 8.0)
+                                                  : (t < 32.0 ? 1.0f : (t < 40.0 ? 0.5f : 1.0f)));
+            lp += a * (x[i] - lp);
+            float v = variant == 1 ? lp * 1.3f : x[i] + 0.8f * (x[i] - lp);   // 1: warm and dark, else bright
+            if (variant == 2)
+                v *= 1.25f;                                                     // 2: hotter
+            x[i] = std::tanh (2.2f * section * v) * 0.89f;
+        }
+    }
+
+    f.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::OutputStream> out (f.createOutputStream().release());
+    const auto options = juce::AudioFormatWriterOptions().withSampleRate (kSampleRate).withNumChannels (2).withBitsPerSample (24);
+    auto writer = wav.createWriterFor (out, options);
+    return writer != nullptr && writer->writeFromAudioSampleBuffer (audio, 0, total);
+}
+
 template <typename T>
 T* findChild (juce::Component& root)
 {
@@ -366,6 +426,184 @@ int runSnapshot (const juce::File& outputDir)
 
     // 01: default chain
     ok &= writePng (*editor, file ("01_default_1180x720"));
+
+    // ---- BEGIN reference (phase 3): the Reference page (empty, loading, loaded with loops A B C and the comparison at
+    //      three sizes, the header's REF while the reference is heard, a missing file), the reference overlay on EQ 1.
+    //      Synthetic reference WAVs only (written to a temp folder, deleted at the end).
+    // Set PURESHEEN_SNAPSHOT_ONLY=reference to stop after this block.
+    {
+        juce::MemoryBlock stateBefore;
+        proc.getStateInformation (stateBefore);
+        auto& refs = proc.getTrackReferencing();
+        using TR = psplug::TrackReferencing;
+
+        const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("PureSheenSnapshotRefs");
+        folder.deleteRecursively();
+        folder.createDirectory();
+        const juce::File songs[] { folder.getChildFile ("Synthetic Bright Pop.wav"), folder.getChildFile ("Synthetic Warm Groove.wav"),
+                                   folder.getChildFile ("Synthetic Club Master.wav") };
+        for (int i = 0; i < 3; ++i)
+            ok &= writeSyntheticReference (songs[i], 48.0, i);
+
+        // Pumps the editor (the processor's housekeeping runs in updateNow) until nothing loads or is measured.
+        auto settle = [&] (double maxSeconds) {
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            while (juce::Time::getMillisecondCounterHiRes() - t0 < maxSeconds * 1000.0)
+            {
+                rig.play (*editor, 2);
+                bool busy = ! refs.waitUntilIdle (0);
+                for (const auto& e : refs.getInfo().entries)
+                    busy = busy || e.state == TR::State::Loading || e.analysing;
+                if (! busy)
+                    return true;
+                pumpMessages (5);
+            }
+            return false;
+        };
+
+        struct ShotSize { int w, h; const char* name; };
+        const ShotSize sizes[] = { { 980, 600, "980x600" }, { 1180, 720, "1180x720" }, { 1800, 1100, "1800x1100" } };
+
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule (ps::ui::kReferenceSelection);
+        rig.play (*editor, 4);
+        ok &= writePng (*editor, file ("16_reference_empty_1180x720"));
+        editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+        rig.play (*editor, 2);
+        ok &= writePng (*editor, file ("16_reference_empty_980x600"));
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+
+        const int idBright = refs.addReference (songs[0]);
+        refs.addReference (songs[1], false);
+        refs.addReference (songs[2], false);
+        editor->updateNow();
+        ok &= writePng (*editor, file ("16_reference_loading_1180x720"));
+
+        const bool loaded = settle (60.0);
+        std::cout << (loaded ? "reference: three references loaded\n" : "FAILED: the references did not load\n");
+        ok &= loaded;
+
+        // Loops A, B and C on the selected reference (C active: the comparison measures that part)
+        refs.setLoop (idBright, 0, 4.0, 12.0);
+        refs.setLoop (idBright, 1, 34.0, 40.0);
+        refs.setLoop (idBright, 2, 18.0, 30.0);
+        ok &= settle (30.0);
+        rig.play (*editor, 150);   // 5 s of the master: the comparison becomes valid
+        ok &= settle (30.0);
+        rig.play (*editor, 30);
+
+        const auto comparison = refs.getComparison();
+        std::cout << (comparison.valid() ? "reference: the comparison is valid (" : "FAILED: no valid comparison (")
+                  << comparison.hints.size() << " hints, match " << juce::String (refs.getMatchGainDb(), 1) << " dB)\n";
+        ok &= comparison.valid();
+
+        auto* page = findChild<ps::ui::ReferencePanel> (*editor);
+        ok &= page != nullptr;
+        for (const auto& sz : sizes)
+        {
+            editor->setSize (sz.w, sz.h);
+            rig.play (*editor, 12);
+            ok &= writePng (*editor, file (juce::String ("16_reference_loaded_") + sz.name));
+        }
+
+        // The drop overlay (files dragged over the editor): audio files, then a file that is not audio
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        rig.play (*editor, 2);
+        editor->fileDragEnter ({ songs[1].getFullPathName() }, 400, 300);
+        ok &= writePng (*editor, file ("16_reference_drop_1180x720"));
+        editor->fileDragExit ({});
+        editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+        rig.play (*editor, 2);
+        editor->fileDragEnter ({ folder.getChildFile ("notes.txt").getFullPathName() }, 400, 300);
+        ok &= writePng (*editor, file ("16_reference_drop_unsupported_980x600"));
+        editor->fileDragExit ({});
+
+        // The Assistant's target list: one row per analysed reference, the Assistant's reference highlighted
+        {
+            auto& assistant = proc.getAssistant();
+            assistant.setReference (refs.getAssistantTarget (idBright));
+            editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+            editor->selectModule (ps::ui::kAssistantSelection);
+            if (auto* assistantPage = findChild<ps::ui::AssistantPanel> (*editor))
+                assistantPage->showPage (ps::ui::AssistantPanel::Page::Custom);
+            rig.play (*editor, 4);
+            ok &= writePng (*editor, file ("16_reference_assistant_targets_1180x720"));
+            assistant.clearReference();
+            editor->selectModule (ps::ui::kReferenceSelection);
+            rig.play (*editor, 4);
+        }
+
+        // The other comparison views where they are tabs, and an armed (empty) loop letter
+        if (page != nullptr)
+        {
+            editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+            page->armLoop (3);
+            using View = ps::ui::RefComparison::View;
+            const std::initializer_list<std::pair<View, const char*>> views {
+                { View::tonal, "tonal" }, { View::loudness, "loudness" }, { View::stereo, "stereo" } };
+            for (const auto& [view, name] : views)
+            {
+                page->showComparisonView (view);
+                rig.play (*editor, 6);
+                ok &= writePng (*editor, file (juce::String ("16_reference_loaded_") + name + "_980x600"));
+            }
+            page->armLoop (-1);
+            page->showComparisonView (ps::ui::RefComparison::View::hints);
+            editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+            page->showComparisonView (ps::ui::RefComparison::View::stereo);
+            rig.play (*editor, 6);
+            ok &= writePng (*editor, file ("16_reference_loaded_stereo_1180x720"));
+            page->showComparisonView (ps::ui::RefComparison::View::hints);
+        }
+
+        // Listening to the reference: the header's REF and the page's switch show it
+        refs.setListening (true);
+        rig.play (*editor, 20);
+        const bool heard = refs.getListenPosition() > 0.99f && refs.isReferenceSounding();
+        std::cout << (heard ? "reference: the reference is heard\n" : "FAILED: the reference is not heard\n");
+        ok &= heard;
+        ok &= writePng (*editor, file ("16_reference_listening_1180x720"));
+        editor->setSize (PureSheenEditor::kMinWidth, PureSheenEditor::kMinHeight);
+        rig.play (*editor, 4);
+        ok &= writePng (*editor, file ("16_reference_listening_980x600"));
+        refs.setListening (false);
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+
+        // A reference whose file is missing (as after opening a project on another computer)
+        const int idMissing = refs.addReference (folder.getChildFile ("Moved Away.wav"));
+        ok &= settle (10.0);
+        rig.play (*editor, 4);
+        bool missing = false;
+        for (const auto& e : refs.getInfo().entries)
+            missing = missing || (e.id == idMissing && e.state == TR::State::Missing);
+        std::cout << (missing ? "reference: a missing file shows as missing\n" : "FAILED: the missing file is not Missing\n");
+        ok &= missing;
+        ok &= writePng (*editor, file ("16_reference_missing_1180x720"));
+
+        // The reference overlay on the EQ 1 analyser
+        refs.select (idBright);
+        ok &= settle (20.0);
+        editor->selectModule (ps::ui::kChainSelection);
+        rig.play (*editor, 30);
+        ok &= writePng (*editor, file ("16_reference_overlay_eq1_1180x720"));
+        ok &= checkNoFocus (*editor);
+
+        for (const auto& e : refs.getInfo().entries)
+            refs.removeReference (e.id);
+        proc.setStateInformation (stateBefore.getData(), (int) stateBefore.getSize());
+        editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule ((int) ps::ModuleType::Equalizer1);
+        rig.play (*editor, 4);
+        ok &= refs.waitUntilIdle (5000);
+        folder.deleteRecursively();
+
+        if (juce::SystemStats::getEnvironmentVariable ("PURESHEEN_SNAPSHOT_ONLY", {}) == "reference")
+        {
+            std::cout << (ok ? "snapshots OK (reference only)\n" : "snapshots FAILED\n");
+            return ok ? 0 : 1;
+        }
+    }
+    // ---- END reference
 
     // ---- BEGIN assistant (phase 3): the Assistant page (start, custom, listening, results at three sizes), a real
     //      listen of the synthetic song, the default card applied as one step, a macro drag as one step.

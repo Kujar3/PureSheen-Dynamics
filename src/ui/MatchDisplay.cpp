@@ -839,6 +839,7 @@ struct MatchDisplay::Impl
             g.beginTransparencyLayer (0.4f);
             post.draw (g, specAxis, kAnalyserMinDb, kAnalyserMaxDb, Colours::input, options.spectrumFill);
             g.endTransparencyLayer();
+            services.drawReferenceSpectrum (g, specAxis, kAnalyserMinDb, kAnalyserMaxDb);   // (Track Referencing)
         }
 
         paintRegion (g, fx);

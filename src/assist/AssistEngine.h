@@ -51,11 +51,12 @@ struct Settings
 
 // A reference track as a target: its tonal balance (relative to pink, as Analysis::octaveDb), its width per processing
 // band and its loudness. Filled from an Analysis of the reference audio (referenceFromAnalysis); Track Referencing
-// will fill the same struct from its selected reference.
+// keeps one per reference in its list (one analysis per file) and hands it to the Assistant.
 struct ReferenceTarget
 {
     bool valid = false;
     std::string name;
+    std::string path;              // the reference file (links the target to its Track Referencing entry)
     Curve octaveDb {};
     std::array<float, kProcBands> widthPct {};
     float integratedLufs = kNoValue;

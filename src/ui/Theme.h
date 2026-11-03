@@ -34,7 +34,14 @@ namespace Colours
     inline const juce::Colour output       { 0xff7ad3b8 };   // post-processing (brand mint)
     inline const juce::Colour gainReduction{ 0xfff1b562 };   // GR traces and meters
     inline const juce::Colour sideChannel  { 0xffaa8cf2 };   // channel B (Side / Right) curves and nodes
+
+    // (phase 3) Track Referencing: the reference track (waveform, curves, the REF listen pill), a soft pink-leaning
+    // lavender kept apart from sideChannel's blue violet.
+    inline const juce::Colour reference    { 0xffd4aeef };
 }
+
+// (phase 3) Colour of loop A..E (letter 0..4) of a reference track; out-of-range letters get the reference colour.
+juce::Colour loopColour (int letter);
 
 // Inter from embedded binary data. weight: 400 (regular), 600 (semibold), 700 (bold). Falls back to the system sans.
 juce::Font font (float height, int weight = 400);

@@ -19,6 +19,9 @@
 //   PureSheenDev importkey "<name>" ...  -> the importer's template / key of a ParamID or section name
 //   PureSheenDev importtest              -> importer text-path and processor checks
 //   PureSheenDev assist ...              -> the Assistant from the command line (AssistTool.cpp)
+//   PureSheenDev reference <master> <ref> [--chain default] [--loop s e] [--listen out.wav]
+//                                         -> Track Referencing on real files: profiles, comparison, hints, A/B level
+//                                            (RefTool.cpp)
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
@@ -30,6 +33,7 @@ int runImport (const juce::StringArray& args);                        // ImportT
 int runImportKey (const juce::StringArray& args);                     // ImportTool.cpp
 int runImportTests();                                                 // ImportTool.cpp
 int runAssist (const juce::StringArray& args);                        // AssistTool.cpp
+int runReference (const juce::StringArray& args);                     // RefTool.cpp
 
 int main (int argc, char** argv)
 {
@@ -83,12 +87,21 @@ int main (int argc, char** argv)
     if (command == "importtest")
         return runImportTests();
 
+    if (command == "reference")
+    {
+        juce::StringArray args;
+        for (int i = 2; i < argc; ++i)
+            args.add (juce::String::fromUTF8 (argv[i]));
+        return runReference (args);
+    }
+
     std::cout << "usage: PureSheenDev selftest | snapshot <outDir> | render <in.wav> <out.wav> [--preset <name>]\n"
                  "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [--chain <prefix,...>]\n"
                  "       [--import <file.xml>] [id=value ...]\n"
                  "       icon <out.png> [size]\n"
                  "       import <file-or-folder> ... [--verbose] [--values] [--no-audio] | import --defaults\n"
                  "       importkey \"<ParamID>\" ... | importtest\n"
-                 "       assist <in.wav> [--features] [--seconds s] [--profile n] [--render out.wav] ... | assist --targets\n";
+                 "       assist <in.wav> [--features] [--seconds s] [--profile n] [--render out.wav] ... | assist --targets\n"
+                 "       reference <master> <reference> [--chain default] [--loop <s> <e>] [--listen <out.wav>]\n";
     return 2;
 }

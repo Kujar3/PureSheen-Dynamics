@@ -9,6 +9,7 @@
 #include "plugin/MatchEqState.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/PluginState.h"
+#include "plugin/TrackReferencing.h"
 #include "ui/ImagerPanel.h"
 #include "ui/ExciterPanel.h"
 #include "ui/MultibandDisplay.h"
@@ -2674,6 +2675,642 @@ void testThreads()
 } // namespace
 
 //==============================================================================
+//==============================================================================
+// Track Referencing (phase 3): the reference list, playback, level matching, loops, state and the Assistant link.
+struct RefFile
+{
+    juce::File file;
+    std::vector<float> l, r;
+};
+
+long long floorMod (long long value, long long modulus)
+{
+    const auto r = value % modulus;
+    return r < 0 ? r + modulus : r;
+}
+
+RefFile writeReference (const juce::String& name, double rate, double seconds, const InputFn& fn)
+{
+    RefFile rf;
+    rf.file = tempDir.getChildFile (name + ".wav");
+    const auto n = (long long) std::llround (seconds * rate);
+    for (long long i = 0; i < n; ++i)
+    {
+        float l = 0.0f, r = 0.0f;
+        fn (i, l, r);
+        rf.l.push_back (l);
+        rf.r.push_back (r);
+    }
+
+    rf.file.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::OutputStream> out (rf.file.createOutputStream().release());
+    const auto options = juce::AudioFormatWriterOptions().withSampleRate (rate).withNumChannels (2).withBitsPerSample (32)
+                             .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+    if (auto w = wav.createWriterFor (out, options))
+    {
+        const float* ch[2] { rf.l.data(), rf.r.data() };
+        w->writeFromFloatArrays (ch, 2, (int) rf.l.size());
+    }
+    return rf;
+}
+
+InputFn sineInput (double hz, float amp, double phase = 0.0)
+{
+    return [hz, amp, phase] (long long n, float& l, float& r)
+    {
+        const double t = juce::MathConstants<double>::twoPi * hz * (double) n / kRate + phase;
+        l = amp * (float) std::sin (t);
+        r = amp * (float) std::sin (t + 0.3);
+    };
+}
+
+// Pumps the processor's housekeeping (Track Referencing's tick) until the loader is idle and nothing is loading.
+bool waitForReferences (Host& h, double seconds)
+{
+    auto& refs = h.proc.getTrackReferencing();
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    while (juce::Time::getMillisecondCounterHiRes() - t0 < seconds * 1000.0)
+    {
+        h.proc.flushPendingChanges (false);
+        if (refs.waitUntilIdle (0))
+        {
+            h.proc.flushPendingChanges (false);
+            bool loading = false;
+            for (const auto& e : refs.getInfo().entries)
+                loading = loading || e.state == psplug::TrackReferencing::State::Loading;
+            if (! loading)
+                return true;
+        }
+        juce::Thread::sleep (10);
+    }
+    return false;
+}
+
+const psplug::TrackReferencing::Entry* entryOf (const psplug::TrackReferencing::Info& info, int id)
+{
+    for (const auto& e : info.entries)
+        if (e.id == id)
+            return &e;
+    return nullptr;
+}
+
+// Largest |out[n] - ref[pos(n)]| over [from, to) of the output.
+float refErrorDb (const Output& out, const RefFile& ref, size_t from, size_t to,
+                  const std::function<long long (size_t)>& pos)
+{
+    float m = 0.0f;
+    bool reported = false;
+    for (size_t n = from; n < to && n < out.l.size(); ++n)
+    {
+        const auto p = pos (n);
+        if (p == -2)
+            continue;   // excluded (a crossfade)
+        if (p < 0 || p >= (long long) ref.l.size())
+            return 0.0f;
+        const float e = juce::jmax (std::abs (out.l[n] - ref.l[(size_t) p]), std::abs (out.r[n] - ref.r[(size_t) p]));
+        if (e > 1.0e-5f && ! reported)
+        {
+            reported = true;
+            // where the output is: search the reference for out[n] around p
+            long long found = -1;
+            for (long long q = 0; q < (long long) ref.l.size() && found < 0; ++q)
+                if (std::abs (ref.l[(size_t) q] - out.l[n]) < 1.0e-7f && std::abs (ref.r[(size_t) q] - out.r[n]) < 1.0e-7f)
+                    found = q;
+            std::cout << "    (debug) first mismatch at n=" << n << " want pos " << p << " out " << out.l[n]
+                      << " ref " << ref.l[(size_t) p] << " found at " << found << ")\n";
+        }
+        m = juce::jmax (m, e);
+    }
+    return dbOf (m);
+}
+
+// Whole-track playback position at output sample n (host position t0 at n = 0). Around the end of the file the
+// reference fades out and its start fades in (8 ms each): those samples are excluded (-2).
+std::function<long long (size_t)> cyclic (long long t0, long long len)
+{
+    return [t0, len] (size_t n)
+    {
+        const auto k = floorMod ((long long) n + t0, len);
+        return k < 400 || k >= len - 400 ? -2LL : k;
+    };
+}
+
+float maxStepOf (const Output& o, size_t from = 0)
+{
+    float m = 0.0f;
+    for (size_t n = juce::jmax<size_t> (from, 1); n < o.l.size(); ++n)
+    {
+        m = juce::jmax (m, std::abs (o.l[n] - o.l[n - 1]));
+        m = juce::jmax (m, std::abs (o.r[n] - o.r[n - 1]));
+    }
+    return m;
+}
+
+float loudnessOf (const Output& o, size_t from, size_t to)
+{
+    ps::LoudnessMeter m;
+    m.prepare (kRate);
+    to = juce::jmin (to, o.l.size());
+    if (to > from)
+        m.process (o.l.data() + from, o.r.data() + from, (int) (to - from));
+    return m.integratedLufs();
+}
+
+void testTrackReferencing()
+{
+    std::cout << "\n-- Track Referencing\n";
+    using TR = psplug::TrackReferencing;
+
+    const auto refNoise = writeReference ("ref-noise", kRate, 6.0, noiseInput (0.5f, 11));
+    const auto refSine = writeReference ("ref-sine", kRate, 6.0, sineInput (220.0, 0.5f));
+    const auto refQuiet = writeReference ("ref-quiet-44k", 44100.0, 5.0, noiseInput (0.05f, 12));
+
+    Host h;
+    h.prepare();
+    h.proc.setChainOrder ({});   // an empty chain: the master is the input, so "untouched" can be checked exactly
+    auto& refs = h.proc.getTrackReferencing();
+    const auto master = noiseInput (0.1f, 3);
+
+    // ---- nothing loaded: listening is ignored, the master is untouched
+    refs.setListening (true);
+    {
+        const auto in = recordInput (24000, master);
+        const auto out = h.stream (24000, replay (in));
+        check (nullDb (in, out, 0) <= -200.0f, "reference: with no reference, Listen leaves the master untouched");
+    }
+    refs.setListening (false);
+
+    // ---- add, analyse once
+    const int idNoise = refs.addReference (refNoise.file);
+    const bool loaded = waitForReferences (h, 60.0);
+    auto info = refs.getInfo();
+    const auto* e = entryOf (info, idNoise);
+    check (loaded && e != nullptr && e->state == TR::State::Ready && e->resident
+               && std::abs (e->lengthSeconds - 6.0) < 1.0e-6 && ps::hasValue (e->integratedLufs)
+               && info.selected == 0,
+           "reference: a file loads, is analysed and selected",
+           e != nullptr ? str ((int) e->state, " ", e->lengthSeconds, " s ", e->integratedLufs, " LUFS ", e->error.toStdString())
+                        : std::string ("no entry"));
+    check (refs.getDrawData (idNoise) != nullptr && refs.getDrawData (idNoise)->overview.minimum.size() == 2048,
+           "reference: the overview for drawing is built");
+    check (refs.addReference (refNoise.file) == idNoise && refs.getInfo().entries.size() == 1,
+           "reference: adding the same file again selects it instead of a duplicate");
+    check (refs.getAssistantTarget (idNoise).valid && refs.getAssistantTarget (idNoise).path
+                                                          == refNoise.file.getFullPathName().toStdString(),
+           "reference: the Assistant's target comes from the same analysis");
+
+    // ---- on the master: bit-exact
+    {
+        const auto in = recordInput (48000, master);
+        const auto out = h.stream (48000, replay (in));
+        check (nullDb (in, out, 0) <= -200.0f, "reference: Listen on the master leaves it bit-exact (reference loaded)");
+    }
+
+    // ---- level match Off: the reference itself, synced to the host position
+    auto settings = refs.getSettings();
+    settings.levelMatch = ps::LevelMatch::Off;
+    refs.setSettings (settings);
+    h.stream (24000, master);   // the gain settles at 0 dB
+    refs.setListening (true);
+    {
+        const long long t0 = h.head.time;
+        const auto out = h.stream (48000, master);
+        const auto len = (long long) refNoise.l.size();
+        const float err = refErrorDb (out, refNoise, 4800, 48000,
+                                      cyclic (t0, len));
+        check (err < -120.0f, "reference: Listen plays the reference sample-exact at the host position (match Off)",
+               str (err, " dB"));
+        check (refs.isReferenceSounding() && refs.getListenPosition() == 1.0f, "reference: the UI sees it playing");
+    }
+
+    // ---- loops: B = 2..3 s plays that second, looped, from the host position
+    refs.setLoop (idNoise, 1, 2.0, 3.0);
+    info = refs.getInfo();
+    check (entryOf (info, idNoise)->activeLoop == 1 && entryOf (info, idNoise)->loops[1].set,
+           "reference: drawing loop B makes it the active loop");
+    h.stream (9600, master);
+    {
+        const long long t0 = h.head.time;
+        const auto out = h.stream (96000, master);
+        // (the 8 ms wrap crossfade after each region start mixes in the continuation: excluded)
+        const float err = refErrorDb (out, refNoise, 0, 96000, [t0] (size_t n)
+                                      {
+                                          const auto k = floorMod ((long long) n + t0, 48000);
+                                          return k < 400 ? -2LL : 96000 + k;
+                                      });
+        check (err < -120.0f, "reference: loop B plays its region, looped, synced to the host", str (err, " dB"));
+    }
+    refs.setActiveLoop (idNoise, 3);   // D is empty: ignored
+    check (refs.getInfo().entries[0].activeLoop == 1, "reference: an empty loop letter cannot be activated");
+    refs.setLoop (idNoise, 0, 0.5, 0.6);   // shorter than 0.5 s: clamped to 0.5 s
+    info = refs.getInfo();
+    check (entryOf (info, idNoise)->loops[0].set && std::abs (entryOf (info, idNoise)->loops[0].end - 1.0) < 1.0e-9,
+           "reference: a loop shorter than half a second is widened to 0.5 s");
+    refs.setActiveLoop (idNoise, -1);
+    h.stream (9600, master);
+    {
+        const long long t0 = h.head.time;
+        const auto out = h.stream (24000, master);
+        const auto len = (long long) refNoise.l.size();
+        const float err = refErrorDb (out, refNoise, 0, 24000,
+                                      cyclic (t0, len));
+        check (err < -120.0f, "reference: back to the whole track", str (err, " dB"));
+    }
+
+    // ---- seek while playing
+    refs.seek (1.0);
+    h.stream (2400, master);
+    {
+        const auto out = h.stream (24000, master);
+        const float err = refErrorDb (out, refNoise, 0, 24000,
+                                      [] (size_t n) { return 48000 + 2400 + (long long) n; });
+        check (err < -120.0f, "reference: seek plays from the clicked point", str (err, " dB"));
+    }
+
+    // ---- host stopped: play when stopped on / off; sync off ignores host jumps
+    h.head.playing = false;
+    settings.playWhenStopped = false;
+    refs.setSettings (settings);
+    h.stream (4800, master);
+    {
+        const auto out = h.stream (9600, master);
+        float peak = 0.0f;
+        for (size_t i = 0; i < out.l.size(); ++i)
+            peak = juce::jmax (peak, std::abs (out.l[i]), std::abs (out.r[i]));
+        check (peak == 0.0f, "reference: silent while the host is stopped (Play when stopped off)");
+    }
+    settings.playWhenStopped = true;
+    settings.sync = false;
+    refs.setSettings (settings);
+    h.head.playing = true;
+    h.stream (4800, master);
+    {
+        const double before = refs.getPlayheadSeconds();
+        h.head.time += 123457;   // a host jump
+        h.stream (4800, master);
+        const double moved = refs.getPlayheadSeconds() - before;
+        check (std::abs (moved - 0.1) < 1.0e-6, "reference: with Sync off the reference runs on its own",
+               str (moved, " s"));
+    }
+    settings.sync = true;
+    refs.setSettings (settings);
+
+    // ---- switching references and loops crossfades (no click on a sine reference)
+    const int idSine = refs.addReference (refSine.file);
+    waitForReferences (h, 60.0);
+    h.stream (9600, master);
+    {
+        const long long t0 = h.head.time;
+        const auto out = h.stream (24000, master);
+        const auto len = (long long) refSine.l.size();
+        const float err = refErrorDb (out, refSine, 0, 24000,
+                                      cyclic (t0, len));
+        check (err < -120.0f, "reference: selecting another reference plays it", str (err, " dB"));
+    }
+    {
+        refs.setLoop (idSine, 2, 1.003, 2.517);   // a loop whose wrap is not at a zero crossing
+        auto out = h.stream (4800 * 30, InputFn(), { 512 }, [&] (int block)   // a silent master: only the reference moves
+        {
+            if (block == 40)
+                refs.setActiveLoop (idSine, -1);
+            if (block == 80)
+                refs.setActiveLoop (idSine, 2);
+            if (block == 120)
+                refs.seek (4.4);
+            if (block == 160)
+                refs.setListening (false);
+            if (block == 200)
+                refs.setListening (true);
+        });
+        // A sine of 0.5 at 220 Hz moves at most 0.0145 per sample; a hard cut jumps up to 1.
+        const float step = maxStepOf (out, 512);
+        check (step < 0.06f, "reference: loop wraps, loop / whole-track switches, seeks and A/B fades have no clicks",
+               str ("largest step ", step));
+    }
+
+    // ---- level match: Integrated and Short-term, within 0.2 LU of the master
+    {
+        h.head.playing = true;
+        refs.select (idNoise);
+        refs.setActiveLoop (idNoise, -1);
+        refs.resetMixAnalysis();
+        settings.levelMatch = ps::LevelMatch::Integrated;
+        refs.setSettings (settings);
+        refs.setListening (false);
+        const auto masterIn = noiseInput (0.08f, 5);
+        h.stream ((long long) (6.0 * kRate), masterIn);
+        refs.runAnalysisNow();
+        const float mixLufs = refs.getMixProfile().integratedLufs;
+        const float refLufs = refs.getReferenceProfile().integratedLufs;
+        const float want = mixLufs - refLufs;
+        check (std::abs (refs.getMatchGainDb() - want) < 0.05f,
+               "reference: Integrated level match turns the reference to the master's loudness",
+               str ("gain ", refs.getMatchGainDb(), " want ", want, " (", mixLufs, " vs ", refLufs, ")"));
+        refs.setListening (true);
+        const auto out = h.stream ((long long) (6.0 * kRate), masterIn);
+        const float heard = loudnessOf (out, 4800, out.l.size());
+        check (std::abs (heard - mixLufs) < 0.2f, "reference: what you hear on the reference is as loud as the master",
+               str (heard, " vs ", mixLufs, " LUFS"));
+
+        settings.levelMatch = ps::LevelMatch::ShortTerm;
+        refs.setSettings (settings);
+        const auto out2 = h.stream ((long long) (8.0 * kRate), masterIn);
+        refs.runAnalysisNow();
+        const float heard2 = loudnessOf (out2, (size_t) (5.0 * kRate), out2.l.size());
+        check (std::abs (heard2 - mixLufs) < 0.2f, "reference: Short-term level match within 0.2 LU",
+               str (heard2, " vs ", mixLufs, " LUFS, gain ", refs.getMatchGainDb()));
+        check (refs.getComparison().valid() && ! refs.getComparison().hints.empty(),
+               "reference: the master-vs-reference comparison is published");
+        settings.levelMatch = ps::LevelMatch::Off;
+        refs.setSettings (settings);
+    }
+
+    // ---- mono / swap of the I/O panel apply to the reference
+    {
+        h.set ("io.swap", 1.0f);
+        h.stream (24000, master);   // the level-match gain glides back to 0 dB (250 ms)
+        const long long t0 = h.head.time;
+        auto out = h.stream (24000, master);
+        std::swap (out.l, out.r);
+        const auto len = (long long) refNoise.l.size();
+        const float err = refErrorDb (out, refNoise, 0, 24000,
+                                      cyclic (t0, len));
+        check (err < -120.0f, "reference: Swap applies to the reference", str (err, " dB"));
+        h.set ("io.swap", 0.0f);
+        h.set ("io.mono", 1.0f);
+        const auto mono = h.stream (24000, master);
+        float diff = 0.0f;
+        for (size_t i = 2400; i < mono.l.size(); ++i)
+            diff = juce::jmax (diff, std::abs (mono.l[i] - mono.r[i]));
+        check (diff < 1.0e-6f, "reference: Mono applies to the reference");
+        h.set ("io.mono", 0.0f);
+    }
+
+    // ---- offline render: always the master
+    {
+        h.proc.setNonRealtime (true);
+        const auto in = recordInput (24000, master);
+        const auto out = h.stream (24000, replay (in));
+        check (nullDb (in, out, 0, 4800) <= -200.0f, "reference: an offline render always renders the master",
+               str (nullDb (in, out, 0, 4800), " dB"));   // (the first 100 ms: the master's own Mono fade-out)
+        h.proc.setNonRealtime (false);
+    }
+
+    // ---- realtime: loads, switches and loop edits while audio runs
+    {
+        const auto before = psdev::getAllocationCounts();
+        int idQuiet = 0;
+        h.stream ((long long) (4.0 * kRate), master, { 512, 64, 1024, 1 }, [&] (int block)
+        {
+            if (block == 5)
+                idQuiet = refs.addReference (refQuiet.file);
+            if (block % 37 == 0)
+                refs.select (block % 74 == 0 ? idNoise : idSine);
+            if (block % 23 == 0)
+                refs.setLoop (idSine, block % 5, 0.1 * (block % 17), 0.1 * (block % 17) + 0.7);
+            if (block % 29 == 0)
+                refs.setListening (block % 58 != 0);
+        });
+        const auto after = psdev::getAllocationCounts();
+        check (after.allocations == before.allocations && after.frees == before.frees,
+               "realtime: Track Referencing playback, switching and loop edits are allocation free");
+        waitForReferences (h, 60.0);
+        info = refs.getInfo();
+        const auto* q = entryOf (info, idQuiet);
+        check (q != nullptr && q->state == TR::State::Ready && std::abs (q->lengthSeconds - 5.0) < 1.0e-3
+                   && q->fileSampleRate == 44100.0,
+               "reference: a 44.1 kHz file is resampled to the 48 kHz session",
+               q != nullptr ? str (q->lengthSeconds, " s at ", q->fileSampleRate) : std::string ("missing"));
+        check (refs.getDropoutCount() == 0, "reference: no slot dropouts on the audio thread",
+               str (refs.getDropoutCount()));
+    }
+
+    // ---- ten references at most; eviction keeps the selected one
+    {
+        std::vector<int> ids;
+        for (int i = 0; i < 7; ++i)
+            ids.push_back (refs.addReference (writeReference ("ref-extra-" + juce::String (i), kRate, 2.0,
+                                                              noiseInput (0.2f, 100u + (juce::uint32) i)).file,
+                                              false));
+        const auto extra = writeReference ("ref-eleven", kRate, 1.0, noiseInput (0.2f, 99));
+        check (refs.addReference (extra.file) == 0 && refs.getInfo().entries.size() == TR::kMaxReferences,
+               "reference: the list holds ten references at most");
+        waitForReferences (h, 120.0);
+
+        refs.select (idSine);
+        const long long oneTrack = (long long) refSine.l.size() * 2 * (long long) sizeof (float);
+        refs.setMemoryBudget (oneTrack + oneTrack / 2);
+        info = refs.getInfo();
+        int resident = 0;
+        for (const auto& en : info.entries)
+            resident += en.resident ? 1 : 0;
+        check (entryOf (info, idSine)->resident && refs.getResidentBytes() <= refs.getMemoryBudget(),
+               "reference: over the memory budget, the others are evicted, the selected one stays",
+               str (resident, " resident, ", refs.getResidentBytes(), " bytes"));
+        refs.select (idNoise);   // evicted: decoded again
+        refs.setListening (true);
+        const bool back = waitForReferences (h, 60.0);
+        info = refs.getInfo();
+        check (back && entryOf (info, idNoise)->resident && entryOf (info, idNoise)->state == TR::State::Ready,
+               "reference: selecting an evicted reference decodes it again");
+        h.stream (9600, master);
+        const long long t0 = h.head.time;
+        const auto out = h.stream (24000, master);
+        const auto len = (long long) refNoise.l.size();
+        const float err = refErrorDb (out, refNoise, 0, 24000,
+                                      cyclic (t0, len));
+        check (err < -120.0f, "reference: and it plays again", str (err, " dB"));
+        refs.setMemoryBudget (TR::kDefaultMemoryBudget);
+    }
+
+    // ---- state round trip
+    {
+        refs.select (idSine);
+        refs.setActiveLoop (idSine, 2);
+        settings.levelMatch = ps::LevelMatch::ShortTerm;
+        settings.playWhenStopped = false;
+        refs.setSettings (settings);
+        refs.setListening (true);
+
+        juce::MemoryBlock saved;
+        h.proc.getStateInformation (saved);
+        const auto tree = refs.createStateTree();
+        check (tree.getNumChildren() == TR::kMaxReferences && tree.getChild (1).getProperty ("loopC").toString().isNotEmpty(),
+               "reference: the state lists the references and their loops");
+
+        Host h2;
+        h2.prepare();
+        h2.proc.setStateInformation (saved.getData(), (int) saved.getSize());
+        auto& refs2 = h2.proc.getTrackReferencing();
+        waitForReferences (h2, 120.0);
+        const auto i1 = refs.getInfo(), i2 = refs2.getInfo();
+        bool same = i1.entries.size() == i2.entries.size() && i1.selected == i2.selected;
+        for (size_t k = 0; same && k < i1.entries.size(); ++k)
+        {
+            same = i1.entries[k].file == i2.entries[k].file && i1.entries[k].activeLoop == i2.entries[k].activeLoop;
+            for (int lp = 0; same && lp < TR::kNumLoops; ++lp)
+                same = std::abs (i1.entries[k].loops[(size_t) lp].start - i2.entries[k].loops[(size_t) lp].start) < 1.0e-5
+                       && std::abs (i1.entries[k].loops[(size_t) lp].end - i2.entries[k].loops[(size_t) lp].end) < 1.0e-5
+                       && i1.entries[k].loops[(size_t) lp].set == i2.entries[k].loops[(size_t) lp].set;
+        }
+        const auto s2 = refs2.getSettings();
+        check (same && s2.levelMatch == ps::LevelMatch::ShortTerm && ! s2.playWhenStopped && ! refs2.isListening(),
+               "reference: a restored project has the same list, loops, selection and settings; Listen is on the master");
+
+        // a missing file stays in the list until relinked (loops kept)
+        auto t = refs.createStateTree();
+        t.getChild (1).setProperty ("path", tempDir.getChildFile ("moved-away.wav").getFullPathName(), nullptr);
+        refs2.restoreStateTree (t);
+        waitForReferences (h2, 60.0);
+        auto i3 = refs2.getInfo();
+        const auto& missing = i3.entries[1];
+        check (missing.state == TR::State::Missing && missing.loops[2].set,
+               "reference: a missing file is kept in the list (state Missing, loops kept)");
+        refs2.relink (missing.id, refSine.file);
+        waitForReferences (h2, 60.0);
+        i3 = refs2.getInfo();
+        check (i3.entries[1].state == TR::State::Ready && i3.entries[1].loops[2].set && i3.entries[1].activeLoop == 2,
+               "reference: relinking loads the file and keeps its loops");
+
+        // a restore from a host thread is applied at the next tick; saves meanwhile return it
+        juce::ValueTree empty ("TrackReferencing");
+        std::thread host ([&] { refs2.restoreStateTree (empty); });
+        host.join();
+        check (refs2.createStateTree().getNumChildren() == 0, "reference: a host-thread restore is what the next save returns");
+        h2.proc.flushPendingChanges (false);
+        check (refs2.getInfo().entries.empty(), "reference: and it is applied at the next tick");
+    }
+
+    // ---- the Assistant uses the same list and analysis
+    {
+        auto& a = h.proc.getAssistant();
+        const auto extra = writeReference ("ref-assistant", kRate, 4.0, noiseInput (0.3f, 77));
+        a.awaitReference (extra.file.getFullPathName(), "ref-assistant");
+        refs.removeReference (refs.getInfo().entries.back().id);   // make room
+        const int id = refs.addReference (extra.file, false);
+        check (a.isLoadingReference(), "assistant reference: waits for Track Referencing's analysis");
+        waitForReferences (h, 60.0);
+        const auto target = refs.getAssistantTarget (id);
+        check (! a.isLoadingReference() && a.getReference().valid
+                   && a.getReference().path == extra.file.getFullPathName().toStdString()
+                   && a.getReference().integratedLufs == target.integratedLufs,
+               "assistant reference: the target is Track Referencing's analysis of the file");
+        refs.removeReference (id);
+        check (! a.getReference().valid, "assistant reference: removing the reference returns the Assistant to Auto");
+    }
+
+    // ---- removing everything returns to the master, bit-exact
+    {
+        for (const auto& en : refs.getInfo().entries)
+            refs.removeReference (en.id);
+        check (refs.getInfo().entries.empty() && ! refs.isListening(), "reference: removing every reference ends Listen");
+        h.stream (4800, master);
+        const auto in = recordInput (24000, master);
+        const auto out = h.stream (24000, replay (in));
+        check (nullDb (in, out, 0) <= -200.0f, "reference: and the master is bit-exact again");
+    }
+
+    // ---- a sample-rate change decodes the selected reference again at the new rate
+    {
+        Host h3 (44100.0);
+        h3.prepare();
+        auto& r3 = h3.proc.getTrackReferencing();
+        const int id = r3.addReference (refNoise.file);
+        waitForReferences (h3, 60.0);
+        h3.sampleRate = 96000.0;
+        h3.head.sampleRate = 96000.0;
+        h3.prepare();
+        const bool ok = waitForReferences (h3, 60.0);
+        const auto i = r3.getInfo();
+        check (ok && entryOf (i, id)->resident && std::abs (entryOf (i, id)->lengthSeconds - 6.0) < 1.0e-3,
+               "reference: after a sample-rate change the reference is decoded again at the new rate");
+    }
+
+    // ---- races the review found: overlapping host restores, a rate change during the first load, relink during a
+    // load, a seek while an evicted reference decodes again, relinking the Assistant's reference
+    {
+        Host h4;
+        h4.prepare();
+        auto& r4 = h4.proc.getTrackReferencing();
+        auto& a4 = h4.proc.getAssistant();
+        const auto longRef = writeReference ("ref-long", kRate, 60.0, musicLikeInput (0.3f, 21));
+        const auto otherRef = writeReference ("ref-other", kRate, 8.0, noiseInput (0.2f, 22));
+
+        // overlapping host-thread restores while the message thread ticks: the newest one wins, nothing is lost
+        r4.addReference (refNoise.file);
+        r4.addReference (refSine.file);
+        waitForReferences (h4, 60.0);
+        const auto two = r4.createStateTree();
+        std::atomic<bool> done { false };
+        std::thread host ([&]
+        {
+            for (int i = 0; i < 300; ++i)
+                r4.restoreStateTree (two);
+            done.store (true);
+        });
+        while (! done.load())
+            h4.proc.flushPendingChanges (false);
+        host.join();
+        h4.proc.flushPendingChanges (false);
+        h4.proc.flushPendingChanges (false);
+        check (r4.getInfo().entries.size() == 2 && r4.createStateTree().getNumChildren() == 2,
+               "reference: overlapping host-thread restores keep the newest state",
+               str (r4.getInfo().entries.size(), " entries"));
+
+        // relink while the first load runs: the new file loads (the running job is stale, not merged)
+        const int idLong = r4.addReference (longRef.file, false);
+        r4.relink (idLong, otherRef.file);
+        waitForReferences (h4, 60.0);
+        auto i4 = r4.getInfo();
+        const auto* relinked = entryOf (i4, idLong);
+        check (relinked != nullptr && relinked->state == TR::State::Ready && relinked->file == otherRef.file
+                   && std::abs (relinked->lengthSeconds - 8.0) < 1.0e-3,
+               "reference: relinking during a load loads the new file");
+
+        // the Assistant waits for a reference whose first load meets a sample-rate change
+        r4.removeReference (idLong);
+        a4.awaitReference (longRef.file.getFullPathName(), "ref-long");
+        const int idWait = r4.addReference (longRef.file, false);
+        h4.sampleRate = 44100.0;
+        h4.head.sampleRate = 44100.0;
+        h4.prepare();
+        waitForReferences (h4, 60.0);
+        check (! a4.isLoadingReference() && a4.getReference().valid
+                   && a4.getReference().path == longRef.file.getFullPathName().toStdString(),
+               "assistant reference: a sample-rate change during the first load still delivers the target");
+
+        // relinking the Assistant's reference keeps the Assistant on it; removing it then returns to Auto
+        r4.relink (idWait, otherRef.file);
+        check (a4.getReference().path == otherRef.file.getFullPathName().toStdString(),
+               "assistant reference: a relinked reference stays the Assistant's target");
+        waitForReferences (h4, 60.0);
+        r4.removeReference (idWait);
+        check (! a4.getReference().valid, "assistant reference: and removing it returns the Assistant to Auto");
+
+        // a seek made while an evicted reference decodes again is applied once it is back
+        const int idA = r4.getInfo().entries[0].id, idB = r4.getInfo().entries[1].id;
+        auto s4 = r4.getSettings();
+        s4.levelMatch = ps::LevelMatch::Off;
+        r4.setSettings (s4);
+        r4.select (idB);
+        r4.setMemoryBudget (1);   // only the selected reference stays decoded
+        r4.select (idA);          // evicted: decodes again
+        r4.seek (2.0);
+        r4.setListening (true);
+        waitForReferences (h4, 60.0);
+        r4.setMemoryBudget (TR::kDefaultMemoryBudget);
+        h4.stream (2400, InputFn());
+        h4.stream (24000, InputFn());
+        const double rate = h4.sampleRate;
+        // The reference was written at 48 kHz and plays resampled at 44.1 kHz here, so compare the playhead instead.
+        const double head = r4.getPlayheadSeconds();
+        const double want = 2.0 + (2400.0 + 24000.0) / rate;
+        check (std::abs (head - want) < 0.002, "reference: a seek during the re-decode is applied when it is back",
+               str (head, " s, want ", want));
+    }
+}
+
 int runSelfTest()
 {
     tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
@@ -2703,6 +3340,7 @@ int runSelfTest()
     testPromptLifetime();
     testThreads();
     testAssistant();
+    testTrackReferencing();
 
     std::cout << "\n-- Match EQ state, undo and file loader\n";
     const int matchFailures = psplug::runMatchEqStateTests();

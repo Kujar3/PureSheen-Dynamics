@@ -5,6 +5,7 @@
 #include "plugin/Assistant.h"      // (phase 3) the Assistant: capture, suggestions, macros, state child
 #include "plugin/MatchEqState.h"   // (phase 2) Match EQ state child, spectrum undo, reference-file loader
 #include "plugin/PluginState.h"
+#include "plugin/TrackReferencing.h"   // (phase 3) Track Referencing: reference list, A/B playback, comparison
 #include "plugin/Presets.h"
 #include "plugin/UndoHistory.h"
 #include "ui/PluginEditor.h"
@@ -234,6 +235,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         matchEq->historyReset (history);
         // ----
         assistant = std::make_unique<psplug::Assistant> (*this);
+        referencing = std::make_unique<psplug::TrackReferencing> (owner);
+        connectReferencing();
 
         startTimerHz (30);
     }
@@ -301,6 +304,68 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     std::unique_ptr<psplug::MatchEqState> matchEq;
     // (phase 3) The Assistant (declared after `chain`: destroyed first, its worker joined).
     std::unique_ptr<psplug::Assistant> assistant;
+    // (phase 3) Track Referencing (destroyed before the Assistant: its callbacks reach the Assistant).
+    std::unique_ptr<psplug::TrackReferencing> referencing;
+    int monoIndex = -1, swapIndex = -1;
+
+    // The Assistant's "Match reference" uses Track Referencing's list and analysis (one per file). A reference the
+    // Assistant asked for (awaitReference) becomes its target when it is analysed; the target's numbers follow a
+    // re-analysis of the same file; removing the target's reference from the list returns the Assistant to Auto.
+    void connectReferencing()
+    {
+        monoIndex = ps::paramIndex ("io.mono");
+        swapIndex = ps::paramIndex ("io.swap");
+
+        referencing->onReferenceAnalysed = [this] (int id, bool ok)
+        {
+            const auto info = referencing->getInfo();
+            juce::String path, error;
+            for (const auto& e : info.entries)
+                if (e.id == id)
+                {
+                    path = e.file.getFullPathName();
+                    error = e.error;
+                }
+            if (path.isEmpty())
+                return;
+
+            if (assistant->getPendingReferencePath() == path)
+            {
+                if (ok)
+                    assistant->setReference (referencing->getAssistantTarget (id));
+                else
+                    assistant->referenceFailed ("That reference file could not be read (" + error + ").");
+            }
+            else if (ok && juce::String (assistant->getReference().path) == path)
+            {
+                assistant->updateReference (referencing->getAssistantTarget (id));
+            }
+        };
+
+        // A relinked file is the same reference found again: the Assistant's target follows it to the new path (its
+        // numbers are refreshed when the new file is analysed).
+        referencing->onReferenceRelinked = [this] (int, const juce::String& oldPath, const juce::String& newPath)
+        {
+            if (assistant->getPendingReferencePath() == oldPath)
+            {
+                assistant->awaitReference (newPath, juce::File (newPath).getFileNameWithoutExtension());
+            }
+            else if (assistant->getReference().valid && juce::String (assistant->getReference().path) == oldPath)
+            {
+                auto moved = assistant->getReference();
+                moved.path = newPath.toStdString();
+                assistant->updateReference (moved);
+            }
+        };
+
+        referencing->onReferenceRemoved = [this] (int, const juce::String& path)
+        {
+            if (assistant->getPendingReferencePath() == path)
+                assistant->referenceFailed ("The reference was removed from the list.");
+            else if (assistant->getReference().valid && juce::String (assistant->getReference().path) == path)
+                assistant->clearReference();
+        };
+    }
 
     // AssistantHost
     std::vector<float> currentValues() const override { return capture().values; }
@@ -568,6 +633,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         matchEqHousekeeping();   // Match EQ: finished file loads, capture stops, clears
         commitGesture (force);
         assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
+        if (referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
+            owner.sendChangeMessage();
         updateLatency();
 
         if (maxLearnActive)
@@ -681,9 +748,13 @@ void PureSheenProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     d.prepared = true;
     setLatencySamples (d.chain.getLatencySamples());
     d.assistant->prepare (sampleRate);
+    d.referencing->prepare (sampleRate, d.maxBlock);
 }
 
-void PureSheenProcessor::releaseResources() {}
+void PureSheenProcessor::releaseResources()
+{
+    impl->referencing->release();
+}
 
 bool PureSheenProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
@@ -726,6 +797,10 @@ void PureSheenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         float* chunk[2] { channels[0] + start, channels[1] + start };
         d.chain.process (chunk, juce::jmin (d.maxBlock, total - start), d.values.data(), host);
     }
+    // Track Referencing: the reference (level matched, A/B crossfaded) replaces the master when listening; the master
+    // feeds the comparison. Mono / Swap of the I/O panel apply to the reference too.
+    d.referencing->process (channels[0], channels[1], total, d.values[(size_t) d.monoIndex] > 0.5f,
+                            d.values[(size_t) d.swapIndex] > 0.5f);
 }
 
 juce::AudioProcessorEditor* PureSheenProcessor::createEditor()
@@ -791,6 +866,7 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
 
     state.appendChild (d.matchEq->createStateTree(), nullptr);   // Match EQ: "MatchEq" child
     state.appendChild (d.assistant->createStateTree(), nullptr); // Assistant: "Assistant" child
+    state.appendChild (d.referencing->createStateTree(), nullptr);   // Track Referencing: "TrackReferencing" child
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
@@ -850,6 +926,9 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
     d.matchEq->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("MatchEq") : juce::ValueTree());
     // Assistant: its cards and targets (a state without the child resets it)
     d.assistant->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("Assistant") : juce::ValueTree());
+    // Track Referencing: the reference list (reloaded from the files), loops and settings; Listen back to the master
+    d.referencing->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("TrackReferencing")
+                                                               : juce::ValueTree());
 
     {
         const juce::ScopedLock sl (d.extrasLock);
@@ -1613,3 +1692,4 @@ float PureSheenProcessor::getMatchReferenceFileProgress() const { return impl->m
 juce::String PureSheenProcessor::getMatchReferenceFileError() const { return impl->matchEq->getFileError(); }
 
 psplug::Assistant& PureSheenProcessor::getAssistant() noexcept { return *impl->assistant; }
+psplug::TrackReferencing& PureSheenProcessor::getTrackReferencing() noexcept { return *impl->referencing; }

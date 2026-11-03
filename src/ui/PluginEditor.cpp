@@ -8,7 +8,11 @@
 #include "ui/HeaderBar.h"
 #include "ui/HelpOverlay.h"
 #include "ui/IoPanel.h"
+#include "ui/ReferencePanel.h"
 #include "ui/Vectorscope.h"
+#include "plugin/TrackReferencing.h"
+
+#include <cmath>
 
 // PureSheen Dynamics editor (owner: ui-shell).
 //
@@ -18,6 +22,13 @@
 //
 // UI state (processor.getUiState(), opaque to the processor): a "PureSheenUi" tree with editorW / editorH, the selected
 // module, the I/O gain links, and an "Options" child (ps::ui::UiOptions).
+//
+// (phase 3) Track Referencing: the Reference page shows like the Assistant page; audio files dropped anywhere on the
+// editor go to the reference list (drop overlay while dragging). The reference overlay on the module analysers
+// (drawReferenceSpectrum) is computed once per tick: the reference's curve (its active region) brought to the master's
+// loudness (minus Comparison::normalisationOffsetDb), with the analysers' tilt, then shifted by the smoothed mean
+// difference (100 Hz - 10 kHz) between the output analyser and the master's own curve, so it lands on the analyser's
+// dB scale; without a master profile the reference's mean is aligned to the output analyser's mean directly.
 namespace
 {
 namespace Col = ps::ui::Colours;
@@ -67,13 +78,13 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     {
         explicit Content (Impl& o) : impl (o) { setTitle ("PureSheen content"); }
         void paint (juce::Graphics& g) override             { impl.paintContent (g); }
-        void paintOverChildren (juce::Graphics& g) override { impl.paintNotice (g); }
+        void paintOverChildren (juce::Graphics& g) override { impl.paintDropOverlay (g); impl.paintNotice (g); }
         void resized() override                             { impl.layout(); }
         Impl& impl;
     };
 
     Impl (PureSheenEditor& o, PureSheenProcessor& p)
-        : owner (o), processor (p), header (*this), strip (*this), io (*this), dither (*this), assistantPanel (*this), history (p)
+        : owner (o), processor (p), header (*this), strip (*this), io (*this), dither (*this), assistantPanel (*this), referencePanel (*this), history (p)
     {
         help.onClose = [this] { setHelpVisible (false); };
         history.onClose = [this] { setHistoryVisible (false); };
@@ -129,7 +140,8 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (savedSize.x <= 0 || savedSize.y <= 0)
             savedSize = processor.getEditorSize();   // state saved by a host that kept only the processor's size
 
-        if ((selected < -1 && selected != ps::ui::kAssistantSelection) || selected >= ps::kNumModuleTypes)
+        if ((selected < -1 && selected != ps::ui::kAssistantSelection && selected != ps::ui::kReferenceSelection)
+            || selected >= ps::kNumModuleTypes)
             selected = (int) ps::ModuleType::Equalizer1;
 
         return true;
@@ -196,28 +208,38 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         header.update();
     }
 
-    // The module selection: a panel for a module in the chain, the Dither panel (-1) or the Assistant page.
+    // The module selection: a panel for a module in the chain, the Dither panel (-1), the Assistant or the Reference page.
     void showSelection()
     {
         const auto order = processor.getChainOrder();
         const bool assistantShown = selected == ps::ui::kAssistantSelection;
+        const bool referenceShown = selected == ps::ui::kReferenceSelection;
 
-        if (assistantShown != assistantPanel.isVisible())
+        if (assistantShown != assistantPanel.isVisible() || referenceShown != referencePanel.isVisible())
         {
             assistantPanel.setVisible (assistantShown);
-            if (assistantShown)
+            referencePanel.setVisible (referenceShown);
+            if (assistantShown || referenceShown)
             {
                 panel.reset();
                 dither.setVisible (false);
                 processor.setTapModule (-1);
-                assistantPanel.setBounds (moduleArea);
-                assistantPanel.tick();
+                if (assistantShown)
+                {
+                    assistantPanel.setBounds (moduleArea);
+                    assistantPanel.tick();
+                }
+                else
+                {
+                    referencePanel.setBounds (moduleArea);
+                    referencePanel.tick();
+                }
                 help.toFront (false);
                 history.toFront (false);
             }
         }
 
-        if (assistantShown)
+        if (assistantShown || referenceShown)
         {
             io.setDitherSelected (false);
             strip.refresh();
@@ -285,6 +307,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
 
         dither.setBounds (moduleArea);
         assistantPanel.setBounds (moduleArea);
+        referencePanel.setBounds (moduleArea);
         help.setBounds (content.getLocalBounds());
 
         if (history.isVisible())
@@ -304,7 +327,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             g.fillRoundedRectangle (r.translated (0.0f, 1.0f), ps::ui::kCornerRadius);
         }
 
-        if (panel == nullptr && ! dither.isVisible() && ! assistantPanel.isVisible())
+        if (panel == nullptr && ! dither.isVisible() && ! assistantPanel.isVisible() && ! referencePanel.isVisible())
         {
             ps::ui::drawPanel (g, moduleArea.toFloat());
             auto b = moduleArea.toFloat();
@@ -362,6 +385,178 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         g.setColour (Col::text);
         g.drawFittedText (notice, pill.withTrimmedLeft (32.0f).withTrimmedRight (18.0f).reduced (0.0f, wraps ? 6.0f : 0.0f).toNearestInt(),
                           juce::Justification::centredLeft, wraps ? 2 : 1, 0.85f);
+    }
+
+    //==========================================================================
+    // (phase 3) Drop overlay: a dark veil with the drop message while files are dragged over the editor, lavender for
+    // audio files, coral when none of them is a supported audio file.
+    void paintDropOverlay (juce::Graphics& g) const
+    {
+        if (! dragActive)
+            return;
+
+        const auto tint = dragSupported ? ps::ui::Colours::reference : ps::ui::Colours::major;
+        const auto b = content.getLocalBounds().toFloat().reduced (8.0f);
+        g.setColour (ps::ui::Colours::background.withAlpha (0.8f));
+        g.fillRect (content.getLocalBounds());
+        g.setColour (tint.withAlpha (0.08f));
+        g.fillRoundedRectangle (b, 12.0f);
+        juce::Path outline, dashed;
+        outline.addRoundedRectangle (b.reduced (1.0f), 12.0f);
+        const float dashes[] = { 8.0f, 6.0f };
+        juce::PathStrokeType (2.0f).createDashedStroke (dashed, outline, dashes, 2);
+        g.setColour (tint.withAlpha (0.8f));
+        g.fillPath (dashed);
+
+        // The message on a card of its own, so it reads over any page
+        const juce::String line1 = dragSupported ? "Drop to add as reference tracks" : "PureSheen cannot read these files";
+        const juce::String line2 = dragSupported ? "They go to the Reference page (up to 10 songs) to compare your master with"
+                                                 : "Use WAV, MP3, FLAC, AIFF or OGG files";
+        const auto f1 = ps::ui::font (20.0f, 700), f2 = ps::ui::font (13.0f);
+        const float w = juce::jmin (b.getWidth() - 40.0f, juce::jmax (ps::ui::textWidth (f1, line1), ps::ui::textWidth (f2, line2)) + 60.0f);
+        const auto card = juce::Rectangle<float> (w, 132.0f).withCentre (b.getCentre());
+        juce::Path shape;
+        shape.addRoundedRectangle (card, 12.0f);
+        juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 24, { 0, 6 }).drawForPath (g, shape);
+        g.setColour (ps::ui::Colours::panel.brighter (0.06f));
+        g.fillPath (shape);
+        g.setColour (tint.withAlpha (0.7f));
+        g.strokePath (shape, juce::PathStrokeType (1.2f));
+
+        auto icon = juce::Rectangle<float> (38.0f, 38.0f).withCentre ({ card.getCentreX(), card.getY() + 36.0f });
+        g.setColour (tint.withAlpha (0.16f));
+        g.fillEllipse (icon);
+        g.setColour (tint.brighter (0.2f));
+        const auto ic = icon.getCentre();
+        juce::Path arrow;
+        if (dragSupported)
+        {
+            arrow.startNewSubPath (ic.x, ic.y - 9.0f);
+            arrow.lineTo (ic.x, ic.y + 5.0f);
+            arrow.startNewSubPath (ic.x - 6.0f, ic.y - 1.0f);
+            arrow.lineTo (ic.x, ic.y + 5.0f);
+            arrow.lineTo (ic.x + 6.0f, ic.y - 1.0f);
+        }
+        else
+        {
+            arrow.startNewSubPath (ic.x - 6.0f, ic.y - 6.0f);
+            arrow.lineTo (ic.x + 6.0f, ic.y + 6.0f);
+            arrow.startNewSubPath (ic.x + 6.0f, ic.y - 6.0f);
+            arrow.lineTo (ic.x - 6.0f, ic.y + 6.0f);
+        }
+        g.strokePath (arrow, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        g.setFont (f1);
+        g.setColour (ps::ui::Colours::text);
+        g.drawFittedText (line1, juce::Rectangle<float> (card.getX() + 16.0f, card.getY() + 62.0f, card.getWidth() - 32.0f, 28.0f).toNearestInt(),
+                          juce::Justification::centred, 1, 0.8f);
+        g.setFont (f2);
+        g.setColour (dragSupported ? ps::ui::Colours::textDim : tint.brighter (0.2f));
+        g.drawFittedText (line2, juce::Rectangle<float> (card.getX() + 16.0f, card.getY() + 92.0f, card.getWidth() - 32.0f, 22.0f).toNearestInt(),
+                          juce::Justification::centred, 1, 0.8f);
+    }
+
+    //==========================================================================
+    // (phase 3) The reference overlay of the module analysers (see the top of this file). Message thread, per tick.
+    void updateReferenceOverlay()
+    {
+        auto& refs = processor.getTrackReferencing();
+        if (! options.showReferenceSpectrum)
+        {
+            overlayValid = false;
+            return;
+        }
+
+        const int version = refs.getAnalysisVersion();
+        if (version != overlayVersion)
+        {
+            overlayVersion = version;
+            overlayRef = refs.getReferenceProfile();
+            overlayMix = refs.getMixProfile();
+            const auto comparison = refs.getComparison();
+            overlayOffset = comparison.valid() ? comparison.normalisationOffsetDb : 0.0f;
+        }
+
+        if (! overlayRef.valid || ! output.hasData())
+        {
+            overlayValid = false;
+            return;
+        }
+
+        const float tiltPerOct = options.spectrumTiltDbPerOct;
+        const bool mixValid = overlayMix.valid;
+        double sumDiff = 0.0, sumLevel = 0.0;
+        int n = 0;
+        for (int i = 0; i < ps::kCurvePoints; ++i)
+        {
+            const float hz = ps::curveFrequency (i);
+            const float tilt = tiltPerOct * std::log2 (hz / 1000.0f);
+            const float r = overlayRef.curveDb[(size_t) i];
+            overlayDb[(size_t) i] = ps::hasValue (r) ? r - (mixValid ? overlayOffset : 0.0f) + tilt : ps::kNoValue;
+
+            if (hz < 100.0f || hz > 10000.0f)
+                continue;
+            const float level = output.levelDbAt (hz);
+            const float base = mixValid ? overlayMix.curveDb[(size_t) i] : r;
+            if (level <= -150.0f || ! ps::hasValue (base) || ! ps::hasValue (r))
+                continue;
+            sumDiff += (double) (level - (mixValid ? base + tilt : overlayDb[(size_t) i]));
+            sumLevel += (double) level;
+            ++n;
+        }
+
+        if (n < 8)
+        {
+            overlayValid = false;
+            return;
+        }
+
+        // A silent output (host stopped) keeps the last alignment instead of sinking with the analyser.
+        const float shift = (float) (sumDiff / n);
+        if (! overlayHasShift)
+            overlayShift = shift;
+        else if (sumLevel / n > -110.0)
+            overlayShift += (shift - overlayShift) * 0.12f;
+        overlayHasShift = true;
+        overlayValid = true;
+    }
+
+    void drawReferenceSpectrum (juce::Graphics& g, const ps::ui::FreqAxis& axis, float minDb, float maxDb) const
+    {
+        if (! overlayValid || ! options.showReferenceSpectrum || axis.area.isEmpty() || maxDb <= minDb)
+            return;
+
+        const auto area = axis.area;
+        auto yFor = [&] (float db) {
+            const float t = (juce::jlimit (minDb - 6.0f, maxDb + 2.0f, db) - minDb) / (maxDb - minDb);
+            return juce::jlimit (area.getY(), area.getBottom() + 2.0f, area.getBottom() - t * area.getHeight());
+        };
+
+        juce::Path p;
+        bool penDown = false;
+        for (int i = 0; i < ps::kCurvePoints; ++i)
+        {
+            const float hz = ps::curveFrequency (i);
+            const float db = overlayDb[(size_t) i];
+            if (hz < axis.minHz || hz > axis.maxHz || ! ps::hasValue (db))
+            {
+                penDown = false;
+                continue;
+            }
+            const juce::Point<float> pt (axis.hzToX (hz), yFor (db + overlayShift));
+            if (penDown)
+                p.lineTo (pt);
+            else
+                p.startNewSubPath (pt);
+            penDown = true;
+        }
+
+        juce::Graphics::ScopedSaveState state (g);
+        g.reduceClipRegion (area.toNearestInt());
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        g.strokePath (p, juce::PathStrokeType (2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour (ps::ui::Colours::reference.withAlpha (0.9f));
+        g.strokePath (p, juce::PathStrokeType (1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
     //==========================================================================
@@ -437,6 +632,11 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (assistantPanel.isVisible())
             assistantPanel.tick();
 
+        if (referencePanel.isVisible())
+            referencePanel.tick();
+
+        updateReferenceOverlay();
+
         if (history.isVisible() && ++historyCountdown >= 10)
         {
             historyCountdown = 0;
@@ -476,7 +676,8 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     ps::ui::IoPanel io;
     ps::ui::DitherPanel dither;
     ps::ui::AssistantPanel assistantPanel;
-    int chainSelection = (int) ps::ModuleType::Equalizer1;   // where "Chain" returns to from the Assistant
+    ps::ui::ReferencePanel referencePanel;
+    int chainSelection = (int) ps::ModuleType::Equalizer1;   // where "Chain" returns to from the Assistant / Reference page
     std::unique_ptr<ps::ui::ModulePanel> panel;
     ps::ui::HelpOverlay help;
     ps::ui::HistoryPopup history;
@@ -489,6 +690,15 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     juce::uint32 noticeShownMs = 0;
     int focusSweep = 30, learnCountdown = 0, historyCountdown = 0;
     double lastFrameMs = -1.0e9;
+
+    bool dragActive = false, dragSupported = false;   // files dragged over the editor
+
+    // The reference overlay of the module analysers
+    ps::TrackProfile overlayRef, overlayMix;
+    std::array<float, ps::kCurvePoints> overlayDb {};
+    float overlayOffset = 0.0f, overlayShift = 0.0f;
+    int overlayVersion = -1;
+    bool overlayValid = false, overlayHasShift = false;
 
     juce::VBlankAttachment vblank { &owner, [this] { frame(); } };   // last: its callback uses everything above
 };
@@ -511,6 +721,7 @@ PureSheenEditor::PureSheenEditor (PureSheenProcessor& p)
 
     d.content.addChildComponent (d.dither);
     d.content.addChildComponent (d.assistantPanel);
+    d.content.addChildComponent (d.referencePanel);
     d.content.addChildComponent (d.help);
     d.content.addChildComponent (d.history);
 
@@ -580,11 +791,11 @@ void PureSheenEditor::selectModule (int moduleTypeOrMinus1)
     auto& d = *impl;
     if (moduleTypeOrMinus1 == ps::ui::kChainSelection)
         moduleTypeOrMinus1 = d.chainSelection;
-    if (moduleTypeOrMinus1 == ps::ui::kAssistantSelection)
+    if (moduleTypeOrMinus1 == ps::ui::kAssistantSelection || moduleTypeOrMinus1 == ps::ui::kReferenceSelection)
     {
-        if (d.selected != ps::ui::kAssistantSelection)
+        if (d.selected != ps::ui::kAssistantSelection && d.selected != ps::ui::kReferenceSelection)
             d.chainSelection = d.selected;
-        d.selected = ps::ui::kAssistantSelection;
+        d.selected = moduleTypeOrMinus1;
     }
     else
     {
@@ -612,6 +823,41 @@ void PureSheenEditor::showHint (const juce::String& text)
         impl->panel->showHeaderHint (text);
     else
         impl->notify (text);
+}
+
+void PureSheenEditor::drawReferenceSpectrum (juce::Graphics& g, const ps::ui::FreqAxis& axis, float minDb, float maxDb)
+{
+    impl->drawReferenceSpectrum (g, axis, minDb, maxDb);
+}
+
+bool PureSheenEditor::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return ! files.isEmpty();
+}
+
+void PureSheenEditor::fileDragEnter (const juce::StringArray& files, int, int)
+{
+    auto& d = *impl;
+    d.dragActive = true;
+    d.dragSupported = false;
+    for (const auto& f : files)
+        d.dragSupported = d.dragSupported || psplug::TrackReferencing::isSupportedFile (juce::File (f));
+    d.content.repaint();
+}
+
+void PureSheenEditor::fileDragExit (const juce::StringArray&)
+{
+    impl->dragActive = false;
+    impl->content.repaint();
+}
+
+void PureSheenEditor::filesDropped (const juce::StringArray& files, int, int)
+{
+    auto& d = *impl;
+    d.dragActive = false;
+    d.content.repaint();
+    if (ps::ui::ReferencePanel::addFiles (d, files) > 0)
+        selectModule (ps::ui::kReferenceSelection);
 }
 
 void PureSheenEditor::setOptions (const ps::ui::UiOptions& o)

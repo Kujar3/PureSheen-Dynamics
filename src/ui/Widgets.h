@@ -184,6 +184,8 @@ struct UiOptions
     bool dimBypassed = true;
     int historyDepth = 200;
 
+    bool showReferenceSpectrum = true;     // (phase 3) the selected reference's curve on the module analysers
+
     juce::ValueTree toValueTree() const;
     static UiOptions fromValueTree (const juce::ValueTree&);
 };
@@ -236,6 +238,15 @@ struct EditorServices
     virtual SpectrumAnalyser& getModulePostSpectrum() = 0;   // (post)
     virtual SpectrumAnalyser& getOutputSpectrum() = 0;
     virtual void showHint (const juce::String& text) = 0;    // transient hint in the panel's header
+
+    // (phase 3, Track Referencing) Draws the selected reference's spectrum (its active region) as a thin lavender line
+    // on a spectrum display, in that display's own dB scale [minDb, maxDb] (as SpectrumAnalyser::draw), with the
+    // analyser's tilt and aligned in level to the master. Draws nothing when UiOptions::showReferenceSpectrum is off
+    // or no reference is analysed. Call it after the spectra, before the curves.
+    virtual void drawReferenceSpectrum (juce::Graphics&, const FreqAxis&, float minDb, float maxDb)
+    {
+        juce::ignoreUnused (minDb, maxDb);
+    }
 };
 
 //==============================================================================

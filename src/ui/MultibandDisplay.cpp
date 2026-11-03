@@ -754,6 +754,7 @@ struct MultibandDisplay::Impl
                 auto& post = services.getModulePostSpectrum();
                 pre.draw (g, fx, minDb, maxDb, Colours::input.withAlpha (0.42f), options.spectrumFill);
                 post.draw (g, fx, minDb, maxDb, colour.withAlpha (0.9f), false);
+                services.drawReferenceSpectrum (g, fx, minDb, maxDb);   // (Track Referencing)
 
                 if (! pre.hasData() && ! post.hasData())
                 {

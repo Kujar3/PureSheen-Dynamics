@@ -10,6 +10,8 @@ namespace ps::ui
 // (select (kChainSelection) returns to the module that was selected before the Assistant opened).
 inline constexpr int kAssistantSelection = -3;
 inline constexpr int kChainSelection = -4;
+// (phase 3) The Track Referencing page (shown like the Assistant page; kChainSelection returns from it too).
+inline constexpr int kReferenceSelection = -5;
 
 struct EditorContext
 {
@@ -20,7 +22,8 @@ struct EditorContext
     virtual const UiOptions& getUiOptions() const = 0;
     virtual void applyOptions (const UiOptions&) = 0;
 
-    virtual void select (int moduleTypeOrMinus1) = 0;     // -1 = Dither panel, kAssistantSelection, kChainSelection
+    virtual void select (int moduleTypeOrMinus1) = 0;     // -1 = Dither panel, kAssistantSelection, kChainSelection,
+                                                          // kReferenceSelection
     virtual int getSelection() const = 0;
 
     virtual void toggleHelp() = 0;

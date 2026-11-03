@@ -12,7 +12,7 @@ namespace psplug
 namespace
 {
 constexpr float kSilentMeanSquare = 1.0e-7f;   // -70 dBFS
-constexpr double kMaxReferenceSeconds = 600.0;
+constexpr double kMaxFileSeconds = 600.0;       // "Analyse a file": longest file read
 
 const juce::Identifier kTag ("Assistant"), kCard ("Card"), kP ("P"), kRef ("Reference");
 
@@ -146,8 +146,6 @@ Assistant::~Assistant()
 {
     cancelFlag.store (true);
     joinWorker();
-    if (referenceWorker.joinable())
-        referenceWorker.join();
     releaseCapture();
 }
 
@@ -339,7 +337,7 @@ bool Assistant::analyseFile (const juce::File& file)
     startWorker ([this, gen, file, set, ref] {
         std::vector<float> l, r;
         double rate = 0.0;
-        if (! readFile (file, kMaxReferenceSeconds, l, r, rate))
+        if (! readFile (file, kMaxFileSeconds, l, r, rate))
         {
             auto res = std::make_unique<Results>();
             res->generation = gen;
@@ -497,31 +495,6 @@ void Assistant::tick()
         changed();
     }
 
-    // A finished reference load (dropped when superseded by a clear / another reference / a restore)
-    if (referencePendingFlag.exchange (false))
-    {
-        std::unique_ptr<Results> ref;
-        {
-            const std::lock_guard<std::mutex> lock (resultsMutex);
-            ref = std::move (referenceResult);
-        }
-        if (referenceWorker.joinable())
-            referenceWorker.join();   // it published as its last step
-        if (ref != nullptr && ref->generation == referenceGeneration.load())
-        {
-            loadingReference.store (false);
-            if (ref->failed)
-                status = ref->message;
-            else
-            {
-                reference = ref->reference;
-                settings.engine.useReference = true;
-                rebuild();   // with the reference (when the audio of a listen is still here)
-            }
-            changed();
-        }
-    }
-
     if (! pendingFlag.exchange (false))
         return;
 
@@ -648,49 +621,34 @@ void Assistant::setMacro (Macro k, float value, bool gestureEnd)
 }
 
 //==============================================================================
-bool Assistant::loadReferenceFile (const juce::File& file)
+void Assistant::awaitReference (const juce::String& path, const juce::String& name)
 {
-    if (! file.existsAsFile())
-        return false;
-    if (loadingReference.exchange (true))
-        return false;
-    status = "Analysing the reference " + file.getFileName() + "...";
-    // Its own thread: a running analysis goes on; the result rebuilds the cards when it arrives. (An older load that a
-    // clear / restore superseded is still finishing in rare cases: wait for it.)
-    if (referenceWorker.joinable())
-        referenceWorker.join();
-    const int gen = referenceGeneration.fetch_add (1) + 1;
-    referenceWorker = std::thread ([this, gen, file] {
-        auto r = std::make_unique<Results>();
-        r->generation = gen;
-        std::vector<float> l, rr;
-        double rate = 0.0;
-        if (! readFile (file, kMaxReferenceSeconds, l, rr, rate))
-        {
-            r->failed = true;
-            r->message = "That reference file could not be read.";
-        }
-        else
-        {
-            const auto a = ps::assist::analyse (l.data(), rr.data(), (long long) l.size(), rate);
-            r->reference = ps::assist::referenceFromAnalysis (a, file.getFileNameWithoutExtension().toStdString());
-            if (! r->reference.valid)
-            {
-                r->failed = true;
-                r->message = "The reference file is too short or silent.";
-            }
-        }
-        const std::lock_guard<std::mutex> lock (resultsMutex);
-        referenceResult = std::move (r);
-        referencePendingFlag.store (true);
-    });
+    pendingReferencePath = path;
+    loadingReference.store (path.isNotEmpty());
+    if (path.isNotEmpty())
+        status = "Analysing the reference " + name + "...";
     changed();
-    return true;
+}
+
+juce::String Assistant::getPendingReferencePath() const { return pendingReferencePath; }
+
+void Assistant::referenceFailed (const juce::String& message)
+{
+    pendingReferencePath = {};
+    loadingReference.store (false);
+    status = message;
+    changed();
+}
+
+void Assistant::updateReference (const ps::assist::ReferenceTarget& r)
+{
+    reference = r;
+    changed();
 }
 
 void Assistant::setReference (const ps::assist::ReferenceTarget& r)
 {
-    referenceGeneration.fetch_add (1);   // a load still running is superseded
+    pendingReferencePath = {};           // a reference still being analysed is superseded
     loadingReference.store (false);
     reference = r;
     settings.engine.useReference = r.valid;
@@ -757,6 +715,8 @@ juce::ValueTree Assistant::buildStateTree() const
     {
         juce::ValueTree r (kRef);
         r.setProperty ("name", juce::String (reference.name), nullptr);
+        if (! reference.path.empty())
+            r.setProperty ("path", juce::String (reference.path), nullptr);
         r.setProperty ("lufs", reference.integratedLufs, nullptr);
         r.setProperty ("plr", reference.plrDb, nullptr);
         r.setProperty ("widths", floatsToString (reference.widthPct), nullptr);
@@ -828,7 +788,7 @@ void Assistant::restoreNow (const juce::ValueTree& t)
     joinWorker();
     releaseCapture();
     invalidateResults();
-    referenceGeneration.fetch_add (1);   // a reference load still running belongs to the old project
+    pendingReferencePath = {};           // a reference still being analysed belongs to the old project
     loadingReference.store (false);
     stopRequested.store (false);
 
@@ -873,6 +833,7 @@ void Assistant::restoreNow (const juce::ValueTree& t)
     {
         reference.valid = true;
         reference.name = r.getProperty ("name").toString().toStdString();
+        reference.path = r.getProperty ("path").toString().toStdString();
         reference.integratedLufs = prop (r, "lufs", ps::kNoValue);
         reference.plrDb = prop (r, "plr", ps::kNoValue);
         floatsFromString (r.getProperty ("widths").toString(), reference.widthPct, 0.0f);

@@ -39,7 +39,7 @@ const juce::Identifier idMeterType ("meterType"), idMeterScale ("meterScale"), i
     idPeakHold ("peakHoldMs"), idRmsWindow ("rmsWindowMs"), idTruePeaks ("detectTruePeaks"), idKType ("kSystemType"),
     idSpecType ("spectrumType"), idFreqScale ("freqScale"), idAveraging ("spectrumAveragingS"),
     idSpecPeak ("spectrumPeakHold"), idSpecFill ("spectrumFill"), idTilt ("spectrumTilt"), idFft ("fftSize"),
-    idTooltips ("showTooltips"), idDim ("dimBypassed"), idHistory ("historyDepth");
+    idTooltips ("showTooltips"), idDim ("dimBypassed"), idHistory ("historyDepth"), idRefSpectrum ("showReferenceSpectrum");
 } // namespace
 
 juce::ValueTree UiOptions::toValueTree() const
@@ -62,6 +62,7 @@ juce::ValueTree UiOptions::toValueTree() const
     t.setProperty (idTooltips, showTooltips, nullptr);
     t.setProperty (idDim, dimBypassed, nullptr);
     t.setProperty (idHistory, historyDepth, nullptr);
+    t.setProperty (idRefSpectrum, showReferenceSpectrum, nullptr);
     return t;
 }
 
@@ -93,6 +94,7 @@ UiOptions UiOptions::fromValueTree (const juce::ValueTree& t)
     o.showTooltips = (bool) t.getProperty (idTooltips, o.showTooltips);
     o.dimBypassed = (bool) t.getProperty (idDim, o.dimBypassed);
     o.historyDepth = juce::jlimit (10, 1000, (int) t.getProperty (idHistory, o.historyDepth));
+    o.showReferenceSpectrum = (bool) t.getProperty (idRefSpectrum, o.showReferenceSpectrum);
     return o;
 }
 } // namespace ps::ui

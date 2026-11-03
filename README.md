@@ -40,7 +40,7 @@ The **?** button in the top-right corner explains every part inside the plugin. 
    Balance, Dynamic EQ, Maximizer) for the genre it hears and offers a few other starting points (Gentle, Loud, Warm,
    Bright & Wide, Punchy). Each card is one undo step, and every module stays editable.
    - **Custom** picks the genre target, the loudness, the output level and which modules it may use first. A
-     reference track (the **+** in the target list) can be the target too.
+     reference track (the **+** in the target list, or any reference on the Reference page) can be the target too.
    - The macros (Tone Match, Tilt, Dynamics Match, Width Match and four band widths, Compress, Definition, Tone
      Balance, Loudness) keep the master's loudness steady while you move them, so you hear the change, not a level
      jump.
@@ -56,6 +56,18 @@ The **?** button in the top-right corner explains every part inside the plugin. 
    the sound, not the volume. **S** on a module solos it. The **triangle (Delta)** plays only what that module
    changes.
 4. **Keep versions.** Snapshots **A-D** store complete settings. The clock icon opens the undo history.
+5. **Compare with a reference.** Drop released songs you like (WAV, MP3, FLAC, AIFF or OGG, up to 10) anywhere on
+   the plugin, or open the **Reference** page from the switch next to the logo.
+   - The **reference button** in the header switches between your master and the selected reference. Level match
+     plays the reference at your master's loudness, so you hear the difference in sound, not in volume.
+   - **Loops A-E**: drag across the waveform to mark up to five sections per reference (the drop, a breakdown...),
+     then click a letter to play that section. Click it again for the whole track.
+   - The page compares your master with the reference: tonal balance per band, loudness, peaks and dynamics, stereo
+     width and mono bass, with a short list of what to try in PureSheen's modules.
+   - The analysers show the reference's spectrum as a lavender line (Options menu to turn it off).
+   - The Assistant can use any of these references as its target ("Ref: ..." in its target list).
+   - The project remembers the references, their loops and the settings, but not the audio: keep the files where
+     they are. A moved file shows as missing; click it to find it again.
 
 The modules (drag them in the chain strip to reorder, **Add** for more):
 

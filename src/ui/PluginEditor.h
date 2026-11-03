@@ -36,6 +36,7 @@
 */
 class PureSheenEditor final : public juce::AudioProcessorEditor,
                               public ps::ui::EditorServices,
+                              public juce::FileDragAndDropTarget,
                               private juce::ChangeListener,
                               private juce::Timer
 {
@@ -56,6 +57,15 @@ public:
     ps::ui::SpectrumAnalyser& getModulePostSpectrum() override;
     ps::ui::SpectrumAnalyser& getOutputSpectrum() override;
     void showHint (const juce::String&) override;
+    // (phase 3) the selected reference's curve on a spectrum display (Track Referencing; see EditorServices)
+    void drawReferenceSpectrum (juce::Graphics&, const ps::ui::FreqAxis&, float minDb, float maxDb) override;
+
+    // (phase 3) Audio files dropped anywhere on the editor go to Track Referencing's list and open the Reference page
+    // (an overlay shows while dragging, coral for files that are not audio).
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void fileDragEnter (const juce::StringArray&, int x, int y) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
 
     void setOptions (const ps::ui::UiOptions&);         // Options menu; saved in the processor UI state
     void setHelpVisible (bool);

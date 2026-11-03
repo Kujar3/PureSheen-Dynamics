@@ -1041,6 +1041,7 @@ struct DynamicEqDisplay::Impl
         services.getModulePostSpectrum().draw (g, specAxis, kSpectrumMinDb, kSpectrumMaxDb,
                                                blend (setColour (activeSet()), Colours::input, 0.3f), false);
         g.endTransparencyLayer();
+        services.drawReferenceSpectrum (g, specAxis, kSpectrumMinDb, kSpectrumMaxDb);   // (Track Referencing)
 
         const int set = activeSet();
         const auto colour = setColour (set);

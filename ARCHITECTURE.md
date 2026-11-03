@@ -19,7 +19,8 @@ Later phases (enums are append-only, so they slot in):
 - Phase 2 (done, see "Phase 2" and "Status (phase 2 integration)" below): Dynamic EQ, Match EQ, Tone Balance,
   Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
 - Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
-- Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (from RefMatch), analog-style
+- Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (done, from RefMatch, see
+  "Track Referencing (phase 3)" below), analog-style
   compressor / EQ / limiter / tape modules, a de-limiter, and one plug-in per module ("PureSheen EQ", ...)
 - Phase 4: MCP bridge
 
@@ -39,7 +40,8 @@ scripts/fetch_clap.bat, clap-juce-extensions-state-rescan.patch, install-plugin.
                           (adapted from RefMatch at the end of Core)
 src/core/                 measurement core copied from RefMatch (pure C++17): Common.h (dB helpers),
                           Loudness (BS.1770 M/S/I/LRA, realtime safe), TruePeak (4x), Fft (radix-2 forward)
-                          (phase 3) TrackAnalysis: RefMatch's whole-track analyser (profile, 1/3-octave curve, bands)
+                          (phase 3) TrackAnalysis: RefMatch's whole-track analyser (profile, 1/3-octave curve, bands);
+                          RefCompare (master vs reference comparison + hints), Resampler (reference files)
 src/assist/               (phase 3) the Assistant (pure C++17): AssistFeatures (analysis), AssistEngine + AssistProfiles
                           (suggestions, macros, targets, detector), OfflineChain (loudness by offline render)
 src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests)
@@ -65,6 +67,7 @@ src/dsp/                  the DSP (pure C++17, no JUCE, unit-tested by CoreTests
 src/plugin/               PluginProcessor.h/.cpp (+ PluginState, UndoHistory, Presets, FactoryPresets, MatchEqState;
                           MatchEqStateTests.cpp is compiled into the dev tool only)
 src/plugin/Assistant.*    (phase 3) the Assistant on the processor side: capture, worker, state child, macro edits
+src/plugin/TrackReferencing.*  (phase 3) Track Referencing: reference list, loader + analysis threads, A/B playback
 src/plugin/import/        preset importer: ImportCommon / ImportEngine (pure C++, also in CoreTests), mapping tables
                           ImportMapEq / ImportMapCore / ImportMapPhase2, XmlPresetImport (JUCE side, file chooser)
 src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, ModulePanel, ModulePanels),
@@ -74,7 +77,8 @@ src/ui/                   Theme (from RefMatch), Widgets (+ Spectrum, Options, M
                           MatchEqModel), ToneBalancePanel / DefinitionPanel / SmootherPanel (+ SpectralDisplay,
                           SpectralWidgets, SpectralCommon), PunchPanel (+ PunchViews), LowContrastPanel (+
                           LowRegionDisplay), BassShaperPanel (+ BassScope), LowEndWidgets
-                          (phase 3) AssistantPanel (the Assistant page), the header's Assistant | Chain switch
+                          (phase 3) AssistantPanel (the Assistant page), the header's Assistant | Chain | Reference switch;
+                          ReferencePanel, RefWaveform, RefComparison (Track Referencing)
 tests/                    CoreTests (TestFramework.h, namespace pstest; TestSignals.h generators);
                           ParamCompatTests.cpp freezes the 0.1.1 parameter table (count + fingerprint)
 tools/dev/                PureSheenDev: selftest (processor-level + realtime allocation checks via
@@ -485,9 +489,8 @@ dragging) and is one undo step on release. Loudness matched (default on): the Ma
 pre-Maximizer loudness change, interpolated from per-macro tables measured at five positions.
 
 **Reference hook.** `ps::assist::ReferenceTarget` (tonal balance relative to pink, width per processing band,
-integrated loudness, PLR, name) is all the engine needs from a reference. The Assistant fills it from a file now
-(`loadReferenceFile`, on its own thread); Track Referencing will call `Assistant::setReference` with the selected
-reference, built by the same analysis (`TrackAnalysis`).
+integrated loudness, PLR, name, path) is all the engine needs from a reference. It comes from Track Referencing's list
+(one analysis per file, see "Track Referencing (phase 3)").
 
 **State.** Child "Assistant" (version 1) of the plug-in state: settings, loudness matching, the reference target, the
 cards (values stored sparse, against our defaults), the applied card, the detected target, the track's balance curve.
@@ -514,3 +517,106 @@ renders improve it; the target list overrides it); the Punch band amounts are
 the weakest rule; Dynamic EQ frequencies come from resonance peaks, not the reference's fixed grid; Tilt shares EQ 1's
 Amount (Tone Match scales it too); every card's loudness tables take a few seconds each on a worker thread (the cards
 and macros work meanwhile, unmatched until their tables arrive).
+
+## Track Referencing (phase 3)
+
+Comparing the master with released songs: up to 10 references, five loops (A-E) each, level-matched A/B switching and
+a plain-language comparison. Ported from RefMatch (the family's reference-track matcher): its analyser
+(`src/core/TrackAnalysis`), comparison and hints (`src/core/RefCompare`, the advice rewritten for PureSheen's modules),
+resampler (`src/core/Resampler`) and its processor's playback engine and threads (`src/plugin/TrackReferencing`).
+
+**Files.**
+- `src/core/RefCompare.h/.cpp`: `referenceMatchGainDb`, `Comparison` (band differences at equal loudness, severities
+  with hysteresis, curve difference), ranked `Hint`s (setup, true peak, low-end mono, loudness, PLR, tone per band,
+  width). CoreTests `ref.`.
+- `src/core/Resampler.h/.cpp`: Kaiser-windowed sinc (48 zero crossings, beta 9.5, cut-off at 95 % of the lower
+  Nyquist), exact polyphase for small rational ratios, 4096 phases otherwise. CoreTests `ref. resampler`.
+- `src/plugin/TrackReferencing.h/.cpp`: `psplug::TrackReferencing`, owned by the processor
+  (`PureSheenProcessor::getTrackReferencing()`); the header is the contract for the UI.
+- `tools/dev/RefTool.cpp`: `PureSheenDev reference <master> <ref> [--chain default] [--loop s e] [--listen out.wav]`.
+- UI: `src/ui/ReferencePanel.*` (the page), `src/ui/RefWaveform.*` (waveform strip with loops A-E),
+  `src/ui/RefComparison.*` (tonal balance, loudness & dynamics, stereo, what to try), plus the header, editor, Options
+  and spectrum-display hooks below.
+
+**Signal path.** `processBlock` runs the chain, then `TrackReferencing::process` on the final output: the master is
+copied to the analysis FIFO, the selected reference is rendered (unity gain), Swap and Mono of the I/O panel are
+applied to it (ramped over 20 ms), it is measured as heard, and it replaces the master through an equal-power A/B fade
+(30 ms) with the level-match gain (250 ms multiplicative glide; Off is 0 dB at once). Settled on the master the buffer is
+untouched (bit-exact); with no playable reference Listen is ignored; offline renders always pass the master. The I/O
+meters keep measuring the master. No parameters were added (the 841-entry table and its fingerprint are unchanged).
+
+**Playback** (RefMatch's engine): 8 read heads; every discontinuity (host jump, loop wrap, seek, loop or reference
+change, start / stop) starts a new head that fades in over 8 ms while the others fade out. Sync on: while the host
+plays, position = region start + (host position + seek offset) mod region length, host wobble within 5 ms ignored.
+Sync off, or the host stopped with Play when stopped on: the reference runs on its own; Play when stopped off: silent.
+A region that ends at the end of the file wraps 8 ms early into the lead-in. The track and region reach the audio
+thread through a try-locked slot (32 attempts; a failure silences that chunk and counts a dropout, expected 0); replaced
+tracks are parked for their fade-out and freed on another thread.
+
+**List and loading.** Each reference is decoded (JUCE's basic formats: WAV, AIFF, FLAC, MP3, Ogg Vorbis; 0.5 s - 20 min;
+non-finite samples become silence, more than 1 % is an error), resampled to the host rate and analysed ONCE on the
+loader thread: `ps::assist::analyse` gives the whole-file `TrackProfile` (the comparison) and the Assistant's
+`ReferenceTarget`. Loop regions get their own `TrackProfile` (`TrackAnalyser`, Since reset), cached per letter until the
+loop changes; while one is measured the previous comparison stays. Loads run one at a time: the selected reference
+first, then a pending region analysis, then the other loads in order. Errors: "File not found" (state Missing, kept
+with its loops until relinked), "Unsupported or damaged audio file", too short / long, out of memory (state Error).
+A host-rate change drops the decoded audio at the old rate; the selected reference decodes again (the analysis is kept).
+
+**Memory.** Decoded audio (stereo float at the host rate, about 11 MB per minute at 48 kHz) stays for the selected
+reference and, least recently selected out first, for the others within 768 MB (`setMemoryBudget`). An evicted
+reference keeps its analysis, overview, loudness curve and loops, and is decoded again when selected (the master plays
+meanwhile).
+
+**Analysis thread** (every 15 ms, low priority; fed only while the list is not empty): a `TrackAnalyser` on the master
+(Recent 30 s or Since reset), the `Comparison` against the selected reference's active region (band hysteresis held
+while the same region and averaging stay), and the level-match target: Integrated = master integrated vs region
+integrated; Short-term = the two 3 s windows as heard, used while both hold 3.2 s of continuous non-silent audio, else
+the last one is held (the Integrated match before the first).
+
+**The Assistant.** One list, one analysis: the Assistant has no file loader of its own any more. Its "+ Reference
+track..." adds the file to the list and calls `Assistant::awaitReference`; the processor (`connectReferencing`) calls
+`setReference` with the entry's `ReferenceTarget` when its analysis is done (`referenceFailed` when it is not), and
+`updateReference` (numbers only, no rebuild) when the Assistant's current reference file is analysed again (a project
+reopened). `ReferenceTarget::path` links the two; removing that reference from the list returns the Assistant to Auto.
+Selecting a reference to listen to never changes the chain.
+
+**State.** Child `<TrackReferencing version="1" levelMatch sync playWhenStopped averaging selected="index">` with one
+`<Ref path activeLoop loopA="start,end" ... loopE/>` per reference (seconds). The audio is not saved; restoring reloads
+the files (entries for the same files are kept as they are, so a host restoring the state it just saved reloads
+nothing). Listen always restores to the master. A host-thread save copies a tree cached on the message thread; a
+host-thread restore is queued for the next tick (saves meanwhile return it). Not part of undo, snapshots or presets.
+
+**Verification** (build-ref): CoreTests `ref.` (23: the comparison and hints ported from RefMatch with the new texts,
+the resampler); selftest "-- Track Referencing" (bit-exact master with and without a reference, sample-exact reference
+at the host position, loops, seek, Sync off, Play when stopped, no clicks on loop wraps / switches / seeks / A/B fades,
+Integrated and Short-term level match within 0.2 LU of the master, Mono / Swap, offline renders, allocation-free
+playback while loads / switches / loop edits run, resampling, the 10-reference limit, eviction and re-decode, the state
+round trip, a missing file and relink, a host-thread restore, the Assistant's target from the shared analysis, a
+sample-rate change); `PureSheenDev reference` on real music: FLAC, Ogg, MP3 and WAV references load in 1-3 s for 2-7
+minute songs, integrated loudness and LRA within 0.1 LU of ffmpeg's ebur128.
+
+**UI.**
+- Header: the view switch has a third segment (Assistant | Chain | Reference) that opens the Reference page in the
+  module-panel area (`kReferenceSelection`; the chain strip and the I/O panel stay). The REF pill toggles Listen from
+  anywhere; it fills lavender with the A/B fade and is dimmed while no reference is ready.
+- Page: the reference list (up to 10; loading progress, error, "Missing - click to find it" = relink; remove on hover;
+  + Add takes several files), the waveform strip (overview, short-term loudness, playhead, ruler, click to seek; loops
+  A-E as coloured regions: click an empty letter to arm it and drag on the wave, click a set letter to play it and
+  again for the whole track, drag its edges, right-click a letter to clear it; a drag with nothing armed draws into
+  the first empty letter), the MASTER | REFERENCE switch with the match gain, the Match / Window chips, Sync, Play when
+  stopped, Reset. The comparison is a 2 x 2 grid when there is room (1800 x 1100), tonal balance next to tabs at the
+  default size, four tabs at 980 x 600 (a dot marks a tab with something worth a look).
+- Files dropped anywhere on the editor are added (an overlay while dragging; a notice for a full list or an
+  unsupported file) and open the page.
+- Reference spectrum overlay (Options: "Show the reference in the analysers", on by default): the selected reference's
+  active-region curve in lavender on the EQ, Dynamic EQ, Match EQ, multiband and spectral displays, behind the curves.
+  It is shown at the master's loudness (reference curve - normalisationOffsetDb, which is reference minus master) with
+  the analyser's tilt, and shifted onto the output analyser by the mean difference (100 Hz - 10 kHz) between the
+  analyser and the master's own curve (smoothed per tick, held while the output is silent).
+- The Assistant's target list shows one "Ref: name" row per ready reference; its x clears the Assistant's target only.
+- Snapshots `16_reference_*` (`PURESHEEN_SNAPSHOT_ONLY=reference`): empty, loading, loaded at three sizes and per tab,
+  listening, missing, drop overlays, the Assistant's target list, the overlay on EQ 1 (synthetic WAVs only).
+
+**Known limits.** Integrated level match uses the whole region's loudness, so a quiet intro of the reference plays
+quieter than the master (Short-term follows what is heard). The reference plays without the chain's latency offset
+(a different song; a few ms do not matter).

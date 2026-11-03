@@ -750,6 +750,8 @@ struct SpectralDisplay::Impl
 
                 if (showPost)
                     drawFaded (post, accent, postOpacity, postFill && options.spectrumFill);
+
+                services.drawReferenceSpectrum (g, fx, specMin, specMax);   // (Track Referencing)
             }
 
             paintZones (g);

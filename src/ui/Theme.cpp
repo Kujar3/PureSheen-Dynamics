@@ -90,6 +90,14 @@ float textWidth (const juce::Font& f, const juce::String& text)
     return juce::GlyphArrangement::getStringWidth (f, text);
 }
 
+juce::Colour loopColour (int letter)
+{
+    // Gold, sky, rose, lime, apricot: apart from each other, from the reference lavender and from the brand mint.
+    static const juce::Colour loops[] { juce::Colour (0xfff2c46a), juce::Colour (0xff6cc2f2), juce::Colour (0xfff291b6),
+                                        juce::Colour (0xffa4d87c), juce::Colour (0xfff29c6b) };
+    return letter >= 0 && letter < 5 ? loops[letter] : Colours::reference;
+}
+
 void drawPanel (juce::Graphics& g, juce::Rectangle<float> bounds, float radius)
 {
     // Same card style as the palette / lane / export panels (which paint their own surfaces).

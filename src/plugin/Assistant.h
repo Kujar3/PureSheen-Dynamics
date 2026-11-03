@@ -24,8 +24,10 @@
 //   Loudness = the Maximizer's target ...), so undo, snapshots and hand edits keep them consistent; a move writes only
 //   that macro's parameters (+ the Maximizer gain when loudness matching is on, or for the Loudness macro). A drag is
 //   one undo step (setMacro with gestureEnd on mouse-up).
-//   Reference: a ReferenceTarget from a file (loadReferenceFile, worker thread) or from a caller (setReference; Track
-//   Referencing will use it). Changing targets or the reference rebuilds the cards from the kept analysis.
+//   Reference: a ReferenceTarget from Track Referencing's list (one analysis per file, see TrackReferencing.h). A file
+//   the Assistant page adds goes into that list; awaitReference marks it, and the processor calls setReference when its
+//   analysis is done (referenceFailed when it is not). Changing targets or the reference rebuilds the cards from the
+//   kept analysis; updateReference only refreshes the numbers.
 //
 // State: the "Assistant" child of the plug-in state (version 1): settings, loudness matching, the reference target, the
 // cards (sparse values: only those that differ from our defaults), the applied card, and the bits of the analysis the
@@ -107,8 +109,12 @@ public:
     bool isLoudnessMatched() const noexcept { return loudnessMatched; }
     void setLoudnessMatched (bool on);
 
-    bool loadReferenceFile (const juce::File&);   // worker thread; false: unreadable
-    void setReference (const ps::assist::ReferenceTarget&);
+    // Reference (from Track Referencing; see the processor's connectReferencing).
+    void awaitReference (const juce::String& path, const juce::String& name);   // shows "Analysing the reference..."
+    juce::String getPendingReferencePath() const;
+    void referenceFailed (const juce::String& message);
+    void setReference (const ps::assist::ReferenceTarget&);   // the target (rebuilds the cards from the kept audio)
+    void updateReference (const ps::assist::ReferenceTarget&); // the same reference re-analysed: numbers only
     void clearReference();
     ps::assist::ReferenceTarget getReference() const;
     bool isLoadingReference() const noexcept { return loadingReference.load(); }
@@ -143,17 +149,16 @@ private:
     std::atomic<bool> stopRequested { false };   // prepare() from another thread while listening
 
     // worker
-    std::thread worker, referenceWorker;
+    std::thread worker;
     std::atomic<bool> cancelFlag { false }, loadingReference { false }, workerActive { false };
     std::atomic<int> phase { (int) Phase::Idle };
-    std::atomic<int> generation { 0 }, referenceGeneration { 0 };
+    std::atomic<int> generation { 0 };
     std::atomic<float> progress { 0.0f };
 
     // results (worker -> message thread)
     mutable std::mutex resultsMutex;
     std::unique_ptr<Results> pending;     // set by the worker, taken by tick()
-    std::unique_ptr<Results> referenceResult;   // set by the reference loader, taken by tick()
-    std::atomic<bool> pendingFlag { false }, referencePendingFlag { false };
+    std::atomic<bool> pendingFlag { false };
 
     std::mutex restoreMutex;
     juce::ValueTree pendingRestore;              // a restore from another thread, applied at the next tick
@@ -165,6 +170,7 @@ private:
     // message-thread state
     Settings settings;
     ps::assist::ReferenceTarget reference;
+    juce::String pendingReferencePath;   // a Track Referencing file being analysed for us
     std::vector<ps::assist::Suggestion> suggestions;
     int applied = -1;
     bool loudnessMatched = true;
