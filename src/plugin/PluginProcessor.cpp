@@ -22,9 +22,11 @@
 //
 // Choices made where neither the contract nor the research decides:
 // - Undo history: full-state snapshots (every parameter + chain order). Gestures (host or UI) are committed ~250 ms
-//   after the last gesture ended, so a drag, a double-click reset or a mouse-wheel burst is one step. Host automation
-//   (value changes without a gesture) is never recorded by itself. Bypass and Gain Match are listening aids: they are
-//   not recorded, not restored by undo / snapshots and not stored in presets (the host project state keeps them).
+//   after the last gesture ended, so a drag, a double-click reset or a mouse-wheel burst is one step. Bypass and Gain
+//   Match are listening aids: they are not recorded, not restored by undo / snapshots and not stored in presets (the
+//   host project state keeps them).
+// - Host automation (value changes without a gesture): a control a clip is moving belongs to the clip. It stays out of
+//   the history and out of "modified", and undo leaves it alone, until the user takes hold of it again.
 // - addModule() brings a module in at its default settings (a fresh module, like the reference suite), as part of the "Added X"
 //   step; setChainOrder() keeps the parameters as they are (drag reorder / re-add from undo).
 // - resetModule() resets every parameter of the module except its power switch.
@@ -44,6 +46,7 @@ const juce::Identifier kStateTag ("PureSheen"), kChainTag ("Chain"), kOptionsTag
 constexpr int kStateVersion = 1;
 constexpr double kGestureSettleMs = 250.0;
 constexpr double kStuckGestureMs = 10000.0;   // a gesture the host never ended stops blocking the history after 10 s
+constexpr double kHostEchoMs = 500.0;         // a value arriving this soon after a gesture may be the host echoing it
 
 // A loaded value passes through the parameter's normalised form, and a float does not always survive that trip (one
 // ulp on log ranges), so a state saved again after loading would differ from the file it was loaded from. Saves write
@@ -261,6 +264,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         const auto& specs = ps::paramSpecs();
         params.reserve (specs.size());
         raw.reserve (specs.size());
+        automated = std::make_unique<std::atomic<bool>[]> (specs.size());
+        gesturesOpen = std::make_unique<std::atomic<int>[]> (specs.size());
         if (product.isLocked())
             fixedValues = std::make_unique<std::atomic<float>[]> (specs.size());
         for (size_t i = 0; i < specs.size(); ++i)
@@ -272,6 +277,9 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
             if (prm != nullptr)
             {
                 raw.push_back (apvts.getRawParameterValue (id));
+                if ((int) specOfHostIndex.size() <= prm->getParameterIndex())
+                    specOfHostIndex.resize ((size_t) prm->getParameterIndex() + 1, -1);
+                specOfHostIndex[(size_t) prm->getParameterIndex()] = (int) i;
             }
             else
             {
@@ -330,7 +338,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // (its presets leave the I/O panel alone).
     bool differsFromPreset() const
     {
-        const auto now = capture();
+        const auto now = withoutAutomation (presetBaseline);
         if (product.isSuite())
             return ! psplug::sameState (now, presetBaseline);
         for (int i = 0; i < (int) now.values.size(); ++i)
@@ -393,7 +401,11 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     std::atomic<int> activeGestures { 0 };
     std::atomic<bool> gesturePending { false };
     std::atomic<int> lastGestureParam { -1 };
+    std::vector<int> specOfHostIndex;                   // the host's parameter index -> paramSpecs() index
+    std::unique_ptr<std::atomic<bool>[]> automated;     // paramSpecs() order: moved by the host, not touched since
+    std::unique_ptr<std::atomic<int>[]> gesturesOpen;   // paramSpecs() order
     std::atomic<double> lastGestureEventMs { 0.0 };
+    std::atomic<double> lastAnyGestureMs { 0.0 };   // our own edits too: what a host may still be echoing
 
     // Learn
     struct LearnSpectrum
@@ -532,7 +544,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // A spectrum change is an undo step even when no parameter changed.
     void recordMatchEq (const juce::String& description)
     {
-        history.record (historyPrefix + description, capture(), -1, nowMs());
+        history.record (historyPrefix + description, withoutAutomation (history.current().state), -1, nowMs());
         matchEq->historyRecorded (history);
         {
             const juce::ScopedLock sl (extrasLock);
@@ -575,14 +587,27 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         return s;
     }
 
+    // The current state as the history and the preset's "modified" see it: where a clip is moving a control, the value
+    // from `base` stands in, so the clip's movement is no difference.
+    psplug::FullState withoutAutomation (const psplug::FullState& base) const
+    {
+        auto s = capture();
+        for (size_t i = 0; i < s.values.size() && i < base.values.size(); ++i)
+            if (automated[i].load (std::memory_order_relaxed))
+                s.values[i] = base.values[i];
+        return s;
+    }
+
     // Sets one parameter like a host edit (gesture + set unless withGesture is false). Callers mute the gesture
-    // listener (applying) around it.
+    // listener (applying) around it. An edit with a gesture is the user taking the control back from a clip.
     void setParam (int index, float plain, bool withGesture = true)
     {
         auto* p = params[(size_t) index];
         if (p == nullptr)   // not a parameter of this plugin: it stays at its fixed value
             return;
         const float target = psplug::sanitiseValue (index, plain);
+        if (withGesture)
+            automated[(size_t) index].store (false);
         if (raw[(size_t) index]->load() == target)
             return;
         if (withGesture)
@@ -603,9 +628,12 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         applying.store (was);
     }
 
-    void applyState (const psplug::FullState& s, bool includeChain, int scope = -1)
+    void applyState (const psplug::FullState& s, bool includeChain, int scope = -1, bool leaveAutomated = false)
     {
-        applyValues (s.values, [scope] (int i) { return psplug::isInPresetScope (i, scope); });
+        applyValues (s.values, [this, scope, leaveAutomated] (int i)
+        {
+            return psplug::isInPresetScope (i, scope) && ! (leaveAutomated && automated[(size_t) i].load());
+        });
         if (includeChain && s.order != chain.getOrder())
             setOrder (s.order);
     }
@@ -638,7 +666,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // History
     bool record (const juce::String& description, int singleParam = -1)
     {
-        auto s = capture();
+        auto s = withoutAutomation (history.current().state);
         if (psplug::sameState (s, history.current().state))
             return false;
         const bool isEqPlugin = product.kind == psplug::ProductKind::module && product.module == ps::ModuleType::Equalizer1;
@@ -663,13 +691,16 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
             if (! force && t - lastGestureEventMs.load() < kStuckGestureMs)
                 return;
             activeGestures.store (0);
+            if (! force)   // stuck. A forced commit may come while the user still holds a control.
+                for (size_t i = 0; i < params.size(); ++i)
+                    gesturesOpen[i].store (0);
         }
         if (! force && t - lastGestureEventMs.load() < kGestureSettleMs)
             return;
 
         gesturePending.store (false);
 
-        const auto s = capture();
+        const auto s = withoutAutomation (history.current().state);
         const auto changed = psplug::changedParams (history.current().state, s);
         if (changed.empty())
             return;
@@ -700,9 +731,9 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (index < 0 || index == history.getPosition())
             return;
         history.setPosition (index);
-        applyState (history.current().state, true);
+        applyState (history.current().state, true, -1, true);
         matchEq->applyHistory (history);   // Match EQ: the step's spectra
-        history.updateCurrentState (capture());
+        history.updateCurrentState (withoutAutomation (history.current().state));
         {
             const juce::ScopedLock sl (extrasLock);
             activeSnapshot = -1;
@@ -812,22 +843,38 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
 
     void timerCallback() override { housekeeping (false); }
 
-    void parameterValueChanged (int, float) override {}
-
-    void parameterGestureChanged (int index, bool starting) override
+    // Any thread, the audio thread for a clip. A change without a gesture is the host's. Applying a state is ours, and
+    // a value just after a gesture may be the host echoing the end of a drag.
+    void parameterValueChanged (int hostIndex, float) override
     {
+        const int i = specOfHostIndex[(size_t) hostIndex];
+        if (i < 0 || applying.load() || automated[(size_t) i].load (std::memory_order_relaxed)
+            || gesturesOpen[(size_t) i].load (std::memory_order_relaxed) > 0
+            || nowMs() - lastAnyGestureMs.load() < kHostEchoMs)
+            return;
+        automated[(size_t) i].store (true, std::memory_order_relaxed);
+    }
+
+    void parameterGestureChanged (int hostIndex, bool starting) override
+    {
+        lastAnyGestureMs.store (nowMs());
         if (applying.load())
             return;
+        const int i = specOfHostIndex[(size_t) hostIndex];
         lastGestureEventMs.store (nowMs());
+        automated[(size_t) i].store (false);
         if (starting)
         {
             activeGestures.fetch_add (1);
+            gesturesOpen[(size_t) i].fetch_add (1);
         }
         else
         {
             int g = activeGestures.load();
             while (g > 0 && ! activeGestures.compare_exchange_weak (g, g - 1)) {}
-            lastGestureParam.store (index);
+            g = gesturesOpen[(size_t) i].load();
+            while (g > 0 && ! gesturesOpen[(size_t) i].compare_exchange_weak (g, g - 1)) {}
+            lastGestureParam.store (i);
             gesturePending.store (true);
         }
     }
@@ -1135,6 +1182,8 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
     if (d.uiState.hasProperty (kHistoryDepth))
         d.history.setDepth ((int) d.uiState.getProperty (kHistoryDepth));
 
+    for (size_t i = 0; i < d.params.size(); ++i)
+        d.automated[i].store (false);
     d.presetBaseline = d.capture();
     d.history.reset (d.capture());
     d.matchEq->historyReset (d.history);   // Match EQ

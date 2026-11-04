@@ -401,8 +401,6 @@ private:
         menu.addSectionHeader (binding.hostName());
         menu.addItem (1, "Reset to default (" + binding.textFor (binding.getDefault()) + ")");
         menu.addItem (2, "Enter value...", onEnterValue != nullptr);
-        menu.addSeparator();
-        menu.addItem (3, "MIDI learn (coming later)", false);
 
         ps::ui::showMenu (menu, owner, [this] (int result)
         {

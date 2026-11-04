@@ -177,6 +177,29 @@ The table is append-only: never rename, reorder or remove an entry once released
 - Saved states and presets store values by id and the chain by id prefix, so 0.1.x states load unchanged (every
   phase 2 parameter at its neutral default; selftest "state: a 0.1.x state ...").
 
+### Automation and MIDI control
+
+A host lists every parameter of the plugin it loaded (925 in the suite, the module's and the I/O panel's in a
+single-module plugin). FL Studio's "Browse parameters" shows that list, highlights the last control touched, and makes
+a clip from it. Nothing about FL is stored in the plugin.
+- Every control, custom-drawn ones included, edits through a parameter inside begin / end gestures (one undo step, and
+  what tells the host which control was touched). A new control must do the same.
+- A clip arrives as value changes without a gesture, at most once per block. The processor marks such a parameter
+  `automated` (in `parameterValueChanged`, possibly on the audio thread, so atomics only). A marked control belongs to
+  the clip: it stays out of the undo history and out of the preset's "modified", and undo leaves it alone, until the
+  user takes hold of it again. A value within `kHostEchoMs` of a gesture does not count, since a host may echo the end
+  of a drag. A restored state clears the marks. Clip values are not smoothed by the processor: each module glides or
+  crossfades its own changes.
+- No MIDI learn in the plugin (decided for 0.9.2, can be added if people ask for it). The plugin takes no MIDI: `acceptsMidi() == false`,
+  `NEEDS_MIDI_INPUT FALSE`. FL links a hardware knob to any parameter itself (Tools > Last tweaked > Link to controller)
+  and saves the link in the project. The reason: in VST3, CCs reach a JUCE plugin only through 16 x 130 extra parameters
+  that JUCE adds to the plugin's list when it wants MIDI (`JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS`), which could
+  fill the list above with 2080 rows; and the reference offers no right-click learn to match. If plugin-side learn is
+  ever wanted, check that first (a plugin built with MIDI input, such as Chordbloom, shows whether FL lists those rows).
+- `PureSheenDev automationtest` checks the lists of all 20 plugins (automatable, unique names, 0 and 100 are the
+  control's ends, every choice reachable) and the behaviour above. `PureSheenDev automationscan <out.tsv>` measures one
+  parameter of every kind under a clip: output sharpness moving against held still, and whether the panel follows.
+
 ## Transient/Sustain channel mode (phase 2, implemented in the chain host)
 
 Per module, like M/S: the slot splits its own input. `ps::TransientSplitter` (TransientSplit.h) gives a transient

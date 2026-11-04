@@ -27,6 +27,8 @@
 //                                            (RefTool.cpp)
 //   PureSheenDev bridgetest               -> the connection to Claude, in this process (BridgeTool.cpp)
 //   PureSheenDev bridgehost <folder> [s]  -> a suite instance with its bridge on, for tools/bridge/test_bridge.py
+//   PureSheenDev automationtest           -> what a host's automation sees and does (AutomationTool.cpp)
+//   PureSheenDev automationscan <out.tsv> -> measures every kind of parameter under a clip: steps, panel updates
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
@@ -44,6 +46,8 @@ int runProductTests (const juce::StringArray& args);                  // Product
 int runProductSnapshots (const juce::File& outDir, const juce::StringArray& args);   // ProductTests.cpp
 int runBridgeTests();                                                 // BridgeTool.cpp
 int runBridgeHost (const juce::File& folder, int seconds, const juce::String& stopName);   // BridgeTool.cpp
+int runAutomationTests();                                             // AutomationTool.cpp
+int runAutomationScan (const juce::File& output);                     // AutomationTool.cpp
 
 int main (int argc, char** argv)
 {
@@ -127,6 +131,12 @@ int main (int argc, char** argv)
     if (command == "bridgetest")
         return runBridgeTests();
 
+    if (command == "automationtest")
+        return runAutomationTests();
+
+    if (command == "automationscan" && argc > 2)
+        return runAutomationScan (cwd.getChildFile (juce::String::fromUTF8 (argv[2])));
+
     if (command == "bridgehost" && argc > 2)
         return runBridgeHost (cwd.getChildFile (juce::String::fromUTF8 (argv[2])), argc > 3 ? std::atoi (argv[3]) : 60,
                               argc > 4 ? juce::String::fromUTF8 (argv[4]) : juce::String ("stop"));
@@ -138,6 +148,7 @@ int main (int argc, char** argv)
                  "       import <file-or-folder> ... [--verbose] [--values] [--no-audio] | import --defaults\n"
                  "       importkey \"<ParamID>\" ... | importtest\n"
                  "       assist <in.wav> [--features] [--seconds s] [--profile n] [--render out.wav] ... | assist --targets\n"
-                 "       reference <master> <reference> [--chain default] [--loop <s> <e>] [--listen <out.wav>]\n";
+                 "       reference <master> <reference> [--chain default] [--loop <s> <e>] [--listen <out.wav>]\n"
+                 "       automationtest | automationscan <out.tsv>\n";
     return 2;
 }

@@ -40,6 +40,13 @@ struct Step
 };
 
 constexpr float kPad = 28.0f, kHeaderH = 84.0f;
+
+const char* const kAutomationTip =
+    "**Automation** - move a control, click the small arrow at the top of FL Studio's plugin window, then **Browse "
+    "parameters**. Right-click the highlighted line and choose **Create Automation Clip**.";
+const char* const kMidiKnobTip =
+    "**MIDI knobs** - move a control, choose **Tools > Last tweaked > Link to controller** in FL Studio, then move the "
+    "knob. FL Studio keeps the link in your project.";
 } // namespace
 
 //==============================================================================
@@ -75,6 +82,8 @@ struct HelpOverlay::Impl
             "**Undo and History** - every change is listed; click an entry to go back to that point.",
             "**A B C D** - store up to four versions of your master and click between them to compare.",
             "**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to type a value, right-click to reset.",
+            kAutomationTip,
+            kMidiKnobTip,
             "**Mid / Side** - Mid is the centre (vocal, kick, bass), Side is the edges (width, reverb, room).",
             "**T/S** - Transient / Sustain: the hits and what rings on after them get their own settings.",
             "**Integrated LUFS** - the loudness of the whole song. Streaming plays songs at about -14 LUFS.",
@@ -170,6 +179,8 @@ struct HelpOverlay::Impl
         tips.add ("**Undo and History** - every change is listed; click an entry to go back to that point.");
         tips.add ("**A B C D** - store up to four versions of your settings and click between them to compare.");
         tips.add ("**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to type a value, right-click to reset.");
+        tips.add (kAutomationTip);
+        tips.add (kMidiKnobTip);
         if (! product.isDither() && p.getParameter (juce::String (ps::moduleInfo (product.module).idPrefix) + ".chMode") != nullptr)
             tips.add ("**Mid / Side** - Mid is the centre (vocal, kick, bass), Side is the edges (width, reverb, room).");
         if (! product.isDither() && ps::supportsTransientSustain (product.module))

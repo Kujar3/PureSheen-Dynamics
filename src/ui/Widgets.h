@@ -30,8 +30,7 @@ bool parseValueText (const ps::ParamSpec&, juce::String text, float& result);
 
 //==============================================================================
 // Rotary knob bound to one parameter: caption above, value text below. Double-click = type a value (a choice or a
-// switch has nothing to type, so it resets), Ctrl-drag = fine, right-click = menu "Reset to default / Enter value... /
-// (MIDI learn reserved)".
+// switch has nothing to type, so it resets), Ctrl-drag = fine, right-click = menu "Reset to default / Enter value...".
 // One undo step per drag (begin/end gesture through juce::SliderParameterAttachment).
 class ParamKnob : public juce::Component, public juce::SettableTooltipClient
 {
