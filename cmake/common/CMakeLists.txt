@@ -18,6 +18,25 @@ target_link_libraries(PureSheenCommon
            juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
 set_target_properties(PureSheenCommon PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+target_compile_definitions(PureSheenCommon PUBLIC PURESHEEN_VERSION="${PROJECT_VERSION}")
+
+# ---------------------------------------------------------------------------
+# The helper Claude starts to reach the suite (tools/bridge/BridgeMain.cpp): an MCP server over stdin / stdout. juce_core
+# only, so it stays small.
+# ---------------------------------------------------------------------------
+juce_add_console_app(PureSheenBridge PRODUCT_NAME "PureSheenBridge")
+target_sources(PureSheenBridge PRIVATE "${PROJECT_SOURCE_DIR}/tools/bridge/BridgeMain.cpp")
+target_include_directories(PureSheenBridge PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_definitions(PureSheenBridge PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    PURESHEEN_VERSION="${PROJECT_VERSION}")
+target_link_libraries(PureSheenBridge
+    PRIVATE juce::juce_core
+    PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+set_target_properties(PureSheenBridge PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/PureSheenBridge_artefacts/$<CONFIG>")
+
 # ---------------------------------------------------------------------------
 # Dev tool: processor self-test, editor snapshots, offline rendering
 #   PureSheenDev selftest
@@ -32,6 +51,7 @@ target_include_directories(PureSheenDev PRIVATE "${PROJECT_SOURCE_DIR}/src" "${P
 target_compile_definitions(PureSheenDev PRIVATE
     ${PS_JUCE_DEFINES}
     JucePlugin_Name="PureSheen Dynamics"
+    PURESHEEN_VERSION="${PROJECT_VERSION}"
     PURESHEEN_DEV_TOOL=1)
 target_link_libraries(PureSheenDev
     PRIVATE PureSheenData ${PS_JUCE_MODULES}

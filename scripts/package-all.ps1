@@ -75,6 +75,9 @@ if ($Only) {
 
 function Target-Of ($product) { if ($product.id -eq "suite") { "PureSheen" } else { "PureSheen_" + $product.id } }
 
+# The helper Claude starts to reach the suite (suite only).
+$bridgeExe = Join-Path $buildDir "PureSheenBridge_artefacts\Release\PureSheenBridge.exe"
+
 #------------------------------------------------------------------------------
 # Build
 if (-not $SkipBuild) {
@@ -83,7 +86,7 @@ if (-not $SkipBuild) {
     foreach ($p in $products) {
         $t = Target-Of $p
         $targets += "${t}_VST3", "${t}_CLAP"
-        if ($p.id -eq "suite") { $targets += "${t}_Standalone" }
+        if ($p.id -eq "suite") { $targets += "${t}_Standalone", "PureSheenBridge" }
     }
     Run "build" { cmake --build $buildDir --target $targets }
 }
@@ -100,7 +103,9 @@ foreach ($p in $products) {
         (Join-Path $art ("VST3\" + $p.name + ".vst3\Contents\x86_64-win\" + $p.name + ".vst3")),
         (Join-Path $art ("CLAP\" + $p.name + ".clap"))
     )
-    if ($p.id -eq "suite") { $files += (Join-Path $art ("Standalone\" + $p.name + ".exe")) }
+    if ($p.id -eq "suite") {
+        $files += (Join-Path $art ("Standalone\" + $p.name + ".exe")), $bridgeExe
+    }
     foreach ($f in $files) {
         if (-not (Test-Path -LiteralPath $f)) { Fail "not built: $f" }
         $imports = dumpbin /dependents $f
@@ -135,6 +140,15 @@ The "?" button in the top-right corner of the plugin explains everything.
 }
 
 function How-To-Install-Text ($p) {
+    $claude = if ($p.id -ne "suite") { "" } else { @"
+
+Claude connector (optional, only if you use Claude Desktop or Claude Code)
+The folder "Claude connector (optional)" holds PureSheenBridge.exe, the one program in
+this zip. You only need it to let Claude control the plugin, and you can leave it out.
+To use it, copy it to %APPDATA%\PureSheen Dynamics, then in the plugin use Options >
+Claude: turn on "Allow Claude to connect" and copy the setup for your Claude app.
+
+"@ }
     @"
 $($p.name) $version - install by hand
 $('=' * ($p.name.Length + $version.Length + 19))
@@ -164,6 +178,7 @@ again), or to a folder your DAW scans.
 
 To update it, delete the old "$($p.name).vst3" folder first, then copy the new one.
 To remove it, delete what you copied.
+$claude
 
 Licence
 This is free software under the GNU AGPL v3, with no warranty: see LICENSE.txt and
@@ -196,13 +211,14 @@ foreach ($p in $products) {
     # The installer
     if ($p.id -eq "suite") {
         if (Test-Path -LiteralPath $payloadRoot) {
-            Get-ChildItem -LiteralPath $payloadRoot -Directory | Where-Object { @("VST3", "CLAP", "Standalone") -contains $_.Name } |
+            Get-ChildItem -LiteralPath $payloadRoot -Directory | Where-Object { @("VST3", "CLAP", "Standalone", "Bridge") -contains $_.Name } |
                 Remove-Item -Recurse -Force
         }
-        foreach ($d in "VST3", "CLAP", "Standalone") { New-Item -ItemType Directory -Force -Path (Join-Path $payloadRoot $d) | Out-Null }
+        foreach ($d in "VST3", "CLAP", "Standalone", "Bridge") { New-Item -ItemType Directory -Force -Path (Join-Path $payloadRoot $d) | Out-Null }
         Copy-Item -LiteralPath $vst3 -Destination (Join-Path $payloadRoot "VST3") -Recurse
         Copy-Item -LiteralPath $clap -Destination (Join-Path $payloadRoot "CLAP")
         Copy-Item -LiteralPath (Join-Path $art "Standalone\$name.exe") -Destination (Join-Path $payloadRoot "Standalone")
+        Copy-Item -LiteralPath $bridgeExe -Destination (Join-Path $payloadRoot "Bridge")
         Run "installer of $name" { & $iscc /Q "/DAppVersion=$version" @extraIscc (Join-Path $root "installer\PureSheen.iss") }
     }
     else {
@@ -232,6 +248,9 @@ foreach ($p in $products) {
             [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $f.FullName, "$name.vst3/$relative", [System.IO.Compression.CompressionLevel]::Optimal)
         }
         [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $clap, "$name.clap", [System.IO.Compression.CompressionLevel]::Optimal)
+        if ($p.id -eq "suite") {
+            [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $bridgeExe, "Claude connector (optional)/PureSheenBridge.exe", [System.IO.Compression.CompressionLevel]::Optimal)
+        }
         [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $textPath, "How to install.txt", [System.IO.Compression.CompressionLevel]::Optimal)
         [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $root "LICENSE"), "LICENSE.txt", [System.IO.Compression.CompressionLevel]::Optimal)
         [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $root "installer\THIRD-PARTY-NOTICES.txt"), "THIRD-PARTY-NOTICES.txt", [System.IO.Compression.CompressionLevel]::Optimal)

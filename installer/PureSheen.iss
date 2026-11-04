@@ -3,14 +3,14 @@
 ; (compiles a static-runtime Release build in build-release, copies it to installer\payload, then runs ISCC on this file
 ;  with /DAppVersion=<the project() version in CMakeLists.txt>)
 ; Payload: installer\payload\{VST3\PureSheen Dynamics.vst3, CLAP\PureSheen Dynamics.clap,
-;          Standalone\PureSheen Dynamics.exe}, built with the static MSVC runtime (-DCMAKE_MSVC_RUNTIME_LIBRARY=
+;          Standalone\PureSheen Dynamics.exe, Bridge\PureSheenBridge.exe}, built with the static MSVC runtime (-DCMAKE_MSVC_RUNTIME_LIBRARY=
 ;          MultiThreaded), so no VC++ redistributable is needed.
 ; Testing: ISCC /DTestRoot=<folder> installer\PureSheen.iss builds a per-user variant that installs everything below
 ;          <folder> instead of Program Files (no admin rights, never touches a real installation).
 
 #define AppName "PureSheen Dynamics"
 #ifndef AppVersion
-  #define AppVersion "0.8.1"
+  #define AppVersion "0.9.0"
 #endif
 #define AppPublisher "Kujar3"
 
@@ -70,11 +70,13 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 Name: "vst3"; Description: "VST3 plugin (use this one in FL Studio)"; Types: full custom; Flags: fixed
 Name: "clap"; Description: "CLAP plugin"; Types: full
 Name: "standalone"; Description: "Standalone app (master an audio input without a DAW)"
+Name: "claude"; Description: "Claude connector (lets Claude Desktop control the plugin, off until you turn it on in the plugin)"; Types: full
 
 [Files]
 Source: "payload\VST3\PureSheen Dynamics.vst3\*"; DestDir: "{#PluginRoot}\VST3\PureSheen Dynamics.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "payload\CLAP\PureSheen Dynamics.clap"; DestDir: "{#PluginRoot}\CLAP"; Components: clap; Flags: ignoreversion
 Source: "payload\Standalone\PureSheen Dynamics.exe"; DestDir: "{app}"; Components: standalone; Flags: ignoreversion
+Source: "payload\Bridge\PureSheenBridge.exe"; DestDir: "{app}"; Components: claude; Flags: ignoreversion
 Source: "QuickStart.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion

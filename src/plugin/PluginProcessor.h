@@ -6,7 +6,7 @@
 #include "plugin/Product.h"
 
 namespace ps { struct MatchSpectrum; }
-namespace psplug { class Assistant; class TrackReferencing; }
+namespace psplug { class Assistant; class Bridge; class TrackReferencing; }
 
 #include <functional>
 #include <memory>
@@ -244,6 +244,21 @@ public:
     // reference target comes from the same list and analysis. Saved with the state ("TrackReferencing" child: paths,
     // loops, settings; not the audio); undo, snapshots and presets do not touch it. Message thread.
     psplug::TrackReferencing& getTrackReferencing() noexcept;
+
+    //==============================================================================
+    // (phase 4) The connection to Claude (src/plugin/Bridge.h). Suite only: nullptr in a single-module plugin.
+    psplug::Bridge* getBridge() noexcept;
+    // Held by a bridge command for its whole length: it reads and edits as one step against a host's state restore.
+    juce::CriticalSection& getEditLock() noexcept;
+    // Closes the user's edit in progress as its own undo step, a macro drag of the Assistant included (which
+    // flushPendingChanges leaves open), so a command that follows does not take it along. Message thread.
+    void finishUserEdits();
+    // Put in front of what the undo history records until it is cleared ("Claude: "). Message thread; the caller calls
+    // finishUserEdits first, so the user's own edit keeps its name.
+    void setHistoryPrefix (const juce::String&);
+    // The track the host says this instance is on, when it says (any thread).
+    juce::String getTrackName() const;
+    void updateTrackProperties (const TrackProperties&) override;
 
 private:
     struct Impl;

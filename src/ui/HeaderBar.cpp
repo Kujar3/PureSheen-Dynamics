@@ -1,6 +1,7 @@
 #include "ui/HeaderBar.h"
 
 #include "ui/Controls.h"
+#include "plugin/Bridge.h"
 #include "plugin/TrackReferencing.h"
 #include "plugin/import/XmlPresetImport.h"
 
@@ -384,7 +385,8 @@ struct HeaderBar::Impl
             snapshots[(size_t) i]->onClick = [this] (int slot, bool right) { snapshotClicked (slot, right); };
         }
 
-        options.setTooltip ("Options: meters, spectrum, gain match, history, tooltips");
+        options.setTooltip (proc.getProduct().isSuite() ? "Options: meters, spectrum, gain match, history, tooltips, Claude"
+                                                        : "Options: meters, spectrum, gain match, history, tooltips");
         options.onClick = [this] { showOptionsMenu(); };
         help.setTooltip ("How to use PureSheen");
         help.onClick = [this] { ctx.toggleHelp(); };
@@ -671,6 +673,14 @@ struct HeaderBar::Impl
         {
             menu.addItem (3201, "Dim bypassed modules", true, o.dimBypassed);
             menu.addItem (3202, "Show the reference in the analysers", true, o.showReferenceSpectrum);
+            menu.addSeparator();
+
+            juce::PopupMenu claude;
+            claude.addItem (3300, "Allow Claude to connect", true, psplug::Bridge::isAllowed());
+            claude.addSeparator();
+            claude.addItem (3301, "Copy the setup for Claude Desktop");
+            claude.addItem (3302, "Copy the setup for Claude Code");
+            menu.addSubMenu ("Claude", claude);
         }
 
         options.setToggleState (true, juce::dontSendNotification);
@@ -680,6 +690,12 @@ struct HeaderBar::Impl
 
             if (r <= 0)
                 return;
+
+            if (r >= 3300 && r <= 3302)
+            {
+                claudeMenuChosen (r);
+                return;
+            }
 
             auto n = ctx.getUiOptions();
             const float holdsL[] = { 5.0f, 250.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 1.0e9f };
@@ -715,9 +731,60 @@ struct HeaderBar::Impl
         });
     }
 
+    void claudeMenuChosen (int item)
+    {
+        if (item == 3300)
+        {
+            const bool allow = ! psplug::Bridge::isAllowed();
+            psplug::Bridge::setAllowed (allow);
+            ctx.notify (allow ? "Claude can connect to PureSheen Dynamics now"
+                              : "Claude can no longer connect");
+            return;
+        }
+
+        // Plain text the user pastes: nothing here edits another program's settings.
+        const auto helper = psplug::Bridge::findHelper();
+        const auto path = helper.existsAsFile() ? helper.getFullPathName() : juce::String ("<path to PureSheenBridge.exe>");
+
+        if (item == 3301)
+        {
+            auto server = std::make_unique<juce::DynamicObject>();
+            server->setProperty ("command", path);
+            auto servers = std::make_unique<juce::DynamicObject>();
+            servers->setProperty ("puresheen-dynamics", juce::var (server.release()));
+            auto config = std::make_unique<juce::DynamicObject>();
+            config->setProperty ("mcpServers", juce::var (servers.release()));
+            juce::SystemClipboard::copyTextToClipboard (juce::JSON::toString (juce::var (config.release())));
+        }
+        else
+        {
+            // --scope user: without it the connector only exists in the folder this was run from.
+            juce::SystemClipboard::copyTextToClipboard ("claude mcp add --scope user puresheen-dynamics -- \"" + path + "\"");
+        }
+
+        if (! helper.existsAsFile())
+            ctx.notify ("Copied. PureSheenBridge.exe was not found: put the path to it in the copied text");
+        else
+            ctx.notify (item == 3301 ? "Copied. Paste it into Claude Desktop's config: Settings > Developer > Edit Config"
+                                     : "Copied. Run it in a terminal, then start a new Claude Code session");
+    }
+
     //==========================================================================
     void update()
     {
+        if (auto* bridge = proc.getBridge())
+        {
+            const int clients = bridge->getNumClients();
+            if (clients != lastBridgeClients)
+            {
+                if (clients > lastBridgeClients)
+                    ctx.notify ("Claude connected");
+                else if (clients == 0)
+                    ctx.notify ("Claude disconnected");
+                lastBridgeClients = clients;
+            }
+        }
+
         if (proc.getProduct().hasPresetBar())
             presetName.set (proc.getCurrentPresetName(), proc.isPresetModified());
         undo.setEnabled (proc.canUndo());
@@ -812,6 +879,7 @@ struct HeaderBar::Impl
     IconButton history { "History", IconButton::Icon::history };
     std::array<std::unique_ptr<SnapshotButton>, PureSheenProcessor::kNumSnapshots> snapshots;
     IconButton options { "Options", IconButton::Icon::sliders };
+    int lastBridgeClients = 0;
     IconButton help { "Help", IconButton::Icon::help };
 
     psplug::XmlImportChooser importer;   // "Import preset (.xml)..."

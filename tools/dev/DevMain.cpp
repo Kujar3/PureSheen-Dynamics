@@ -25,6 +25,8 @@
 //   PureSheenDev reference <master> <ref> [--chain default] [--loop s e] [--listen out.wav]
 //                                         -> Track Referencing on real files: profiles, comparison, hints, A/B level
 //                                            (RefTool.cpp)
+//   PureSheenDev bridgetest               -> the connection to Claude, in this process (BridgeTool.cpp)
+//   PureSheenDev bridgehost <folder> [s]  -> a suite instance with its bridge on, for tools/bridge/test_bridge.py
 
 int runSelfTest();                                                    // SelfTest.cpp
 int runSnapshot (const juce::File& outputDir);                        // Snapshot.cpp
@@ -40,6 +42,8 @@ int runReference (const juce::StringArray& args);                     // RefTool
 int runDeLimiterLearn (const juce::StringArray& args);                // DeLimiterLearnTool.cpp
 int runProductTests (const juce::StringArray& args);                  // ProductTests.cpp
 int runProductSnapshots (const juce::File& outDir, const juce::StringArray& args);   // ProductTests.cpp
+int runBridgeTests();                                                 // BridgeTool.cpp
+int runBridgeHost (const juce::File& folder, int seconds, const juce::String& stopName);   // BridgeTool.cpp
 
 int main (int argc, char** argv)
 {
@@ -119,6 +123,13 @@ int main (int argc, char** argv)
             args.add (juce::String::fromUTF8 (argv[i]));
         return runReference (args);
     }
+
+    if (command == "bridgetest")
+        return runBridgeTests();
+
+    if (command == "bridgehost" && argc > 2)
+        return runBridgeHost (cwd.getChildFile (juce::String::fromUTF8 (argv[2])), argc > 3 ? std::atoi (argv[3]) : 60,
+                              argc > 4 ? juce::String::fromUTF8 (argv[4]) : juce::String ("stop"));
 
     std::cout << "usage: PureSheenDev selftest | snapshot <outDir> | render <in.wav> <out.wav> [--preset <name>]\n"
                  "       [--module-preset <prefix>:<name>] [--bits 16|24|32] [--block <n>] [--chain <prefix,...>]\n"

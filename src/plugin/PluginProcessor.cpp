@@ -4,6 +4,7 @@
 #include "dsp/Maximizer.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/Assistant.h"      // (phase 3) the Assistant: capture, suggestions, macros, state child
+#include "plugin/Bridge.h"         // (phase 4) the connection to Claude
 #include "plugin/MatchEqState.h"   // (phase 2) Match EQ state child, spectrum undo, reference-file loader
 #include "plugin/PluginState.h"
 #include "plugin/TrackReferencing.h"   // (phase 3) Track Referencing: reference list, A/B playback, comparison
@@ -310,6 +311,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
             assistant = std::make_unique<psplug::Assistant> (*this);
             referencing = std::make_unique<psplug::TrackReferencing> (owner);
             connectReferencing();
+            bridge = std::make_unique<psplug::Bridge> (owner);
         }
 
         startTimerHz (30);
@@ -317,6 +319,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
 
     ~Impl() override
     {
+        bridge.reset();
         stopTimer();
         for (auto* prm : params)
             if (prm != nullptr)
@@ -409,6 +412,10 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     std::unique_ptr<psplug::Assistant> assistant;
     // (phase 3) Track Referencing (destroyed before the Assistant: its callbacks reach the Assistant).
     std::unique_ptr<psplug::TrackReferencing> referencing;
+    // (phase 4) The connection to Claude. Destroyed first: its threads are joined before anything it reaches goes.
+    std::unique_ptr<psplug::Bridge> bridge;
+    juce::String historyPrefix;   // message thread
+    juce::String trackName;       // extrasLock
     int monoIndex = -1, swapIndex = -1;
 
     // The Assistant's "Match reference" uses Track Referencing's list and analysis (one per file). A reference the
@@ -525,7 +532,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // A spectrum change is an undo step even when no parameter changed.
     void recordMatchEq (const juce::String& description)
     {
-        history.record (description, capture(), -1, nowMs());
+        history.record (historyPrefix + description, capture(), -1, nowMs());
         matchEq->historyRecorded (history);
         {
             const juce::ScopedLock sl (extrasLock);
@@ -635,7 +642,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (psplug::sameState (s, history.current().state))
             return false;
         const bool isEqPlugin = product.kind == psplug::ProductKind::module && product.module == ps::ModuleType::Equalizer1;
-        history.record (isEqPlugin ? description.replace ("EQ 1", "EQ") : description, s, singleParam, nowMs());
+        history.record (historyPrefix + (isEqPlugin ? description.replace ("EQ 1", "EQ") : description), s, singleParam, nowMs());
         matchEq->historyRecorded (history);   // Match EQ: tag the step with the spectra
         {
             const juce::ScopedLock sl (extrasLock);
@@ -1897,3 +1904,33 @@ juce::String PureSheenProcessor::getMatchReferenceFileError() const { return imp
 
 psplug::Assistant& PureSheenProcessor::getAssistant() noexcept { return *impl->assistant; }
 psplug::TrackReferencing& PureSheenProcessor::getTrackReferencing() noexcept { return *impl->referencing; }
+
+psplug::Bridge* PureSheenProcessor::getBridge() noexcept { return impl->bridge.get(); }
+
+juce::CriticalSection& PureSheenProcessor::getEditLock() noexcept { return impl->editLock; }
+
+void PureSheenProcessor::finishUserEdits()
+{
+    auto& d = *impl;
+    const juce::ScopedLock sl (d.editLock);
+    if (d.assistantDragActive)
+    {
+        d.assistantDragActive = false;
+        d.record ("Assistant: macro");
+    }
+    d.housekeeping (true);
+}
+
+void PureSheenProcessor::setHistoryPrefix (const juce::String& prefix) { impl->historyPrefix = prefix; }
+
+juce::String PureSheenProcessor::getTrackName() const
+{
+    const juce::ScopedLock sl (impl->extrasLock);
+    return impl->trackName;
+}
+
+void PureSheenProcessor::updateTrackProperties (const TrackProperties& properties)
+{
+    const juce::ScopedLock sl (impl->extrasLock);
+    impl->trackName = properties.name.value_or (juce::String());
+}

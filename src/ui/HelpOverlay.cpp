@@ -70,6 +70,8 @@ struct HelpOverlay::Impl
             "you a few macros (tone, dynamics, width, loudness) that keep the loudness steady while you move them.",
             "**Reference** - drop songs you like on PureSheen. **REF** plays one at your master's loudness, the "
             "Reference page shows where they differ and loops A - E pick the part to compare.",
+            "**Claude** - Options > Claude lets Claude Desktop read the meters and adjust PureSheen for you. It is off until "
+            "you turn it on, and every change it makes is listed in the History, where you can undo it.",
             "**Undo and History** - every change is listed; click an entry to go back to that point.",
             "**A B C D** - store up to four versions of your master and click between them to compare.",
             "**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to type a value, right-click to reset.",
@@ -226,7 +228,7 @@ struct HelpOverlay::Impl
         // More modules (click +): under the steps (the left column), or under the tips when that is clearly shorter
         moreBlocks.clear();
         if (moreModules.empty())
-            return juce::jmax (leftBottom, y) + kPad - 10.0f;
+            return layoutLicence (cardW, juce::jmax (leftBottom, y));
         const bool left = leftBottom <= y + 40.0f;
         const float colX = left ? kPad : rightX, colW = left ? leftW : rightW;
         float my = (left ? leftBottom : y) + 8.0f;
@@ -242,7 +244,20 @@ struct HelpOverlay::Impl
             moreBlocks.push_back (std::move (b));
         }
 
-        return juce::jmax (left ? my : leftBottom, left ? y : my) + kPad - 10.0f;
+        return layoutLicence (cardW, juce::jmax (left ? my : leftBottom, left ? y : my));
+    }
+
+    // The AGPL's notice in the program itself (its section 0, "Appropriate Legal Notices"). The source line says the same
+    // as $sourceNote in scripts/package-all.ps1: both get the repository's address once it is public.
+    float layoutLicence (float cardW, float contentBottom)
+    {
+        const auto text = productName + " - Copyright (C) 2026 Kujar3. Free software: you can share and change it under the GNU "
+                          "AGPL v3. It comes with no warranty.\n"
+                          "Licence: gnu.org/licenses/agpl-3.0.html  -  Source code: ask Kujar3, the author  -  "
+                          "The installer adds LICENSE.txt and THIRD-PARTY-NOTICES.txt";
+        licenceBlock.layout.createLayout (richText (text, 11.0f, Colours::textDim, Colours::text), cardW - 2.0f * kPad);
+        licenceBlock.area = { kPad, contentBottom + 12.0f, cardW - 2.0f * kPad, licenceBlock.layout.getHeight() };
+        return licenceBlock.area.getBottom() + 16.0f;
     }
 
     struct More
@@ -257,6 +272,8 @@ struct HelpOverlay::Impl
     juce::StringArray tips;
     std::vector<More> moreModules;
     std::vector<Block> stepBlocks, tipBlocks, moreBlocks;
+    Block licenceBlock;
+    juce::String productName;
     std::vector<float> stepTitleYs;
     float tipsTitleY = 0.0f, rightX = 0.0f, moreTitleX = 0.0f, moreTitleY = 0.0f;
     juce::Rectangle<float> card;
@@ -268,6 +285,7 @@ HelpOverlay::HelpOverlay (PureSheenProcessor& p) : impl (std::make_unique<Impl> 
     setTitle ("Help");
     setWantsKeyboardFocus (false);
     setMouseClickGrabsKeyboardFocus (false);
+    impl->productName = p.getName();
     impl->close.onClick = [this] { if (onClose != nullptr) onClose(); };
     addAndMakeVisible (impl->close);
 }
@@ -357,6 +375,8 @@ void HelpOverlay::paint (juce::Graphics& g)
         g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ d.moreTitleX + 3.0f, b.area.getY() + 7.5f }));
         b.layout.draw (g, b.area);
     }
+
+    d.licenceBlock.layout.draw (g, d.licenceBlock.area);
 }
 
 void HelpOverlay::mouseUp (const juce::MouseEvent& e)

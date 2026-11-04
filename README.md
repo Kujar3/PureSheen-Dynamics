@@ -99,6 +99,26 @@ The modules (drag them in the chain strip to reorder, **Add** for more):
   readouts.
   - Mono, Swap, Bypass and Gain Match monitoring.
 
+## Working with Claude
+
+Claude Desktop or Claude Code can read PureSheen Dynamics' meters and settings and adjust it, over MCP. The single-module
+plugins don't have this.
+
+1. In the plugin, open Options (the sliders button) > Claude and turn on **Allow Claude to connect**. It's off by default.
+2. From the same menu, copy the setup for your Claude app.
+   - Claude Desktop: Settings > Developer > Edit Config, merge the copied text into that file, and restart Claude.
+   - Claude Code: run the copied command in a terminal, then start a new session.
+3. Play your track and ask Claude something like "How loud is this master, and how does it compare with my reference?"
+
+Claude can change settings and the module chain, load and save presets, run the Assistant, and compare with reference tracks.
+Each change to settings or the chain is one undo step in the History, labelled "Claude:". Results that arrive later, from the
+Assistant or Learn, keep their usual names. Bypass and Gain Match stay with you. Claude can't hear your music or start playback,
+so you press play and you judge the result.
+
+The connection only accepts programs on your own PC that hold this instance's token. The installer's connector is the small
+program `PureSheenBridge.exe`, which Claude starts. You can leave it out in the installer's custom setup, and the plugin works
+the same without it.
+
 ## Building
 
 You need Visual Studio 2022 with *Desktop development with C++*, plus CMake and Ninja (`pip install cmake ninja`).

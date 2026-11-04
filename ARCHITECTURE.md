@@ -23,7 +23,7 @@ Later phases (enums are append-only, so they slot in):
   "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (done, fitted to the
   reference, see "Vintage-style modules (phase 3)" below), a de-limiter (done, see "De-limiter (phase 3)" below), and one plug-in per module
   (done, see "Single-module plugins" below)
-- Phase 4: MCP bridge
+- Phase 4: MCP bridge (see "Connection to Claude")
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
 
@@ -985,6 +985,41 @@ Known limits:
 - The reference may have far more latency than ours (the threshold changed about 1.1 s after the window on FL's clock, not
   measurable from the renders, since FL compensates). Our output is unaffected.
 - Not done: listening tests in FL Studio.
+
+## Connection to Claude (phase 4)
+
+Lets Claude Desktop or Claude Code control the suite over MCP. Suite only: a single-module plugin has no bridge. Three parts:
+
+- `src/plugin/Bridge.h/.cpp`: the suite's end. Off until the user turns on Options > Claude > Allow Claude to connect, a flag
+  file shared by every instance and checked once a second. While on, a listener takes connections on 127.0.0.1 only, on a
+  free port, and a registration file holds the port and this instance's random token. A connection that does not start
+  with the token is closed, so a web page that reaches the port gets nothing. Threads only read, parse and write.
+- `src/plugin/BridgeCommands.cpp`: the commands, on the message thread (queued through an AsyncUpdater), through the
+  processor's public calls. So nothing touches the audio thread, the editor follows, and a command is one undo step.
+  `setHistoryPrefix` labels those steps "Claude: ". Pending user edits are flushed first, so they keep their own name.
+- `tools/bridge/BridgeMain.cpp`, `PureSheenBridge.exe`: what Claude starts. It speaks MCP on stdin / stdout, holds the tool
+  list (so Claude sees the tools while no plugin is open), reads the registration files, removes those of dead processes,
+  and passes calls on. juce_core only. `BridgeProtocol.h` is what both sides share.
+
+What it leaves out on purpose: deleting presets (no undo), monitoring (solo, delta, A/B, and the parameters
+`isMonitoringParam` names, such as Bypass and Gain Match: undo does not restore those, and a forgotten one changes what the
+user hears), and editing another program's settings (the menu copies text the user pastes). A preset or snapshot in use is
+replaced only with `overwrite: true`. Claude cannot hear or start playback, which the server's `instructions` say.
+
+Results that arrive after the command (the Assistant's default card, Learn) are recorded by the housekeeping timer, after the
+prefix is cleared, so they keep their usual names in the history. The helper handles one call at a time and does not read
+stdin during a call, so MCP cancellation has no effect: a call ends within its timeout.
+
+Every line is checked for size and nesting before `juce::JSON::parse`, which recurses: otherwise anything that can reach the
+port could overflow the stack and take the host down, token or not.
+
+`get_meters` reads the true peak meters with `exchange` (nothing else reads them), and leaves out `IoMeters::inputPeak` and
+`outputPeak`: the chain does not write them, as the I/O panel measures from its own stream. The spectrum FIFOs have one consumer,
+the editor, so the bridge does not offer a live spectrum.
+
+Tests: `PureSheenDev bridgetest` (refusals and what commands do, in process) and `tools/bridge/test_bridge.py` (MCP through
+the real helper against `PureSheenDev bridgehost`, on a temporary folder set by `PURESHEEN_BRIDGE_DIR`). It also checks that
+the suite knows every tool the helper lists.
 
 ## Single-module plugins
 
