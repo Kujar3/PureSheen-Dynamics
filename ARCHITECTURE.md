@@ -1024,6 +1024,8 @@ link-time-optimised links in parallel can crash the MSVC linker and each one use
 **Packaging.** `scripts\package-all.ps1` builds everything with the static runtime in `build-release`, fails if a binary
 imports `MSVCP140` or `VCRUNTIME140`, and writes `dist\<Name>-Setup-<version>.exe` and `dist\<Name>-<version>-Manual.zip`
 per plugin. The suite keeps `installer/PureSheen.iss` and its AppId; the others share `installer/PureSheenSingle.iss`.
+Everything is under the AGPLv3 (`LICENSE`, and the README's Licence section). Every installer and zip carries `LICENSE.txt`
+and `installer/THIRD-PARTY-NOTICES.txt` (the notices of what is compiled in; update it when a dependency changes).
 
 **Checks.** `tools/dev/ProductTests.cpp`, part of `selftest` and on its own as `PureSheenDev producttest [id]`: the
 parameter set, the chain lock, state and snapshots, presets both ways, imports, realtime safety, the bypass null, the

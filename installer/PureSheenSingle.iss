@@ -66,6 +66,8 @@ Name: "clap"; Description: "CLAP plugin"; Types: full
 Source: "{#Payload}\VST3\{#AppName}.vst3\*"; DestDir: "{#PluginRoot}\VST3\{#AppName}.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Payload}\CLAP\{#AppName}.clap"; DestDir: "{#PluginRoot}\CLAP"; Components: clap; Flags: ignoreversion
 Source: "{#Payload}\QuickStart.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "puresheen.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]

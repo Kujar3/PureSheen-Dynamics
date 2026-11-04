@@ -145,9 +145,29 @@ test installers as above. A single plugin builds with `scripts\build.bat build P
 
 See `ARCHITECTURE.md` for how the code is organised.
 
-## Licences
+## Licence
 
-- JUCE 8: AGPLv3 or the JUCE licence. Fine for personal use; check the JUCE terms before you distribute builds.
-- Inter font: SIL Open Font License 1.1.
-- clap-juce-extensions: MIT.
-- The logo is drawn in code (`PureSheenDev icon`).
+PureSheen Dynamics and its single-module plugins are Copyright (C) 2026 Kujar3. They are free software under the
+[GNU Affero General Public License v3](LICENSE), with no warranty.
+
+In plain words:
+
+- You can use them for anything, including commercial music, for free.
+- You can change them, share them and even sell them. Whoever shares or sells a build must also give the people who get
+  it the complete source code, including their changes, under this same licence. The same goes for a changed version
+  that people use over a network.
+- A closed-source product built on this code is not allowed under this licence. It would need separate permission from
+  the copyright holder for this code, and a [JUCE licence](https://juce.com/get-juce/) for JUCE.
+
+If this summary and the licence differ, the licence decides.
+
+Built with:
+
+- [JUCE 8](https://juce.com), used under the AGPLv3 (it is dual-licensed, with a commercial licence as the alternative).
+- From JUCE: the VST3 SDK (MIT), FLAC and Ogg Vorbis (BSD), jpeglib, libpng and zlib, HarfBuzz, SheenBidi (Apache 2.0).
+- [clap-juce-extensions](https://github.com/free-audio/clap-juce-extensions) and CLAP (MIT).
+- The [Inter](https://rsms.me/inter/) font (SIL Open Font License 1.1).
+
+Their notices are in [`installer/THIRD-PARTY-NOTICES.txt`](installer/THIRD-PARTY-NOTICES.txt), and every installer and
+zip carries that file and the licence. The logo is drawn in code (`PureSheenDev icon`). VST is a registered trademark of
+Steinberg Media Technologies GmbH.

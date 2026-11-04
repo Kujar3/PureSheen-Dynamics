@@ -76,6 +76,8 @@ Source: "payload\VST3\PureSheen Dynamics.vst3\*"; DestDir: "{#PluginRoot}\VST3\P
 Source: "payload\CLAP\PureSheen Dynamics.clap"; DestDir: "{#PluginRoot}\CLAP"; Components: clap; Flags: ignoreversion
 Source: "payload\Standalone\PureSheen Dynamics.exe"; DestDir: "{app}"; Components: standalone; Flags: ignoreversion
 Source: "QuickStart.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "puresheen.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]

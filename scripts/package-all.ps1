@@ -1,7 +1,7 @@
 # Builds every PureSheen plugin (the suite and the single-module plugins of installer\products.csv) and packages each:
 #   dist\<Name>-Setup-<version>.exe      the installer
-#   dist\<Name>-<version>-Manual.zip     the .vst3 folder, the .clap file and "How to install.txt", for people who would
-#                                        rather copy plain files than run an exe
+#   dist\<Name>-<version>-Manual.zip     the .vst3 folder, the .clap file, "How to install.txt" and the licence files, for
+#                                        people who would rather copy plain files than run an exe
 # <Name> is the plugin's name with hyphens: PureSheen-EQ-Setup-0.8.0.exe. Both come from the static-runtime Release build
 # in build-release, never from scripts\build.bat: the people these go to need no Visual C++ redistributable. The script
 # fails if a packaged binary imports it.
@@ -21,6 +21,9 @@ $root = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $root "build-release"
 $distDir = Join-Path $root "dist"
 $payloadRoot = Join-Path $root "installer\payload"
+# Goes in every zip's text. The AGPL gives whoever gets a build the right to its source: replace with the repository's
+# address once it is public.
+$sourceNote = "ask Kujar3, the author, and you will get it"
 
 function Fail ([string] $message) {
     Write-Host "FAILED: $message" -ForegroundColor Red
@@ -157,6 +160,10 @@ Copy "$($p.name).clap" to C:\Program Files\Common Files\CLAP (administrator righ
 again), or to a folder your DAW scans.
 
 To remove it, delete what you copied.
+
+Licence
+This is free software under the GNU AGPL v3, with no warranty: see LICENSE.txt and
+THIRD-PARTY-NOTICES.txt. You have the right to its source code: $sourceNote.
 "@
 }
 
@@ -222,6 +229,8 @@ foreach ($p in $products) {
         }
         [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $clap, "$name.clap", [System.IO.Compression.CompressionLevel]::Optimal)
         [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $textPath, "How to install.txt", [System.IO.Compression.CompressionLevel]::Optimal)
+        [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $root "LICENSE"), "LICENSE.txt", [System.IO.Compression.CompressionLevel]::Optimal)
+        [void] [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $root "installer\THIRD-PARTY-NOTICES.txt"), "THIRD-PARTY-NOTICES.txt", [System.IO.Compression.CompressionLevel]::Optimal)
     }
     finally {
         $zip.Dispose()
