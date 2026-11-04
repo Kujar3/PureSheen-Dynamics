@@ -1270,7 +1270,7 @@ void testVintage()
 
     // every vintage module alone, in every channel mode it offers: the contract's latency is reported to the host
     // (T/S adds the splitter) and, where the module defines neutral settings, the output is the input delayed by it
-    for (double rate : { 44100.0, 48000.0 })
+    for (double rate : { 44100.0, 48000.0, 96000.0, 192000.0 })
     {
         std::string failures, latencies;
         bool allOk = true;
@@ -1353,12 +1353,12 @@ void testVintage()
 
     // (integration) the latency reported to the host equals the MEASURED delay: the group delay between two quiet tones
     // (2.0 / 2.1 kHz, L and R in different phases) through every vintage module alone, in every channel mode, at 44.1
-    // / 48 / 96 kHz, at its neutral settings (Tape: lowest drive, no head bump, flat highs, where it is linear)
+    // / 48 / 96 / 192 kHz, at its neutral settings (Tape: lowest drive, no head bump, flat highs, where it is linear)
     {
         std::string failures, worst;
         bool allOk = true;
         double worstErr = 0.0;
-        for (double rate : { 44100.0, 48000.0, 96000.0 })
+        for (double rate : { 44100.0, 48000.0, 96000.0, 192000.0 })
             for (auto t : vintageTypes())
             {
                 bool hasNull = false;
@@ -1422,8 +1422,11 @@ void testVintage()
                         worstErr = err;
                         worst = str (ps::moduleInfo (t).idPrefix, " mode ", (int) mode, " at ", rate, " Hz");
                     }
+                    // Tape's fitted reproduce filters add frequency-dependent phase, documented in Tape.h.
+                    // At 192 kHz that phase occupies more than half a sample; its buffering latency remains five.
+                    const double tolerance = t == ps::ModuleType::Tape && rate > 96000.0 ? 0.9 : 0.5;
                     if (! signalOk || ! std::isfinite (tau[0]) || ! std::isfinite (tau[1])
-                        || ! (err < 0.5) || h.proc.getLatencySamples() != lat || ! allFinite (out))
+                        || ! (err < tolerance) || h.proc.getLatencySamples() != lat || ! allFinite (out))
                     {
                         allOk = false;
                         failures += str (ps::moduleInfo (t).idPrefix, " mode ", (int) mode, " ", rate, " Hz: measured ",
@@ -1431,8 +1434,8 @@ void testVintage()
                     }
                 }
             }
-        check (allOk, str ("[dsp] vintage: every module alone in every channel mode at 44.1 / 48 / 96 kHz: the reported "
-                           "latency equals the measured delay (within 0.5 sample; worst ",
+        check (allOk, str ("[dsp] vintage: every module alone in every channel mode at 44.1 / 48 / 96 / 192 kHz: the reported "
+                           "latency matches the measured delay (0.5 sample; Tape at 192 kHz 0.9; worst ",
                            std::round (worstErr * 1000.0) / 1000.0, ", ", worst, ")"),
                failures);
     }
@@ -1656,7 +1659,63 @@ void testState()
     check (b.proc.getCurrentPresetName() == "Default" && b.proc.isPresetModified(),
            "state: preset name and modified flag restored");
 
-    // save -> load -> save: identical apart from float round trips of the parameter values
+    // save -> load -> save: identical, parameter values included (saves write values that reload exactly), so a
+    // host comparing state blobs sees no change; every parameter at a random value in a second state
+    {
+        Host r1, r2;
+        r1.prepare();
+        r2.prepare();
+        juce::Random probes (20261105);
+        for (const auto& spec : specs)
+            if (auto* p = r1.proc.getValueTreeState().getParameter (juce::String (spec.id)))
+            {
+                float slowest = 0.0f;
+                int worstTrips = -1;
+                for (int probe = 0; probe < 8192; ++probe)
+                {
+                    const float normalised = probes.nextFloat();
+                    float value = p->convertFrom0to1 (normalised);
+                    int trips = 0;
+                    for (; trips < 256; ++trips)
+                    {
+                        const float next = p->convertFrom0to1 (p->convertTo0to1 (value));
+                        if (juce::exactlyEqual (next, value))
+                            break;
+                        value = next;
+                    }
+                    if (trips > worstTrips)
+                    {
+                        worstTrips = trips;
+                        slowest = normalised;
+                    }
+                }
+                p->setValueNotifyingHost (slowest);
+            }
+        r1.proc.flushPendingChanges (true);
+        const auto adversarialLive = currentValues (r1.proc);
+        const auto adversarialState = stateOf (r1.proc);
+        r2.proc.setStateInformation (adversarialState.getData(), (int) adversarialState.getSize());
+        check (adversarialState == stateOf (r2.proc),
+               "state: values needing more than eight normalisation trips reload to an identical binary state");
+        check (adversarialLive == currentValues (r1.proc), "state: canonicalising slow-converging values leaves live audio unchanged");
+        juce::Random random (20261104);
+        for (const auto& spec : specs)
+            if (auto* p = r1.proc.getValueTreeState().getParameter (juce::String (spec.id)))
+                p->setValueNotifyingHost (random.nextFloat());
+        r1.proc.flushPendingChanges (true);
+        const auto live = currentValues (r1.proc);
+        const auto s1 = stateOf (r1.proc);
+        check (live == currentValues (r1.proc), "state: saving leaves all live parameter values bit-exact");
+        r2.proc.setStateInformation (s1.getData(), (int) s1.getSize());
+        auto x1 = juce::AudioProcessor::getXmlFromBinary (s1.getData(), (int) s1.getSize());
+        const auto s2 = stateOf (r2.proc);
+        auto x2 = juce::AudioProcessor::getXmlFromBinary (s2.getData(), (int) s2.getSize());
+        check (s1 == s2, "state: save -> load -> save keeps the complete binary state identical");
+        const auto p1 = juce::ValueTree::fromXml (*x1).getChildWithName ("PARAMS");
+        const auto p2 = juce::ValueTree::fromXml (*x2).getChildWithName ("PARAMS");
+        check (p1.isValid() && p1.isEquivalentTo (p2), "state: save -> load -> save keeps every parameter value bit-exact",
+               str (specs.size(), " random values"));
+    }
     {
         const auto blob2 = stateOf (b.proc);
         auto t1 = juce::ValueTree::fromXml (*juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize()));
@@ -2193,6 +2252,44 @@ void testPresets()
                str ("presets: all ", count, vintage ? " vintage-style" : " phase 2",
                     " module presets load as one step, change their module and play finite audio"),
                bad);
+    }
+
+    // Measure each vintage preset in isolation: a finite signal alone would not detect an accidental gain jump.
+    {
+        Host isolated;
+        isolated.prepare();
+        const auto in = recordInput (96000, musicLikeInput (0.2f));
+        double worstGain = -200.0, worstPeak = -200.0;
+        bool sane = true;
+        int count = 0;
+        for (const auto t : vintageTypes())
+            for (const auto& info : isolated.proc.getPresets ((int) t))
+            {
+                if (! info.factory)
+                    continue;
+                isolated.proc.setChainOrder ({ t });
+                const bool loaded = isolated.proc.loadPreset ((int) t, info);
+                isolated.proc.flushPendingChanges (true);
+                isolated.prepare();
+                const auto out = isolated.stream (96000, replay (in));
+                double inputEnergy = 0.0, outputEnergy = 0.0, peak = 0.0;
+                for (size_t i = 48000; i < out.l.size(); ++i)
+                {
+                    inputEnergy += (double) in.l[i] * in.l[i] + (double) in.r[i] * in.r[i];
+                    outputEnergy += (double) out.l[i] * out.l[i] + (double) out.r[i] * out.r[i];
+                    peak = std::max (peak, (double) std::max (std::abs (out.l[i]), std::abs (out.r[i])));
+                }
+                const double gainDb = 10.0 * std::log10 (outputEnergy / inputEnergy);
+                const double peakDb = 20.0 * std::log10 (std::max (peak, 1.0e-10));
+                worstGain = std::max (worstGain, gainDb);
+                worstPeak = std::max (worstPeak, peakDb);
+                const bool ok = loaded && allFinite (out) && gainDb > -12.0 && gainDb < 6.0 && peakDb < 0.0;
+                sane = sane && ok;
+                ++count;
+                std::cout << "    " << info.name << ": gain " << gainDb << " dB, peak " << peakDb << " dBFS\n";
+            }
+        check (sane && count == 18, "presets: all 18 vintage presets have sensible isolated levels",
+               str ("worst gain ", worstGain, " dB, peak ", worstPeak, " dBFS"));
     }
 
     // Load a factory preset

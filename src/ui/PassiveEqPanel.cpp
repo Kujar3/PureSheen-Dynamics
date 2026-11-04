@@ -16,7 +16,8 @@ namespace
 {
 constexpr int kGap = 8;
 constexpr float kSpectrumMinDb = -90.0f, kSpectrumMaxDb = 0.0f;
-constexpr float kRangeDb = 18.0f;   // the response view shows +-18 dB (low boost bump, high boost 16, low cut 17.5)
+constexpr float kRangeDb = 24.0f;   // the response view shows +-24 dB (measured: low boost 16.6, low cut -19.5, high cut
+                                    // -22.5 at 10 on 5 kHz, a narrow high boost 10 about +17)
 constexpr const char* kDragHelp = "\nDrag to change (Ctrl: fine), double-click to reset.";
 
 // Control groups: knob arcs and the curve's section areas share their colour.
@@ -455,8 +456,8 @@ private:
         {
             auto& sec = sections[set][(size_t) k];
             sec.assign (xs.size(), 0.0f);
-            if (! ps::peq::isSectionActive (k, params[set]))
-                continue;
+            // every section counts towards the total: the high cut's section also carries the high boost's upper
+            // skirt while its own amount is 0 (an inactive section is otherwise exactly 0 dB)
             const auto c = ps::peq::designSection (k, params[set], gridRate);
             for (size_t i = 0; i < xs.size(); ++i)
             {
@@ -530,7 +531,7 @@ const KnobSpec kKnobs[] {
                                           "above the boost, which tightens the low end." },
     { "highHz", "Freq", kGroupHighBoost, true, "High boost frequency: the centre of the high boost (3 to 16 kHz)." },
     { "highBoost", "Boost", kGroupHighBoost, false, "High boost: a bell-shaped lift around the high boost frequency (0 "
-                                                    "to 10 dB on the classic markings). It gets a little narrower the "
+                                                    "to 10 dB on the classic markings). It gets a little broader the "
                                                     "more you boost." },
     { "highQ", "Q", kGroupHighBoost, false, "Q of the high boost: 0 is broad and smooth, 10 is narrower and more "
                                            "focused." },
@@ -539,13 +540,13 @@ const KnobSpec kKnobs[] {
                                               "frequency (0 to 10 dB on the classic markings)." },
     { "lmHz", "Freq", kGroupLowMid, true, "Low-mid frequency: the centre of the low-mid boost (200 Hz to 1 kHz)." },
     { "lmBoost", "Boost", kGroupLowMid, false, "Low-mid boost: body and warmth (0 to 10 dB on the classic markings). "
-                                               "Broad when you start, narrower as you turn it up." },
+                                               "It gets broader as you turn it up." },
     { "midHz", "Freq", kGroupMidCut, true, "Mid cut frequency: the centre of the mid cut (200 Hz to 7 kHz)." },
     { "midCut", "Cut", kGroupMidCut, false, "Mid cut: takes out boxiness or harshness (0 to 10 dB on the classic "
-                                            "markings)." },
+                                            "markings). It gets narrower as you turn it up." },
     { "hmHz", "Freq", kGroupHighMid, true, "High-mid frequency: the centre of the high-mid boost (1.5 to 5 kHz)." },
     { "hmBoost", "Boost", kGroupHighMid, false, "High-mid boost: presence and clarity (0 to 10 dB on the classic "
-                                                "markings). Broad when you start, narrower as you turn it up." },
+                                                "markings). It gets broader as you turn it up." },
     { "", "Drive", kGroupTube, false, "Drive: the tube make-up stage, shared by both channels. At 0 it is clean and "
                                       "exact; turning it up adds warm, mostly even harmonics at the same level." },
 };

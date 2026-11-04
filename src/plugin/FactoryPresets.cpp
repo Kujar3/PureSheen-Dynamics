@@ -854,7 +854,7 @@ std::vector<FactoryPreset> build()
             .set ("clim.character", 9.0f).set ("clim.truePeak", 1.0f)));
 
     //==============================================================================
-    // (phase 3) Tape presets (the output level follows the input whatever the drive; High Emphasis 4 = flat highs)
+    // (phase 3) Tape presets (the drive is level-compensated, less so at high drive; High Emphasis 4 = flat highs)
     using TS = ps::TapeSpeed;
     all.push_back (modulePreset ("Clean 30 ips", "Tape", ModuleType::Tape,
         Builder()

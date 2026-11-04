@@ -310,8 +310,8 @@ void LevelKnob::showLinkedMenu()
 HistoryView::HistoryView (juce::Colour c) : accent (c)
 {
     noFocus (*this);
-    setTooltip ("Gain reduction over the last seconds, 0 dB at the top. Colour: the tube stage's smooth limiting. Amber "
-                "below it: what the brickwall stage takes on top to keep the peaks under the ceiling. The two meters on "
+    setTooltip ("Gain reduction over the last seconds, 0 dB at the top. Colour: the slow stage's smooth limiting. Amber "
+                "below it: what the fast peak stage takes on top to keep the peaks under the ceiling. The two meters on "
                 "the right show both stages now.");
 }
 
@@ -442,8 +442,8 @@ void HistoryView::paint (juce::Graphics& g)
             g.drawText (text, r.withTrimmedLeft (6.0f), juce::Justification::centredLeft, false);
         };
 
-        item ("Tube stage", accent);
-        item ("Brickwall", gr);
+        item ("Slow stage", accent);
+        item ("Fast stage", gr);
     }
 
     //--------------------------------------------------------------------------
@@ -530,7 +530,7 @@ void HistoryView::paint (juce::Graphics& g)
                 return p;
             };
 
-            // Total (brickwall share visible below the tube stage), then the tube stage over it.
+            // Total (fast-stage share visible below the slow stage), then the slow stage over it.
             g.setGradientFill (juce::ColourGradient::vertical (gr.withAlpha (0.18f), y0, gr.withAlpha (0.42f), plot.getBottom()));
             g.fillPath (curtain (true, true));
             g.setColour (gr.withAlpha (0.85f));
@@ -572,12 +572,12 @@ void HistoryView::paint (juce::Graphics& g)
     }
 
     //--------------------------------------------------------------------------
-    // Meters: Tube stage and Brickwall, hanging from 0 dB on the plot's scale
+    // Meters: slow and fast stage, hanging from 0 dB on the plot's scale
     {
         const float barW = juce::jmin (16.0f, (meters.getWidth() - 12.0f) * 0.5f);
         const float gap = meters.getWidth() - 2.0f * barW;
         const float top = dbToY (0.0f, plot), bottom = dbToY (-rangeDb, plot);
-        const juce::String names[2] { "TUBE", "WALL" };
+        const juce::String names[2] { "SLOW", "FAST" };
         const float values[2] { shownMu, shownWall };
         const juce::Colour colours[2] { accent, gr };
 

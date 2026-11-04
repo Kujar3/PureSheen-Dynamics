@@ -6,30 +6,33 @@
 
 // Passive EQ: a passive LC program EQ (top section) above a passive midrange EQ (bottom section), followed by a tube
 // make-up stage (Stereo, M/S, L/R, T/S). Owner: mod-peq. Implementation: PassiveEq.cpp. Tests: tests/PassiveEqTests.cpp,
-// prefix "peq.". Every coefficient below named k... lives in ONE constant block at the top of PassiveEq.cpp
-// (first-principles values until the reference renders are fitted).
+// prefix "peq.". Every coefficient below named k... lives in ONE constant block at the top of PassiveEq.cpp, fitted to
+// the reference's renders (the measured model and its laws are described there). Every amount is in dB as labelled
+// (0..10), but the actual gains follow the measured laws (low boost 5 = +8.7 dB at DC, high boost 5 = +3.3 dB peak).
 //
 // Per channel (Stereo: both channels with set A; M/S, L/R: ch0 with set A, ch1 with set B; T/S twin: set B), in this
-// order, each an analog (s-domain) prototype realised as a matched biquad (design:: in Filters.h: magnitude matched up
-// to Nyquist, no bilinear cramping), double precision, through SmoothedBiquad:
-//   1. low boost   resonant low shelf at f = kPassiveEqLowHz[lowHz], gain kLowBoostMaxDb (13.5) x law (lowBoost / 10),
-//                  shelf Q kLowBoostQ
-//   2. low cut     low shelf cut at f x kLowCutRatio, gain -kLowCutMaxDb (17.5) x law (lowCut / 10), Q kLowCutQ; with
-//                  1 and 2 together the response is the classic boost with a dip just above it (they never cancel)
-//   3. high boost  peak at kPassiveEqHighHz[highHz], gain kHighBoostMaxDb (16) x law (highBoost / 10);
-//                  Q = kHighQBroad (0.4) at highQ 0 .. kHighQSharp (2.5) at highQ 10 (log interpolation), then
-//                  narrowed as the boost rises: Q x (1 + kBwBoostCoupling x law (highBoost / 10))
-//   4. high cut    high shelf cut at kPassiveEqHighCutHz[highCutHz], gain -kHighCutMaxDb (16) x law (highCut / 10)
-//   5. low-mid     peak boost at kPassiveEqLowMidHz[lmHz], up to kMidMaxDb (10) dB
-//   6. mid cut     peak cut at kPassiveEqMidHz[midHz], up to -kMidMaxDb dB
-//   7. high-mid    peak boost at kPassiveEqHighMidHz[hmHz], up to kMidMaxDb dB
-//                  5 - 7 proportional Q: Q = kMidQLow + (kMidQHigh - kMidQLow) x law (amount / 10) (kMidQHigh >
-//                  kMidQLow: broad at a touch, narrower as the amount rises)
-//   law (u) = the knob law, table kKnobLaw[11] over 0..10 interpolated linearly (identity until fitted); law (0) = 0.
+// order, each an analog (s-domain) prototype realised as a biquad (the low sections bilinear, the others the matched
+// designs of design:: in Filters.h: magnitude matched up to Nyquist, no bilinear cramping), double precision, through
+// SmoothedBiquad:
+//   1. low boost   first-order low shelf 1 + cB / (F + pB) at position kPassiveEqLowHz[lowHz] (the input plus a
+//                  low-passed copy; the amount moves the pole); with the low cut on, this section is the boost
+//                  relative to the cut, including the measured interaction of the two (the boost with a dip above it)
+//   2. low cut     first-order low shelf cut 1 - cC / (F + pC)
+//   3. high boost  analog peak at the position's measured centre (the 8k position peaks near 6.2 kHz), its gain, Q and
+//                  centre following the amount and High Q (0 = broad, 10 = narrow and higher)
+//   4. high cut    first-order high shelf cut at kPassiveEqHighCutHz[highCutHz], times the high boost's measured
+//                  upper skirt (a first-order shelf tied to the boost; this section is unity only when both are 0).
+//                  Its two first-order factors glide independently, keeping the other shelf's realisation unchanged.
+//   5. low-mid     peak boost at kPassiveEqLowMidHz[lmHz] x a measured ratio (300 -> 364 Hz at 5)
+//   6. mid cut     peak cut at kPassiveEqMidHz[midHz]
+//   7. high-mid    peak boost at kPassiveEqHighMidHz[hmHz] x a measured ratio (3k -> 3.68 kHz)
+//                  5 - 7: the boosts widen as the amount rises, the cut narrows (measured at 5 and 10)
 //   A section at amount 0 is exactly unity (numerator = denominator: the SVF's output weights are exactly 1, 0, 0), so
 //   it adds nothing to the path; its state keeps running, so engaging it starts from a warm state.
-//   Frequencies above 0.45 x sampleRate are clamped there (the matched design keeps the shape below Nyquist).
-//   8. tube make-up stage: 2x oversampled (Oversampler, MinimumPhase), a soft asymmetric saturator, mostly 2nd harmonic,
+//   Centres above 0.49 x sampleRate are clamped there (design::); the reference's own roll-off above 17 kHz (at 44.1 kHz)
+//   is not modelled.
+//   8. tube make-up stage (our addition: the reference has none, it is fully linear): 2x oversampled (Oversampler,
+//      MinimumPhase), a soft asymmetric saturator, mostly 2nd harmonic,
 //      scaled by drive (0..10, shared by both sets; kDriveMax sets the curve at 10), level-compensated so a -18 dBFS
 //      sine at 1 kHz keeps its level. drive 0: the stage is bypassed and the signal is delayed by an exact integer
 //      delay of kPassiveEqLatency samples (bit-exact). The oversampled path carries only the compensated nonlinear

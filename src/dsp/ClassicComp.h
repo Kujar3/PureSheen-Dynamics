@@ -4,50 +4,41 @@
 
 #include <memory>
 
-// Classic Compressor: a feedback compressor with a detection filter in the loop, program-dependent release and three
-// knee / ballistics modes (Stereo, M/S). Owner: mod-ccmp. Implementation: ClassicComp.cpp. Tests:
+// Classic Compressor: a feedback compressor with a detection filter in the loop, a program-dependent (two-capacitor)
+// detector and three knee modes (Stereo, M/S). Owner: mod-ccmp. Implementation: ClassicComp.cpp. Tests:
 // tests/ClassicCompTests.cpp, prefix "ccmp.". Every coefficient below named k... lives in ONE constant block at the top
-// of ClassicComp.cpp (first-principles values until the reference renders are fitted).
+// of ClassicComp.cpp; the model and the constants are fitted to the reference's renders (ClassicComp.cpp says what
+// the measurements decided).
 //
 // Per channel set s (Stereo: both channels with set A, linked; M/S: ch0 = Mid with set A, ch1 = Side with set B, each
 // set alone), per sample n:
-//   x[n] (input) -> gain stage: v = x g[n] -> mode saturator (Balanced / Smooth) -> auto gain -> makeup -> y[n]
-//   detector (feedback): d = sidechain EQ (v[n - 1]), the gain-stage output of the PREVIOUS sample (before the mode
-//     saturator, auto gain and makeup, so none of them changes the compression); one sample of loop delay, no extra
-//     latency. The level followers are gain-referred (they average d / g and are read times the latest g: exactly the
-//     output level at a steady gain, never a stale pre-reduction level while the gain moves; ClassicComp.cpp).
-//   sidechain EQ (per channel, double precision, matched designs of Filters.h): 12 dB/oct high-pass at sc.hpf
-//     (Butterworth Q 0.707), a bell at sc.bellHz / sc.bellDb with Q 0.7, a high shelf at sc.shelfHz / sc.shelfDb
-//     (Q 0.707). At sc.hpf 20 Hz the high-pass is still in the path (the detector never sees DC).
-//   level: Stereo = max over |L|, |R| of the filtered detector (linked: one gain for both channels); M/S = each channel
-//     on its own. L = kDetRmsMix x RMS (one-pole mean square, kDetRmsMs, read as sqrt (2 x mean square) so a sine
-//     reads its peak) + (1 - kDetRmsMix) x peak (instant |d| with a kDetPeakReleaseMs release), in dB: levels,
-//     threshold and the static curve are in sine-peak dBFS.
-//   gain computer on L (the OUTPUT level): knee width W = kKneeDb[mode] (Sharp 2, Balanced 6, Smooth 12 dB) centred
-//     on the threshold T. Feedback ratio mapping (closed form): a reduction r = -c (L - T) above the knee settles at
-//     the fixed point y - T = (x - T) / (1 + c) for a steady tone, so c = ratio - 1 gives the knob's ratio exactly
-//     above the knee; inside the knee r = -c (L - T + W / 2)^2 / (2 W); below it r = 0. ratio 1 -> c = 0 -> r = 0.
-//   ballistics on r (dB): attack one-pole, time attackMs x kAttackScale[mode], while the target reduction deepens
-//     (the closed-loop time: the coefficient is divided by 1 + the gain computer's local slope, which also keeps the
-//     one-sample loop stable at every ratio); program-dependent release while it recovers: time = (1 - h) x release +
-//     h x kSlowReleaseMul x release, where h (0..1) is the "held" share: a one-pole toward 1 (kHoldTauMs, 300 ms)
-//     while the gain computer's target is deeper than kHoldMinDb, toward 0 (kHoldDecayMs) otherwise. So a short hit
-//     recovers at the release knob, a long stretch of compression up to kSlowReleaseMul times slower.
-//   mode saturator: Sharp none; Balanced kBalancedDrive, Smooth kSmoothDrive. A low-order (<= 3rd order) odd + even
-//     polynomial whose drive is scaled by the current reduction depth (|r| / kSatFullDb, clamped to 1), so it is
-//     exactly linear while nothing is reduced, and exactly linear below -30 dBFS at any reduction, once the 5 Hz DC
-//     tracker's residual from earlier saturation has decayed. Not oversampled (latency 0); at full drive a 0 dBFS
-//     gain-stage sine has harmonics at least 40 dB below the fundamental. This is a level-specific bound, not an
-//     antialias filter.
-//   auto gain (autoGain): input vs saturator output mean squares over 3 s, clamped +-12 dB, frozen while the input is
-//     below -60 dBFS, glides 1 s (as the Bass Shaper's); measured before makeup, so Makeup stays a deliberate offset on top.
+//   x[n] (input) -> gain stage: v = x g[n] -> auto gain -> makeup -> y[n]
+//   detector (feedback): d = sidechain EQ (mean of the set's v), the gain-stage output, read at the next sample (one
+//     sample of loop delay, no extra latency; Stereo: (L + R) / 2, one gain for both channels). As in the reference,
+//     a tone at or below the high-pass corner at ratio >= 10 and attack <= 5 ms modulates the gain non-periodically
+//     (bounded; ClassicComp.cpp).
+//   sidechain EQ (per set, double precision, bilinear designs at the knob frequencies): 1st-order high-pass at sc.hpf,
+//     a wide bell (Q kBellQ) with kBellGainScale x sc.bellDb, a high shelf (Q kShelfQ) with kShelfGainScale x
+//     sc.shelfDb. At sc.hpf 20 Hz the high-pass is still in the path (the detector never sees DC).
+//   detector: a diode peak detector V1 (charges toward |d| while |d| > V1 with kChargePerAttack x attack; discharges
+//     toward 0 at all times with the release law) coupled to a slow capacitor V2 (time and load ratio from the
+//     release laws): a short hit releases fast, held reduction creeps deeper and then releases slower. Level
+//     L = 20 log10 (V1) in dBFS (a steady sine reads a little below its peak: the charge / discharge balance).
+//   gain computer on L (the OUTPUT level): c = ratio - 1, so a steady tone's static slope above the knee is 1 / ratio
+//     exactly; Sharp / Balanced: quadratic knee kKneeDb[mode] wide centred on the threshold T; Smooth: softplus knee
+//     c W ln (1 + e^((L - T - kSmoothThresholdDb) / W)). The charge step is capped at the loop's dead-beat value
+//     1 / (1 + local slope), a local linear bound; nonlinear onsets can still overshoot.
+//   auto gain (autoGain): 20 log10 (A / B), A / B = kAutoGainMs one-pole averages of |x| and |v| (mean over the set's
+//     channels), clamped 0..kAutoGainMaxDb; in silence both decay alike, so it holds. Measured on the gain-stage
+//     output, before makeup, so Makeup stays a deliberate offset on top.
+//   No saturator: the odd harmonics while compressing are the detector ripple modulating the gain.
 // Latency 0 for every parameter value.
-// Neutral: ratio 1, makeup 0, auto gain off (any mode, any sidechain EQ): output = input (error < -120 dB; bit-exact
-// is not required).
-// Parameter changes: threshold, makeup and the sidechain EQ glide over 20 ms (SmoothedBiquad for the EQ); ratio and
-// mode are smoothed through the knee / drive values; attack / release glide in log time per sample. A mode change
-// never clicks. The Chain fades to dry and resets the module when switching Stereo / M/S (Module.h / Chain.cpp),
-// since detector histories belong to the channel domain in which they were recorded.
+// Neutral: ratio 1, makeup 0, auto gain off (any mode, any sidechain EQ): output = input (bit-exact).
+// Parameter changes: threshold and ratio glide S-shaped over 100 ms (the feedback loop's detector cannot follow a
+// faster jump without dipping the gain); knee width, the Smooth share (a mode change crossfades the knees), makeup
+// and the auto-gain share over 20 ms; the sidechain EQ through SmoothedBiquad; attack / release in log time per
+// sample. The Chain fades to dry and resets the module when switching Stereo / M/S (Module.h / Chain.cpp), since
+// detector histories belong to the channel domain in which they were recorded.
 // Monitors: ModuleMonitor::soloDetectionFilter = hear the sidechain: the output is the module INPUT through the
 // sidechain EQ (per channel, in the channel domain; 20 ms crossfade in and out), as the Dynamics module does.
 // T/S: not offered (no twin).
@@ -56,9 +47,9 @@ namespace ps
 struct ClassicCompMeters
 {
     // Per channel set (index 0 = set A; set B is used in M/S only and rests at its idle value in Stereo).
-    AtomicFloat gainReductionDb[kNumChannelSets];          // current reduction r (<= 0)
+    AtomicFloat gainReductionDb[kNumChannelSets];          // current reduction (<= 0)
     AtomicFloat gainReductionHoldDb[kNumChannelSets];      // deepest reduction of the last 1 s (<= 0)
-    AtomicFloat sidechainDb[kNumChannelSets] { AtomicFloat { -100.0f }, AtomicFloat { -100.0f } };   // level L (dBFS)
+    AtomicFloat sidechainDb[kNumChannelSets] { AtomicFloat { -100.0f }, AtomicFloat { -100.0f } };   // detector level L (dBFS)
     AtomicFloat autoGainDb[kNumChannelSets];               // current auto-gain correction (0 when off)
 };
 
@@ -79,11 +70,13 @@ public:
     const ClassicCompMeters& getMeters() const noexcept;
 
     // For the panel's sidechain curve: magnitude (dB) of the detection filter of one set's settings at `hz` (the
-    // analog prototype the matched designs follow; independent of the sample rate). Any thread.
+    // analog prototypes of the bilinear designs; independent of the sample rate). Any thread.
     static double detectorResponseDb (const ClassicCompSetParams&, double hz) noexcept;
 
-    // For the panel's transfer display: the static output level (dBFS) of a steady tone at `inputDb` for one set's
-    // threshold / ratio / mode (the knee as above, the feedback fixed point solved; no makeup, no auto gain).
+    // For the panel's transfer display: approximate static output (dBFS) of a steady tone at `inputDb` for one set's
+    // threshold / ratio / mode / attack / release (the knee as above, the detector's steady-sine reading and the
+    // feedback fixed point solved; no makeup, no auto gain). Assumes flat sidechain magnitude and small detector
+    // ripple; finite-rate charge capping and low-frequency ripple are not represented in this rate-independent curve.
     static double staticCurveDb (const ClassicCompSetParams&, double inputDb) noexcept;
 
 private:

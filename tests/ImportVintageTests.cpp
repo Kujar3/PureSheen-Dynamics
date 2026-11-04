@@ -191,7 +191,7 @@ TEST_CASE ("import.vint. every module imports the foreign defaults table from an
         CHECK (near (value (ccmp, p + "mode"), 1.0));       // Balanced
         CHECK (near (value (ccmp, p + "makeup"), 0.0));
         CHECK (near (value (ccmp, p + "autoGain"), 1.0));
-        CHECK (near (value (ccmp, p + "sc.hpf"), 45.0, 0.05));
+        CHECK (near (value (ccmp, p + "sc.hpf"), 40.0, 0.05));
         CHECK (near (value (ccmp, p + "sc.bellHz"), 2000.0, 1.0));
         CHECK (near (value (ccmp, p + "sc.bellDb"), 0.0));
         CHECK (near (value (ccmp, p + "sc.shelfHz"), 6000.0, 2.0));

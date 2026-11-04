@@ -107,12 +107,14 @@ void ResponseView::paint (juce::Graphics& g)
         strokeEqCurve (g, curve, colour);
     }
 
-    // Head-bump marker: the peak of the low end (when there is one)
+    // Mark an actual local peak of the displayed low end. A rising shelf at the search boundary is not a bump.
+    // This is the combined response relative to 1 kHz, not the isolated head-bump section's gain.
     float peakHz = 0.0f, peakDb = 0.0f;
-    for (size_t i = 0; i < xs.size(); ++i)
+    for (size_t i = 1; i + 1 < xs.size(); ++i)
     {
         const float hz = fx.xToHz (xs[i]);
-        if (hz >= kBumpSearchLoHz && hz <= kBumpSearchHiHz && db[i] > peakDb)
+        if (hz >= kBumpSearchLoHz && hz <= kBumpSearchHiHz && db[i] > peakDb
+            && db[i] > db[i - 1] && db[i] >= db[i + 1])
         {
             peakDb = db[i];
             peakHz = hz;
@@ -126,7 +128,7 @@ void ResponseView::paint (juce::Graphics& g)
         const float x = fx.hzToX (peakHz), y = dy.dbToY (peakDb);
         g.setColour (colour);
         g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ x, y }));
-        const auto text = "Bump " + fmt::db (peakDb, 1) + " at " + fmt::hz (peakHz);
+        const auto text = "Low peak " + fmt::db (peakDb, 1) + " at " + fmt::hz (peakHz);
         const float tw = textWidth (small, text) + 4.0f;
         auto box = juce::Rectangle<float> (tw, 16.0f).withCentre ({ x + tw * 0.5f + 8.0f, y - 14.0f });
         box = box.constrainedWithin (b.reduced (6.0f, 2.0f));
@@ -140,7 +142,7 @@ void ResponseView::paint (juce::Graphics& g)
     g.setColour (Colours::textSubtle);
     g.drawText (hiText, juce::Rectangle<float> (b.getRight() - 170.0f, b.getY() + 2.0f, 162.0f, 16.0f),
                 juce::Justification::centredRight, false);
-    g.drawText ("Response", juce::Rectangle<float> (b.getX() + 34.0f, b.getY() + 2.0f, 120.0f, 16.0f),
+    g.drawText ("Relative to 1 kHz", juce::Rectangle<float> (b.getX() + 34.0f, b.getY() + 2.0f, 120.0f, 16.0f),
                 juce::Justification::centredLeft, false);
 }
 
@@ -176,7 +178,8 @@ void DriveKnob::paint (juce::Graphics& g)
     const auto scaleFont = font (10.5f, 600);
     const float labelPad = 22.0f;   // room for the scale labels around the arc
     const float d = juce::jmax (24.0f, juce::jmin (r.getWidth() - 2.0f * labelPad, r.getHeight() - labelPad));
-    const auto area = juce::Rectangle<float> (d, d).withCentre ({ r.getCentreX(), r.getY() + labelPad * 0.5f + d * 0.5f });
+    // the top label (0) sits above the arc: leave its room so it stays clear of the caption
+    const auto area = juce::Rectangle<float> (d, d).withCentre ({ r.getCentreX(), r.getY() + labelPad + d * 0.5f });
     const auto centre = area.getCentre();
     const float radius = d * 0.5f;
     const float lineW = juce::jlimit (3.0f, 6.0f, radius * 0.09f);

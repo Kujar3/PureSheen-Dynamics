@@ -47,17 +47,18 @@ struct TapePanel::Impl
         meter.setColour (colour);
         response.setColour (colour);
 
-        speed.setTooltip ("Tape speed. Faster tape keeps more highs and moves the head bump up (7.5 ips: 40 Hz, 15 ips: "
-                          "60 Hz, 30 ips: 110 Hz); slower tape saturates the highs earlier.");
+        speed.setTooltip ("Tape speed. Faster tape keeps more highs and moves the head bump up; slower tape saturates "
+                          "the highs earlier.");
         drive.setTooltip ("Drive: how hard the signal hits the tape. More drive = more saturation and softer peaks; the "
-                          "output level is compensated, so you hear the colour, not a level jump.\nDrag to change (Ctrl: "
+                          "output level is partly compensated and can rise at high drive.\nDrag to change (Ctrl: "
                           "fine), double-click to reset.");
         meter.setTooltip ("Level into tape: the peak level reaching the tape after Drive (the highs count more, as on a "
                           "real machine). Saturation: how much the tape squashes those peaks.");
-        response.setTooltip ("Response of the tape at low levels: the head bump in the lows and the high end set by High "
-                             "Emphasis and Bias. Saturation comes on top of this as you drive harder.");
+        response.setTooltip ("Response at low levels, relative to 1 kHz: the low end and the highs set by High Emphasis "
+                             "and Bias. The overall level and sample-rate dependent top roll-off are excluded. "
+                             "Saturation comes on top of this as you drive harder.");
         lowEmph.setTooltip ("Low Emphasis: the head bump, a resonant lift in the lows at a frequency set by the speed. 0 "
-                            "removes the bump (the roll-off below it stays), 10 = +10 dB.");
+                            "removes the bump (the roll-off below it stays). Its peak gain also depends on the speed.");
         highEmph.setTooltip ("High Emphasis: compensation of the high-frequency loss of the playback head. 4 = flat, lower "
                              "values roll the highs off gently, higher values add sheen.");
         bias.setTooltip ("Bias: the character of the saturation. Negative (under-biased) = brighter, the highs distort "

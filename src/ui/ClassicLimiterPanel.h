@@ -10,8 +10,8 @@
 //
 //   left   : "Level" card: Threshold, the Link toggle, Ceiling (with Link on, either knob moves both by the same
 //            amount, one undo step), the resulting gain (Ceiling - Threshold) as the card's subtitle
-//   centre : the gain-reduction history (ps::ClassicLimiter::getHistoryFifo: the tube stage in the module colour, the
-//            brickwall's share in amber; 5 s, 0 dB at the top) with the two stage meters and the output peak
+//   centre : the gain-reduction history (ps::ClassicLimiter::getHistoryFifo: the slow stage in the module colour, the
+//            fast stage's share in amber; 5 s, 0 dB at the top) with the two stage meters and the output peak
 //   right  : "Character" card: the mode (Analog | Tube | Modern) with a one-line description, the Character knob
 //            (Fast .. Slow), True Peak at the bottom
 // Every ClassicLimiterParams parameter has a control; "clim.on" lives in the chain strip. Every control has a tooltip.

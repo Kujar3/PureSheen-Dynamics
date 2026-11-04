@@ -304,7 +304,8 @@ public:
 
     explicit TransferView (PureSheenProcessor& p) : processor (p), gesture (p)
     {
-        setTooltip ("Transfer curve: output level against input level for a steady tone (the knee follows the Mode).\n"
+        setTooltip ("Transfer curve: output level against input level for a steady tone (the knee follows the Mode, "
+                    "Attack and Release).\n"
                     "Drag the dot to set the threshold; double-click resets it, right-click for a menu. The ball shows "
                     "the current level.");
     }
@@ -325,7 +326,7 @@ public:
     void setLive (float inDb, float outDb, bool has)
     {
         const auto st = readSet (processor, set);
-        const std::array<float, 3> curve { st.thresholdDb, st.ratio, (float) st.mode };
+        const std::array<float, 5> curve { st.thresholdDb, st.ratio, (float) st.mode, st.attackMs, st.releaseMs };
         if (curve != shownCurve || has != live || std::abs (inDb - liveIn) > 0.05f || std::abs (outDb - liveOut) > 0.05f)
         {
             shownCurve = curve;
@@ -505,7 +506,7 @@ private:
     int set = 0, linkedSet = -1;
     juce::Colour colour = Colours::accent;
     float liveIn = -100.0f, liveOut = -100.0f, startDb = 0.0f, startX = 0.0f;
-    std::array<float, 3> shownCurve {};
+    std::array<float, 5> shownCurve {};
     bool live = false, hover = false, dragging = false;
 };
 
@@ -514,7 +515,7 @@ private:
 class SidechainView final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    static constexpr float kRangeDb = 12.0f;
+    static constexpr float kRangeDb = 18.0f;   // the detection shelf reaches twice its knob (+-16 dB)
 
     explicit SidechainView (PureSheenProcessor& p) : processor (p), gesture (p)
     {
@@ -630,6 +631,7 @@ public:
         const auto st = readSet (processor, set);
         startHz = n == 0 ? st.scHighPassHz : (n == 1 ? st.scBellHz : st.scShelfHz);
         startDb = n == 1 ? st.scBellDb : st.scShelfDb;
+        dragSlope = n == 0 ? 1.0f : nodeSlope (n, st);
         startPos = e.position;
         gesture.start (id (freqName (n), set), linkedOf (freqName (n)),
                        n == 0 ? juce::String() : id (gainName (n), set), n == 0 ? juce::String() : linkedOf (gainName (n)));
@@ -653,7 +655,8 @@ public:
         if (dragNode > 0)
         {
             const float dbPerPx = 2.0f * kRangeDb / juce::jmax (1.0f, dy.area.getHeight());
-            const float v = startDb - (e.position.y - startPos.y) * scale * dbPerPx;
+            // the node rides on the curve: move the knob by the curve's dB per knob dB at the node
+            const float v = startDb - (e.position.y - startPos.y) * scale * dbPerPx / dragSlope;
             gesture.set (1, juce::jlimit (-8.0f, 8.0f, v));
         }
         repaint();
@@ -704,9 +707,22 @@ private:
         if (n == 0)
             return { fx.hzToX (st.scHighPassHz),
                      dy.dbToY (juce::jmax (-kRangeDb, (float) ps::ClassicComp::detectorResponseDb (st, (double) st.scHighPassHz))) };
-        if (n == 1)
-            return { fx.hzToX (st.scBellHz), dy.dbToY (st.scBellDb) };
-        return { fx.hzToX (st.scShelfHz), dy.dbToY (st.scShelfDb) };
+        const float hz = n == 1 ? st.scBellHz : st.scShelfHz;
+        const float db = (float) ps::ClassicComp::detectorResponseDb (st, (double) hz);
+        return { fx.hzToX (hz), dy.dbToY (juce::jlimit (-kRangeDb, kRangeDb, db)) };
+    }
+
+    // dB of the curve at node n's frequency per dB of its knob (the bell gives half its knob, the shelf at its
+    // corner half of twice its knob; read from the DSP's own response so the panel follows the model)
+    static float nodeSlope (int n, ps::ClassicCompSetParams st)
+    {
+        const double hz = n == 1 ? st.scBellHz : st.scShelfHz;
+        float& g = n == 1 ? st.scBellDb : st.scShelfDb;
+        g = 0.0f;
+        const double base = ps::ClassicComp::detectorResponseDb (st, hz);
+        g = 4.0f;
+        const double up = ps::ClassicComp::detectorResponseDb (st, hz);
+        return juce::jmax (0.05f, (float) ((up - base) / 4.0));
     }
 
     int nodeAt (juce::Point<float> p) const
@@ -775,7 +791,7 @@ private:
     int set = 0, linkedSet = -1, hoverNode = -1, dragNode = -1;
     juce::Colour colour = Colours::accent;
     std::array<float, 5> shown {};
-    float startHz = 1000.0f, startDb = 0.0f;
+    float startHz = 1000.0f, startDb = 0.0f, dragSlope = 1.0f;
     juce::Point<float> startPos;
 };
 } // namespace
@@ -803,10 +819,10 @@ struct ClassicCompPanel::Impl
                             "slower on their own, which avoids pumping.\nDrag to change (Ctrl: fine), double-click to reset.");
         makeup.setTooltip ("Gain: output gain after the compressor (added on top of Auto Gain).\nDrag to change (Ctrl: "
                            "fine), double-click to reset.");
-        mode.setTooltip ("Mode: Sharp = crisp, a narrow knee, lets transients through, no colour. Balanced = a medium knee "
-                         "with a little colour. Smooth = a wide knee, catches transients, a fuller, warmer sound.");
-        autoGain.setTooltip ("Auto Gain: keeps the output as loud as the input while you compress (adapts over a few "
-                             "seconds), so you hear the change in dynamics, not in level.");
+        mode.setTooltip ("Mode: Sharp = the hardest knee. Balanced = a slightly softer knee. Smooth = a soft knee that "
+                         "starts about 10 dB above the threshold and compresses more gently.");
+        autoGain.setTooltip ("Auto Gain: keeps the output as loud as the input while you compress (follows over about "
+                             "half a second and holds through silence), so you hear the change in dynamics, not in level.");
         listen.setText ("Listen");
         listen.setOnColour (Colours::minor);
         listen.setTooltip ("Listen: play the input through the detection filter, the signal the compressor reacts to.");

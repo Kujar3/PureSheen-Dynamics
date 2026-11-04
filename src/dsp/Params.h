@@ -469,7 +469,7 @@ struct ClassicCompSetParams
     ClassicCompMode mode = ClassicCompMode::Balanced;   // "mode" Sharp / Balanced / Smooth
     float makeupDb = 0.0f;            // "makeup"     -30..+30 (the reference's Gain)
     bool autoGain = true;             // "autoGain"
-    float scHighPassHz = 45.0f;       // "sc.hpf"     20..400 log: high-pass on the detector, fixed shape (45: TBC)
+    float scHighPassHz = 40.0f;       // "sc.hpf"     20..400 log: high-pass on the detector, fixed shape (40: measured)
     float scBellHz = 2000.0f;         // "sc.bellHz"  800..9000 log: wide bell on the detector, fixed shape (2 k: TBC)
     float scBellDb = 0.0f;            // "sc.bellDb"  -8..+8
     float scShelfHz = 6000.0f;        // "sc.shelfHz" 4000..12000 log: high shelf on the detector, fixed shape (6 k: TBC)

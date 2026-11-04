@@ -13,9 +13,9 @@ namespace ps::ui::tape
 ps::TapeParams readParams (const PureSheenProcessor&);
 
 //==============================================================================
-// The small-signal response of the whole linear path (ps::Tape::responseDb: head bump and roll-off, the high end with
-// its loss / emphasis and the bias tilt) on the shared frequency grid, drawn with the EQ helpers (soft area + light
-// line), with markers at the speed's head-bump and high-end frequencies. Read only (no mouse edits).
+// The small-signal response relative to 1 kHz (ps::Tape::responseDb: excludes the level and rate-dependent top
+// roll-off) on the shared frequency grid, drawn with the EQ helpers (soft area + light line), with a low-end local
+// peak marker and a 16 kHz readout. Read only (no mouse edits).
 class ResponseView final : public juce::Component, public juce::SettableTooltipClient
 {
 public:

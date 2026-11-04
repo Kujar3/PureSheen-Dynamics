@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -42,7 +43,7 @@ struct Values
     ParamValues data() const { return v.data(); }
 };
 
-// The small-signal reference settings of the contract: 15 ips, lowEmph 0, highEmph 4, bias 0.
+// A quiet setting for the latency check: 15 ips, lowEmph 0, highEmph 4, bias 0.
 Values flatValues()
 {
     Values v;
@@ -202,14 +203,24 @@ TEST_CASE ("tape. module type and contract registration")
     CHECK_EQ (m.getLatencySamples(), kTapeLatency);
 }
 
-TEST_CASE ("tape. latency equals the measured impulse delay at 44.1 / 48 / 96 kHz and never changes")
+TEST_CASE ("tape. latency and reproduce filter phase at 44.1 / 48 / 88.2 / 96 / 192 kHz")
 {
-    // The delay of the impulse response is its group delay (the minimum-phase oversampler's convention, os. tests):
-    // flat over the mid band and equal to the reported latency; a delayed input then lines up with the output.
-    for (const double sr : { 44100.0, 48000.0, 96000.0 })
-        for (int setting = 0; setting < 2; ++setting)
+    // The minimum-phase oversampler's convention (os. tests): the reported latency is the group delay at 2 kHz within
+    // half a sample (the selftest's measure; the fit keeps the reproduce filters' own delay there under 4 us). The
+    // fitted bells add their own minimum-phase group delay ripple across the mid band (phase, not latency: within 1
+    // sample from 1.5 to 4 kHz).
+    // At 192 kHz the analog filters' delay occupies twice as many samples as at 96 kHz. This is frequency-dependent
+    // EQ phase, not an additional buffering delay; the oversampler still reports five samples.
+    for (const double sr : { 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 })
+        for (int setting = 0; setting < 3; ++setting)
         {
-            Values vals = setting == 0 ? flatValues() : Values();   // the flat settings, then the defaults
+            // the selftest's linear settings (30 ips, drive -30, no head bump), a quiet 15 ips setting, the defaults
+            Values vals = setting == 0 ? Values() : setting == 1 ? flatValues() : Values();
+            if (setting == 0)
+            {
+                vals.set ("drive", -30.0f);
+                vals.set ("lowEmph", 0.0f);
+            }
             auto m = makeTape (sr, vals);
             const int lat = m->getLatencySamples();
             const auto h = impulseResponse (sr, vals, 16384);
@@ -218,30 +229,19 @@ TEST_CASE ("tape. latency equals the measured impulse delay at 44.1 / 48 / 96 kH
                 if (std::abs (h[i]) > std::abs (h[arg]))
                     arg = i;
             const Response r { pstest::spectrumOf (h, h.size()), sr };
-            // (lower down the head-bump roll-off adds its own group delay, higher up the oversampler's rises: phase, not
-            // latency)
             double worst = 0.0;
             for (const double f : { 1500.0, 2000.0, 3000.0, 4000.0 })
                 worst = std::max (worst, std::abs (r.groupDelay (f) - lat));
-            const std::string tag = std::string (setting == 0 ? "flat     " : "defaults ") + "@" + std::to_string ((int) sr);
+            const char* names[] { "linear   ", "15 ips   ", "defaults " };
+            const std::string tag = std::string (names[setting]) + "@" + std::to_string ((int) sr);
             note (tag + ": reported latency", lat);
-            note ("    group delay at 4 kHz (samples)", r.groupDelay (4000.0));
+            note ("    group delay at 2 kHz (samples)", r.groupDelay (2000.0));
             note ("    max |group delay - latency| 1.5 .. 4 kHz (samples)", worst);
             note ("    impulse peak (samples)", (double) arg);
             CHECK_EQ (lat, kTapeLatency);
-            CHECK (worst <= 0.2);
+            CHECK (std::abs (r.groupDelay (2000.0) - lat) < (sr > 96000.0 ? 0.9 : 0.45));
+            CHECK (worst <= (sr > 96000.0 ? 2.0 : 1.0));
             CHECK ((int) arg >= lat && (int) arg <= lat + 1);   // the minimum-phase peak trails its group delay
-
-            // a 4 kHz tone (-40 dBFS): its phase delay through the module is the latency
-            const auto x = pstest::sine (4000.0, -40.0, 0.5, sr);
-            Values v = vals;
-            auto m2 = makeTape (sr, v);
-            const auto out = run (*m2, v, dual (x));
-            const size_t from = (size_t) (0.25 * sr), n = (size_t) (0.2 * sr);
-            const cd yo = pstest::toneOf (out.l, from, n, 4000.0, sr), xo = pstest::toneOf (x, from, n, 4000.0, sr);
-            const double phaseDelay = -std::arg (yo / xo) / (2.0 * kPi * 4000.0) * sr;
-            note ("    4 kHz phase delay (samples)", phaseDelay);
-            CHECK (std::abs (phaseDelay - lat) < 0.2);
         }
 
     // random settings every block: the reported latency never moves
@@ -259,45 +259,121 @@ TEST_CASE ("tape. latency equals the measured impulse delay at 44.1 / 48 / 96 kH
     CHECK (constant);
 }
 
-TEST_CASE ("tape. small-signal response is flat at the reference settings and matches responseDb")
+// The fitted tests below compare the module with numbers measured on the reference's renders (44.1 kHz; sweeps at
+// -30 dBFS smoothed to 1/24 octave, staircase steps of 1 s analysed over 0.45 .. 0.95 s; out/vintage/fit-tape.md).
+namespace
 {
-    // contract: 15 ips, lowEmph 0, highEmph 4, bias 0 -> flat within +-0.5 dB from 200 Hz to 10 kHz
-    {
-        const auto r = responseOf (kSr, flatValues());
-        double lo = 1.0e9, hi = -1.0e9;
-        for (double f = 200.0; f <= 10000.0; f *= 1.05)
-        {
-            lo = std::min (lo, r.magDb (f));
-            hi = std::max (hi, r.magDb (f));
-        }
-        note ("flat settings, 200 Hz .. 10 kHz: min (dB)", lo);
-        note ("    max (dB)", hi);
-        note ("    at 30 Hz (roll-off)", r.magDb (30.0));
-        note ("    at 20 kHz", r.magDb (20000.0));
-        CHECK (lo > -0.5);
-        CHECK (hi < 0.5);
-    }
+constexpr double kRefSr = 44100.0;
 
-    // measured response == responseDb for a spread of settings, at 44.1 and 96 kHz
+struct Tone
+{
+    double gainDb = 0.0;
+    double h[6] {};   // h[k] = harmonic k re the fundamental (dBc), k = 2 .. 5 (-300 above 0.45 fs)
+};
+
+Tone toneThrough (const Values& vals, double f, double levelDb, double sr = kRefSr)
+{
+    Values v = vals;
+    auto m = makeTape (sr, v);
+    const auto x = pstest::sine (f, levelDb, 1.0, sr);
+    const auto out = run (*m, v, dual (x));
+    const size_t from = (size_t) (0.45 * sr), n = (size_t) (0.5 * sr);   // whole cycles of 100 Hz .. 10 kHz
+    Tone t;
+    const double a1 = std::abs (pstest::toneOf (out.l, from, n, f, sr));
+    t.gainDb = db (a1) - levelDb;
+    for (int k = 2; k <= 5; ++k)
+        t.h[k] = k * f < 0.45 * sr ? db (std::abs (pstest::toneOf (out.l, from, n, f * k, sr)) / a1) : -300.0;
+    return t;
+}
+
+Values settings (int speed, float drive = 0.0f, float bias = 0.0f, float harmonics = 0.0f, float lowEmph = 2.0f,
+                 float highEmph = 4.0f)
+{
+    Values v;
+    v.set ("speed", (float) speed);
+    v.set ("drive", drive);
+    v.set ("bias", bias);
+    v.set ("harmonics", harmonics);
+    v.set ("lowEmph", lowEmph);
+    v.set ("highEmph", highEmph);
+    return v;
+}
+
+std::string label (const char* name, double x)
+{
+    std::ostringstream s;
+    s << name << " " << x;
+    return s.str();
+}
+} // namespace
+
+TEST_CASE ("tape. small-signal response matches the reference per speed, emphasis and bias")
+{
+    // dB re the input at 20, 30, 40, 50, 60, 80, 100, 200, 500 Hz, 1, 2, 5, 10, 16 (, 19) kHz (round 1 renders from
+    // 30 Hz: their sweeps start at 20 Hz; round 2 renders up to 19 kHz, the reference's top roll-off included)
+    struct Row
+    {
+        const char* name;
+        int speed;
+        float lowEmph, highEmph, bias;
+        double db[15];
+        bool toNineteen;
+    };
+    const Row rows[] {
+        { "30 ips (defaults)", 2, 2, 4, 0, { -13.90, -4.92, 0.46, 2.12, 1.77, 0.41, 0.04, 0.45, 0.88, 0.66, 0.89, 0.68, 0.67, 0.65, 0.06 }, true },
+        { "15 ips, low 10", 1, 10, 4, 0, { 1.85, 7.18, 3.51, 2.40, 2.17, 1.78, 1.50, 1.40, 0.97, 0.83, 0.46, -0.11, -0.29, 0.15, -0.21 }, true },
+        { "7.5 ips, low 10", 0, 10, 4, 0, { 4.09, 1.85, 1.60, 1.18, 0.82, 1.07, 1.05, 0.66, 1.03, 0.48, 0.09, -0.54, -0.79, -0.37, -0.72 }, true },
+        { "30 ips, low 0", 2, 0, 4, 0, { 0, -7.17, -3.21, -1.51, -1.04, -1.11, -0.84, 0.25, 0.85, 0.65, 0.88, 0.68, 0.67, 0.65, 0 }, false },
+        { "30 ips, low 10", 2, 10, 4, 0, { 0, -2.47, 7.03, 8.21, 4.90, 1.56, 0.69, 0.58, 0.90, 0.66, 0.89, 0.68, 0.67, 0.65, 0 }, false },
+        { "30 ips, high 0", 2, 2, 0, 0, { 0, -4.85, 0.44, 2.06, 1.69, 0.37, 0.06, 0.45, 0.88, 0.65, 0.85, 0.49, 0.00, -0.72, 0 }, false },
+        { "30 ips, high 7", 2, 2, 7, 0, { -13.90, -4.92, 0.46, 2.12, 1.77, 0.41, 0.04, 0.45, 0.89, 0.67, 0.92, 0.86, 1.24, 1.75, 1.40 }, true },
+        { "30 ips, high 10", 2, 2, 10, 0, { 0, -4.85, 0.44, 2.06, 1.69, 0.37, 0.06, 0.45, 0.89, 0.68, 0.96, 1.08, 1.92, 2.95, 0 }, false },
+        { "30 ips, bias -10", 2, 2, 4, -10, { 0, -5.16, 0.07, 1.66, 1.26, -0.12, -0.48, -0.26, 0.12, 0.46, 1.78, 1.80, 1.79, 1.78, 0 }, false },
+        { "30 ips, bias -5", 2, 2, 4, -5, { -14.03, -5.10, 0.26, 1.90, 1.54, 0.15, -0.25, 0.08, 0.48, 0.54, 1.32, 1.23, 1.21, 1.20, 0.61 }, true },
+        { "30 ips, bias +5", 2, 2, 4, 5, { -13.88, -4.83, 0.60, 2.30, 1.98, 0.68, 0.36, 0.94, 1.43, 0.64, -0.25, -0.67, -0.69, -0.71, -1.30 }, true },
+        { "30 ips, bias +10", 2, 2, 4, 10, { 0, -4.10, 1.28, 2.98, 2.68, 1.47, 1.26, 1.99, 2.54, 1.19, -0.80, -1.44, -1.47, -1.48, 0 }, false },
+    };
+    const double hz[15] { 20, 30, 40, 50, 60, 80, 100, 200, 500, 1000, 2000, 5000, 10000, 16000, 19000 };
+    double overall = 0.0;
+    for (const auto& row : rows)
+    {
+        const auto r = responseOf (kRefSr, settings (row.speed, 0.0f, row.bias, 0.0f, row.lowEmph, row.highEmph), 1 << 17);
+        double worst = 0.0, at = 0.0;
+        for (int i = row.toNineteen ? 0 : 1; i < (row.toNineteen ? 15 : 14); ++i)
+        {
+            const double e = std::abs (r.magDb (hz[i]) - row.db[i]);
+            if (e > worst)
+            {
+                worst = e;
+                at = hz[i];
+            }
+        }
+        note (std::string (row.name) + ": max |module - reference| (dB)", worst);
+        note ("    at (Hz)", at);
+        overall = std::max (overall, worst);
+        CHECK (worst < 0.25);
+    }
+    note ("worst over every setting (dB)", overall);
+}
+
+TEST_CASE ("tape. responseDb is the module's small-signal shape")
+{
     struct Setting
     {
         int speed;
         float lowEmph, highEmph, bias;
     };
-    const Setting settings[] { { 0, 10.0f, 0.0f, 0.0f }, { 1, 5.0f, 4.0f, 0.0f }, { 2, 10.0f, 10.0f, 0.0f },
-                               { 1, 0.0f, 10.0f, -10.0f }, { 0, 3.0f, 7.0f, 10.0f }, { 2, 0.0f, 0.0f, 5.0f } };
+    const Setting cases[] { { 0, 10.0f, 0.0f, 0.0f }, { 1, 5.0f, 4.0f, 0.0f }, { 2, 10.0f, 10.0f, 0.0f },
+                            { 1, 0.0f, 10.0f, -10.0f }, { 0, 3.0f, 7.0f, 10.0f }, { 2, 2.0f, 4.0f, 5.0f } };
     for (const double sr : { 44100.0, 96000.0 })
-        for (const auto& s : settings)
+        for (const auto& s : cases)
         {
-            Values v;
-            v.set ("speed", (float) s.speed);
-            v.set ("lowEmph", s.lowEmph);
-            v.set ("highEmph", s.highEmph);
-            v.set ("bias", s.bias);
+            Values v = settings (s.speed, 0.0f, s.bias, 0.0f, s.lowEmph, s.highEmph);
             const auto r = responseOf (sr, v);
             const auto p = paramsOf (v);
-            // responseDb excludes the make-up (a static gain): compare the shapes, aligned at 1 kHz
-            const double offset = r.magDb (1000.0) - Tape::responseDb (p, 1000.0);
+            // responseDb is relative to 1 kHz (the level is not part of the view)
+            CHECK (std::abs (Tape::responseDb (p, 1000.0)) < 1.0e-12);
+            const double offset = r.magDb (1000.0);
             double worst = 0.0;
             for (double f = 25.0; f <= 16000.0; f *= 1.03)
                 worst = std::max (worst, std::abs (r.magDb (f) - offset - Tape::responseDb (p, f)));
@@ -305,281 +381,218 @@ TEST_CASE ("tape. small-signal response is flat at the reference settings and ma
                       + std::to_string ((int) s.highEmph) + " bias " + std::to_string ((int) s.bias) + " @"
                       + std::to_string ((int) sr) + ": max |measured - responseDb| 25 Hz .. 16 kHz (dB)",
                   worst);
-            CHECK (worst < 0.25);
+            CHECK (worst < 0.1);
         }
 }
 
-TEST_CASE ("tape. head bump: peak at the speed's frequency, 0 .. +10 dB, roll-off kept at 0")
+TEST_CASE ("tape. head bump: a peak of G = 1 + a x lowEmph at the speed's bump frequency, none at 0")
 {
-    const double bumpHz[] { 40.0, 60.0, 110.0 };
+    // fitted per speed (7.5 / 15 / 30 ips): bump frequency and a
+    const double bumpHz[] { 15.075, 25.036, 44.238 }, perUnit[] { 0.2794, 0.2443, 0.2743 };
     for (int speed = 0; speed < 3; ++speed)
-    {
-        double prevPeak = -1.0;
-        for (const float lowEmph : { 0.0f, 5.0f, 10.0f })
+        for (const float lowEmph : { 0.0f, 2.0f, 5.0f, 10.0f })
         {
-            Values v = flatValues();
-            v.set ("speed", (float) speed);
-            v.set ("lowEmph", lowEmph);
-            const auto p = paramsOf (v);
-            double peak = -100.0, peakHz = 0.0;
-            for (double f = 10.0; f <= 400.0; f *= 1.005)
-            {
-                const double g = Tape::responseDb (p, f);
-                if (g > peak)
-                {
-                    peak = g;
-                    peakHz = f;
-                }
-            }
-            const double rollDb = Tape::responseDb (p, bumpHz[speed] * 0.25);
-            note ("speed " + std::to_string (speed) + " lowEmph " + std::to_string ((int) lowEmph) + ": peak (dB)", peak);
-            note ("    peak frequency (Hz)", peakHz);
-            note ("    at a quarter of the bump frequency (dB)", rollDb);
-            if (lowEmph == 0.0f)
-            {
-                CHECK (peak < 0.05);   // no peak
-                CHECK (rollDb < -6.0);   // roll-off kept
-            }
-            else
-            {
-                CHECK (std::abs (peakHz / bumpHz[speed] - 1.0) < 0.1);
-                CHECK (peak > prevPeak + 3.0);
-            }
-            if (lowEmph == 10.0f)
-                CHECK (std::abs (peak - 10.0) < 0.2);
-            prevPeak = peak;
+            const auto p0 = paramsOf (settings (speed, 0, 0, 0, 0.0f)), p = paramsOf (settings (speed, 0, 0, 0, lowEmph));
+            const double lift = Tape::responseDb (p, bumpHz[speed]) - Tape::responseDb (p0, bumpHz[speed]);
+            const double expected = 20.0 * std::log10 (1.0 + perUnit[speed] * lowEmph);
+            note ("speed " + std::to_string (speed) + " lowEmph " + std::to_string ((int) lowEmph) + ": bump (dB)", lift);
+            CHECK (std::abs (lift - expected) < 0.02);   // (responseDb is relative to 1 kHz, where the bump's tail
+                                                         // still lifts by up to 0.01 dB)
+            // above the bump the low emphasis leaves the response alone
+            CHECK (std::abs (Tape::responseDb (p, 2000.0) - Tape::responseDb (p0, 2000.0)) < 0.02);
         }
-    }
-
-    // the measured module agrees (48 kHz, 15 ips, lowEmph 10)
-    Values v = flatValues();
-    v.set ("lowEmph", 10.0f);
-    const auto r = responseOf (kSr, v, 1 << 17);
-    note ("measured at 60 Hz, lowEmph 10 (dB)", r.magDb (60.0));
-    CHECK (std::abs (r.magDb (60.0) - 10.0) < 0.3);
+    // 30 ips, lowEmph 10: +11.3 dB peak (reference: Low 10 minus Low 0 +10.2 dB at 40 Hz, +9.7 at 50 Hz)
+    const auto p10 = paramsOf (settings (2, 0, 0, 0, 10.0f)), p0 = paramsOf (settings (2, 0, 0, 0, 0.0f));
+    note ("30 ips: low 10 - low 0 at 40 Hz (dB)", Tape::responseDb (p10, 40.0) - Tape::responseDb (p0, 40.0));
+    CHECK (std::abs (Tape::responseDb (p10, 40.0) - Tape::responseDb (p0, 40.0) - 10.24) < 0.25);
+    CHECK (std::abs (Tape::responseDb (p10, 50.0) - Tape::responseDb (p0, 50.0) - 9.72) < 0.25);
 }
 
-TEST_CASE ("tape. high emphasis: 4 is flat, below rolls off, above lifts; slower speeds lose more")
+TEST_CASE ("tape. high emphasis: 4 is flat; 0, 7 and 10 shelve the highs as the reference")
 {
+    // reference, re High 4 (30 ips): 10 kHz / 16 kHz
+    struct Point
+    {
+        float e;
+        double at10k, at16k;
+    };
+    const Point pts[] { { 0.0f, -0.67, -1.37 }, { 7.0f, 0.57, 1.10 }, { 10.0f, 1.25, 2.30 } };
     for (int speed = 0; speed < 3; ++speed)
     {
+        const auto flat = paramsOf (settings (speed));
         double prev = -100.0;
-        for (const float e : { 0.0f, 2.0f, 4.0f, 7.0f, 10.0f })
+        for (const float e : { 0.0f, 2.0f, 4.0f, 5.5f, 7.0f, 8.5f, 10.0f })
         {
-            Values v = flatValues();
-            v.set ("speed", (float) speed);
-            v.set ("highEmph", e);
-            const auto p = paramsOf (v);
-            const double at16k = Tape::responseDb (p, 16000.0), at1k = Tape::responseDb (p, 1000.0);
-            note ("speed " + std::to_string (speed) + " highEmph " + std::to_string ((int) e) + ": 16 kHz (dB)", at16k);
-            CHECK (at16k > prev);
-            CHECK (std::abs (at1k) < 0.6);
+            const auto p = paramsOf (settings (speed, 0, 0, 0, 2.0f, e));
+            const double d16 = Tape::responseDb (p, 16000.0) - Tape::responseDb (flat, 16000.0);
+            CHECK (d16 > prev);
             if (e == 4.0f)
-                CHECK (std::abs (at16k) < 0.01);
-            if (e == 0.0f)
-                CHECK (at16k < -3.0);
-            if (e == 10.0f)
-                CHECK (at16k > 3.0);
-            prev = at16k;
+                CHECK (std::abs (d16) < 1.0e-9);
+            prev = d16;
         }
     }
-    // highEmph 0: 7.5 ips loses more at 8 kHz than 30 ips
-    Values v7 = flatValues(), v30 = flatValues();
-    v7.set ("highEmph", 0.0f);
-    v7.set ("speed", 0.0f);
-    v30.set ("highEmph", 0.0f);
-    v30.set ("speed", 2.0f);
-    const double l7 = Tape::responseDb (paramsOf (v7), 8000.0), l30 = Tape::responseDb (paramsOf (v30), 8000.0);
-    note ("highEmph 0 at 8 kHz: 7.5 ips (dB)", l7);
-    note ("    30 ips (dB)", l30);
-    CHECK (l7 < l30 - 1.5);
-}
-
-TEST_CASE ("tape. make-up: -18 dBFS pink noise comes out at -18 dBFS at every drive, speed and bias")
-{
-    const auto x = bandPink (6.0, 11u, -18.0), x2 = bandPink (6.0, 12u, -18.0);
-    const size_t from = (size_t) kSr, n = x.size() - from;
-    const double inDb = rmsDb (x, from - kTapeLatency, n);
-    double worst = 0.0;
-    for (int speed = 0; speed < 3; ++speed)
-        for (const float bias : { -10.0f, 0.0f, 10.0f })
-            for (const float harm : { 0.0f, 10.0f })
-                for (const float drive : { -30.0f, -10.0f, 0.0f, 10.0f, 20.0f, 30.0f })
-                {
-                    Values v = flatValues();
-                    v.set ("speed", (float) speed);
-                    v.set ("bias", bias);
-                    v.set ("harmonics", harm);
-                    v.set ("drive", drive);
-                    auto m = makeTape (kSr, v);
-                    const auto out = run (*m, v, { x, x2 });
-                    const double d = rmsDb (out.l, from, n) - inDb;
-                    worst = std::max (worst, std::abs (d));
-                    if (drive >= 10.0f || drive == -30.0f || std::abs (d) > 0.5)
-                        note ("speed " + std::to_string (speed) + " bias " + std::to_string ((int) bias) + " harmonics "
-                                  + std::to_string ((int) harm) + " drive " + std::to_string ((int) drive)
-                                  + ": out - in (dB)",
-                              d);
-                }
-    note ("worst |out - in| over 108 settings (dB)", worst);
-    CHECK (worst <= 0.5);
-}
-
-TEST_CASE ("tape. drive saturates: THD rises with drive, odd harmonics only at harmonics 0")
-{
-    const double f = 200.0;
-    const auto x = pstest::sine (f, -6.0, 1.0, kSr);
-    const size_t from = (size_t) (0.5 * kSr), n = (size_t) (0.4 * kSr);   // 80 whole cycles
-    double prev = -300.0;
-    for (const float drive : { -30.0f, -10.0f, 0.0f, 10.0f, 20.0f })
+    const auto flat = paramsOf (settings (2));
+    for (const auto& pt : pts)
     {
-        Values v = flatValues();
-        v.set ("drive", drive);
-        auto m = makeTape (kSr, v);
-        const auto out = run (*m, v, dual (x));
-        const double thd = thdDb (out.l, f, kSr, from, n);
-        const double h2 = harmonicDbc (out.l, f, 2, kSr, from, n), h3 = harmonicDbc (out.l, f, 3, kSr, from, n);
-        note ("200 Hz at -6 dBFS, drive " + std::to_string ((int) drive) + ": THD (dB)", thd);
-        note ("    H2 (dBc)", h2);
-        note ("    H3 (dBc)", h3);
-        CHECK (thd > prev + 3.0);
-        CHECK (h2 < -90.0);   // symmetric curve: no even harmonics
-        prev = thd;
-        if (drive == -30.0f)
-            CHECK (thd < -70.0);
-        if (drive == 20.0f)
-            CHECK (thd > -20.0);
+        const auto p = paramsOf (settings (2, 0, 0, 0, 2.0f, pt.e));
+        const double d10 = Tape::responseDb (p, 10000.0) - Tape::responseDb (flat, 10000.0);
+        const double d16 = Tape::responseDb (p, 16000.0) - Tape::responseDb (flat, 16000.0);
+        note (label ("highEmph", pt.e) + ": 10 kHz re 4 (dB)", d10);
+        note ("    16 kHz re 4 (dB)", d16);
+        CHECK (std::abs (d10 - pt.at10k) < 0.1);
+        CHECK (std::abs (d16 - pt.at16k) < 0.1);
     }
 }
 
-TEST_CASE ("tape. harmonics adds even-order distortion, growing with the control")
+TEST_CASE ("tape. drive: level and harmonics follow the reference's 1 kHz staircase")
 {
-    const double f = 200.0;
-    const auto x = pstest::sine (f, -6.0, 1.0, kSr);
-    const size_t from = (size_t) (0.5 * kSr), n = (size_t) (0.4 * kSr);
-    double prev = -300.0;
-    for (const float harm : { 0.0f, 2.5f, 5.0f, 10.0f })
+    // reference (30 ips): gain (dB) at -42 / -12 / 0 dBFS, h3 and h5 (dBc) at 0 dBFS, h3 at -12 dBFS
+    struct Row
     {
-        Values v = flatValues();
-        v.set ("harmonics", harm);
-        auto m = makeTape (kSr, v);
-        const auto out = run (*m, v, dual (x));
-        const double h2 = harmonicDbc (out.l, f, 2, kSr, from, n), h3 = harmonicDbc (out.l, f, 3, kSr, from, n);
-        double dc = 0.0;
-        for (size_t i = from; i < from + n; ++i)
-            dc += out.l[i];
-        dc /= (double) n;
-        note ("drive 0, harmonics " + std::to_string (harm) + ": H2 (dBc)", h2);
-        note ("    H3 (dBc)", h3);
-        note ("    DC (dBFS)", db (std::abs (dc)));
-        CHECK (h2 > prev + (harm == 0.0f ? 0.0 : 3.0));
-        CHECK (db (std::abs (dc)) < -80.0);   // the even part's DC is removed
-        if (harm == 10.0f)
+        float drive;
+        double g42, g12, g0, h3at0, h5at0, h3at12;
+    };
+    const Row rows[] { { -10.0f, 0.52, 0.48, 0.36, -49.5, -66.6, -61.6 }, { 0.0f, 0.67, 0.54, 0.14, -39.1, -56.2, -51.5 },
+                       { 10.0f, 1.16, 0.75, -0.63, -27.9, -44.9, -41.3 }, { 20.0f, 2.91, 1.55, -4.28, -14.0, -25.9, -30.3 },
+                       { 30.0f, 10.32, 4.95, -6.41, -11.0, -16.2, -16.3 } };
+    for (const auto& r : rows)
+    {
+        const auto v = settings (2, r.drive);
+        const auto quiet = toneThrough (v, 1000.0, -42.0), mid = toneThrough (v, 1000.0, -12.0), loud = toneThrough (v, 1000.0, 0.0);
+        note (label ("drive", r.drive) + ": gain at -42 / -12 / 0 dBFS (dB)", quiet.gainDb);
+        note ("    ", mid.gainDb);
+        note ("    ", loud.gainDb);
+        note ("    h3 / h5 at 0 dBFS (dBc)", loud.h[3]);
+        note ("    ", loud.h[5]);
+        CHECK (std::abs (quiet.gainDb - r.g42) < 0.25);
+        CHECK (std::abs (mid.gainDb - r.g12) < 0.25);
+        CHECK (std::abs (loud.gainDb - r.g0) < 0.3);
+        CHECK (std::abs (loud.h[3] - r.h3at0) < 1.5);
+        CHECK (std::abs (loud.h[5] - r.h5at0) < 2.0);
+        CHECK (std::abs (mid.h[3] - r.h3at12) < 1.5);
+        CHECK (mid.h[2] < -100.0);   // symmetric curve: no even harmonics at harmonics 0
+        CHECK (mid.h[4] < -100.0);
+    }
+}
+
+TEST_CASE ("tape. pre-emphasis: the highs saturate earlier above a corner that moves with the speed")
+{
+    // reference at drive +20: gain (dB) at -36 / 0 dBFS per staircase frequency, h3 at -12 dBFS (100 Hz .. 5 kHz)
+    struct Row
+    {
+        int speed;
+        double f, g36, g0, h3at12;
+    };
+    const Row rows[] {
+        { 2, 100, 2.26, -4.59, -28.6 }, { 2, 1000, 2.87, -4.28, -30.3 }, { 2, 5000, 2.89, -5.47, -27.6 }, { 2, 10000, 2.87, -5.49, 0 },
+        { 1, 100, 3.57, -3.28, -29.5 }, { 1, 1000, 3.03, -5.13, -28.6 }, { 1, 5000, 2.09, -6.27, -27.4 }, { 1, 10000, 1.91, -6.45, 0 },
+        { 0, 100, 3.22, -3.65, -30.3 }, { 0, 1000, 2.68, -5.67, -28.2 }, { 0, 5000, 1.66, -6.70, -27.4 }, { 0, 10000, 1.42, -6.95, 0 },
+    };
+    for (const auto& r : rows)
+    {
+        const auto v = settings (r.speed, 20.0f);
+        const auto quiet = toneThrough (v, r.f, -36.0), loud = toneThrough (v, r.f, 0.0);
+        note ("speed " + std::to_string (r.speed) + label (",", r.f) + " Hz: compression -36 -> 0 dBFS (dB)",
+              loud.gainDb - quiet.gainDb);
+        CHECK (std::abs (quiet.gainDb - r.g36) < 0.25);
+        CHECK (std::abs (loud.gainDb - r.g0) < 0.3);
+        if (r.h3at12 != 0.0)
         {
-            CHECK (h2 > -30.0);
-            CHECK (h2 > h3);
+            const auto mid = toneThrough (v, r.f, -12.0);
+            note ("    h3 at -12 dBFS (dBc)", mid.h[3]);
+            CHECK (std::abs (mid.h[3] - r.h3at12) < 1.5);
         }
-        prev = h2;
     }
 }
 
-TEST_CASE ("tape. pre-emphasis: highs saturate earlier, equal distortion at 500 Hz / 1 kHz / 2 kHz per speed")
+TEST_CASE ("tape. harmonics: an operating-point shift (second harmonic alone at low levels)")
 {
-    auto h3At = [] (int speed, double f, float drive, float bias) {
-        Values v = flatValues();
-        v.set ("speed", (float) speed);
-        v.set ("drive", drive);
-        v.set ("bias", bias);
-        auto m = makeTape (kSr, v);
-        const auto x = pstest::sine (f, -12.0, 1.0, kSr);
-        const auto out = run (*m, v, dual (x));
-        // a whole number of cycles of f over ~0.4 s
-        const auto cycles = (size_t) std::floor (0.4 * f);
-        const auto n = (size_t) std::lround ((double) cycles * kSr / f);
-        return harmonicDbc (out.l, f, 3, kSr, (size_t) (0.5 * kSr), n);
-    };
-    const double h500 = h3At (0, 500.0, 6.0f, 0.0f), h1k = h3At (1, 1000.0, 6.0f, 0.0f), h2k = h3At (2, 2000.0, 6.0f, 0.0f);
-    note ("H3 of the corner tone at -12 dBFS, drive +6: 7.5 ips / 500 Hz (dBc)", h500);
-    note ("    15 ips / 1 kHz (dBc)", h1k);
-    note ("    30 ips / 2 kHz (dBc)", h2k);
-    CHECK (std::abs (h500 - h1k) < 1.0);
-    CHECK (std::abs (h2k - h1k) < 1.0);
-
-    const double lowF = h3At (1, 100.0, 6.0f, 0.0f), highF = h3At (1, 4000.0, 6.0f, 0.0f);
-    note ("15 ips, drive +6: H3 at 100 Hz (dBc)", lowF);
-    note ("    H3 at 4 kHz (dBc)", highF);
-    CHECK (highF > lowF + 6.0);
-
-    // negative bias saturates the highs earlier still (relative to the lows)
-    const double lowN = h3At (1, 100.0, 6.0f, -10.0f), highN = h3At (1, 4000.0, 6.0f, -10.0f);
-    note ("bias -10: H3 at 4 kHz minus H3 at 100 Hz (dB)", highN - lowN);
-    note ("bias 0:   H3 at 4 kHz minus H3 at 100 Hz (dB)", highF - lowF);
-    CHECK (highN - lowN > highF - lowF + 2.0);
-}
-
-TEST_CASE ("tape. bias: positive compresses the dynamics, negative lifts the highs")
-{
-    // level difference of a -30 dBFS and a -6 dBFS 200 Hz tone (24 dB in) at drive +6
-    auto outLevel = [] (float bias, double levelDb) {
-        Values v = flatValues();
-        v.set ("drive", 6.0f);
-        v.set ("bias", bias);
-        auto m = makeTape (kSr, v);
-        const auto x = pstest::sine (200.0, levelDb, 1.0, kSr);
-        const auto out = run (*m, v, dual (x));
-        return toneDb (out.l, 200.0, kSr, (size_t) (0.5 * kSr), (size_t) (0.4 * kSr));
-    };
-    double prev = 100.0;
-    for (const float bias : { -10.0f, 0.0f, 5.0f, 10.0f })
+    // reference, 1 kHz, 30 ips: drive 0 / harmonics 10, drive +20 / harmonics 5 and 10. h2 (dBc) at -42 / -15 dBFS,
+    // gain at -42 dBFS; h3 stays below -100 dBc until the signal exceeds the shift (drive 0: -15 dBFS)
+    struct Row
     {
-        const double range = outLevel (bias, -6.0) - outLevel (bias, -30.0);
-        note ("bias " + std::to_string ((int) bias) + ": output range of a 24 dB input step (dB)", range);
-        CHECK (range < prev);
-        if (bias == 10.0f)
-            CHECK (range < 18.0);
-        prev = range;
+        float drive, harmonics;
+        double h2at42, h2at15, g42, h3at6;
+    };
+    const Row rows[] { { 0.0f, 10.0f, -71.8, -44.8, 0.45, -48.6 }, { 20.0f, 5.0f, -51.9, -45.1, 2.84, -22.6 },
+                       { 20.0f, 10.0f, -51.8, -39.1, 2.72, -22.6 } };
+    for (const auto& r : rows)
+    {
+        const auto v = settings (2, r.drive, 0.0f, r.harmonics);
+        const auto t42 = toneThrough (v, 1000.0, -42.0), t15 = toneThrough (v, 1000.0, -15.0), t6 = toneThrough (v, 1000.0, -6.0);
+        note (label ("drive", r.drive) + label (", harmonics", r.harmonics) + ": h2 at -42 / -15 dBFS (dBc)", t42.h[2]);
+        note ("    ", t15.h[2]);
+        note ("    h3 at -15 / -6 dBFS (dBc)", t15.h[3]);
+        note ("    ", t6.h[3]);
+        CHECK (std::abs (t42.h[2] - r.h2at42) < 2.0);
+        CHECK (std::abs (t15.h[2] - r.h2at15) < 2.0);
+        CHECK (std::abs (t42.gainDb - r.g42) < 0.25);
+        CHECK (std::abs (t6.h[3] - r.h3at6) < 2.0);
+        if (r.drive == 0.0f)
+            CHECK (t15.h[3] < -100.0);
     }
-
-    Values neg = flatValues(), pos = flatValues();
-    neg.set ("bias", -10.0f);
-    pos.set ("bias", 10.0f);
-    const double n16 = Tape::responseDb (paramsOf (neg), 16000.0), p16 = Tape::responseDb (paramsOf (pos), 16000.0);
-    note ("small-signal 16 kHz: bias -10 (dB)", n16);
-    note ("    bias +10 (dB)", p16);
-    CHECK (n16 > 0.7);
-    CHECK (p16 < -0.7);
+    // the even part's DC is removed by the reproduce high-pass
+    const auto v = settings (2, 6.0f, 0.0f, 10.0f);
+    Values vv = v;
+    auto m = makeTape (kSr, vv);
+    const auto out = run (*m, vv, dual (pstest::sine (200.0, -6.0, 2.0, kSr)));
+    double dc = 0.0;
+    const size_t from = (size_t) (1.0 * kSr), n = (size_t) (0.5 * kSr);
+    for (size_t i = from; i < from + n; ++i)
+        dc += out.l[i];
+    dc /= (double) n;
+    note ("harmonics 10, drive +6, 200 Hz at -6 dBFS: DC (dBFS)", db (std::abs (dc)));
+    CHECK (db (std::abs (dc)) < -80.0);
 }
 
-TEST_CASE ("tape. hysteresis: the curve depends on the slope's sign, wider at negative bias, none at small levels")
+TEST_CASE ("tape. bias: extra drive into the curve on both sides of 0 and the record tilt, as the reference")
 {
-    // A memoryless odd curve keeps the fundamental in phase; the hysteresis loop delays it (the output lags the input
-    // as magnetisation does). Phase of a 100 Hz fundamental against the same settings at drive -30 (linear).
+    // reference, 30 ips, drive 0: h3 (dBc) at -30 dBFS and gain (dB) at -30 / 0 dBFS, 1 kHz and 100 Hz
+    struct Row
+    {
+        float bias;
+        double h3k, g30k, g0k, h3h, g30h, g0h;
+    };
+    const Row rows[] { { -10.0f, -64.0, 0.46, -0.55, -62.6, -0.50, -1.44 }, { -5.0f, -67.2, 0.54, -0.15, -65.6, -0.25, -0.90 },
+                       { 0.0f, -69.7, 0.66, 0.14, -67.9, 0.04, -0.45 }, { 5.0f, -65.3, 0.64, -0.22, -63.3, 0.36, -0.50 },
+                       { 10.0f, -53.1, 1.19, -3.05, -50.7, 1.24, -3.21 } };
+    for (const auto& r : rows)
+    {
+        const auto v = settings (2, 0.0f, r.bias);
+        const auto k30 = toneThrough (v, 1000.0, -30.0), k0 = toneThrough (v, 1000.0, 0.0);
+        const auto h30 = toneThrough (v, 100.0, -30.0), h0 = toneThrough (v, 100.0, 0.0);
+        note (label ("bias", r.bias) + ": 1 kHz h3 at -30 dBFS (dBc)", k30.h[3]);
+        note ("    1 kHz gain at 0 dBFS (dB)", k0.gainDb);
+        note ("    100 Hz h3 at -30 dBFS (dBc)", h30.h[3]);
+        note ("    100 Hz gain at 0 dBFS (dB)", h0.gainDb);
+        CHECK (std::abs (k30.h[3] - r.h3k) < 1.5);
+        CHECK (std::abs (h30.h[3] - r.h3h) < 1.5);
+        CHECK (std::abs (k30.gainDb - r.g30k) < 0.25);
+        CHECK (std::abs (h30.gainDb - r.g30h) < 0.25);
+        CHECK (std::abs (k0.gainDb - r.g0k) < 0.3);
+        CHECK (std::abs (h0.gainDb - r.g0h) < 0.3);
+    }
+}
+
+TEST_CASE ("tape. the curve is memoryless: the fundamental keeps its phase at any drive (no hysteresis)")
+{
+    // Reference: the harmonic phases are those of a memoryless curve followed by the reproduce filters. A memoryless odd
+    // curve keeps the fundamental in phase with the input, so the phase does not move with the drive.
     auto phaseOf = [] (float bias, float drive) {
-        Values v = flatValues();
-        v.set ("drive", drive);
-        v.set ("bias", bias);
+        Values v = settings (2, drive, bias);
         auto m = makeTape (kSr, v);
         const auto x = pstest::sine (100.0, -6.0, 1.0, kSr);
         const auto out = run (*m, v, dual (x));
         return std::arg (pstest::toneOf (out.l, (size_t) (0.5 * kSr), (size_t) (0.4 * kSr), 100.0, kSr));
     };
-    auto lagDeg = [&] (float bias, float drive) {
-        double d = phaseOf (bias, -30.0f) - phaseOf (bias, drive);
+    for (const float bias : { -10.0f, 0.0f, 10.0f })
+    {
+        double d = phaseOf (bias, -30.0f) - phaseOf (bias, 14.0f);
         while (d > kPi) d -= 2.0 * kPi;
         while (d < -kPi) d += 2.0 * kPi;
-        return d * 180.0 / kPi;
-    };
-    const double lNeg = lagDeg (-10.0f, 14.0f), lZero = lagDeg (0.0f, 14.0f), lPos = lagDeg (10.0f, 14.0f);
-    const double lQuiet = lagDeg (0.0f, -12.0f);
-    note ("phase lag of the fundamental at drive +14 (deg): bias -10", lNeg);
-    note ("    bias 0", lZero);
-    note ("    bias +10", lPos);
-    note ("    drive -12, bias 0 (small level)", lQuiet);
-    CHECK (lNeg > lZero);
-    CHECK (lZero > lPos);
-    CHECK (lPos > 0.0);
-    CHECK (lZero > 1.0);
-    CHECK (std::abs (lQuiet) < 0.05);
+        note (label ("bias", bias) + ": phase of the fundamental, drive +14 vs -30 (deg)", d * 180.0 / kPi);
+        CHECK (std::abs (d * 180.0 / kPi) < 0.5);
+    }
 }
 
 TEST_CASE ("tape. meters: input drive level and saturation follow the audio")
@@ -587,22 +600,21 @@ TEST_CASE ("tape. meters: input drive level and saturation follow the audio")
     const auto x = pstest::sine (100.0, -6.0, 1.0, kSr);
     for (const float drive : { -12.0f, 0.0f, 6.0f, 20.0f })
     {
-        Values v = flatValues();
-        v.set ("drive", drive);
+        Values v = settings (2, drive);
         auto m = makeTape (kSr, v);
         run (*m, v, dual (x));
         const float in = m->getMeters().inputDriveDb.load(), sat = m->getMeters().saturationDb.load();
         note ("100 Hz at -6 dBFS, drive " + std::to_string ((int) drive) + ": input drive meter (dBFS)", in);
         note ("    saturation meter (dB)", sat);
-        // 100 Hz is far below the pre-emphasis: the level into the curve = input peak + drive (a little pre-emphasis)
+        // 100 Hz is far below the pre-emphasis: the level into the curve = input peak + drive
         CHECK (std::abs (in - (-6.0f + drive)) < 0.5f);
         if (drive <= -12.0f)
             CHECK (sat < 0.2f);
-        if (drive >= 20.0f)
-            CHECK (sat > 6.0f);
+        if (drive >= 20.0f)   // u = 1.35 at the peak: 20 log10 (u / f (u)) = 3.6 dB
+            CHECK (std::abs (sat - 3.6f) < 0.3f);
     }
     // silence: the meters fall back
-    Values v = flatValues();
+    Values v = settings (2);
     auto m = makeTape (kSr, v);
     run (*m, v, dual (x));
     run (*m, v, dual (std::vector<float> ((size_t) (3.0 * kSr), 0.0f)));
@@ -671,6 +683,68 @@ TEST_CASE ("tape. output is independent of the host block size")
     }
 }
 
+TEST_CASE ("tape. meter release is independent of host block boundaries")
+{
+    const auto input = dual (pstest::sine (317.0, -6.0, 0.013, kSr));
+    auto render = [&] (int block) {
+        Values v = settings (2, 20.0f);
+        auto m = makeTape (kSr, v);
+        run (*m, v, input, block);
+        return std::pair<float, float> { m->getMeters().inputDriveDb.load(), m->getMeters().saturationDb.load() };
+    };
+    const auto expected = render (1);
+    for (const int block : { 7, 8, 333, 512 })
+    {
+        const auto actual = render (block);
+        note ("meter difference, block " + std::to_string (block) + " (dB)", actual.first - expected.first);
+        CHECK_EQ (actual.first, expected.first);
+        CHECK_EQ (actual.second, expected.second);
+    }
+}
+
+TEST_CASE ("tape. speed fades ending inside a control period are block independent at every rate")
+{
+    for (const double sr : { 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 })
+    {
+        const Stereo input { pstest::sine (43.0, -9.0, 0.12, sr), pstest::sine (711.0, -18.0, 0.12, sr) };
+        // Unaligned events include a new target during a fade, then reversal after it completes.
+        const size_t events[] { 13, 113, (size_t) (0.05 * sr) + 3, (size_t) (0.08 * sr) + 1 };
+        auto render = [&] (int block) {
+            Values v = settings (0, 12.0f, -10.0f, 10.0f, 10.0f, 0.0f);
+            auto m = makeTape (sr, v);
+            Stereo out = input;
+            ProcessContext ctx;
+            size_t event = 0;
+            for (size_t start = 0; start < out.size();)
+            {
+                if (event < 4 && start == events[event])
+                {
+                    v.set ("speed", event % 2 == 0 ? 2.0f : 1.0f);
+                    v.set ("bias", event % 2 == 0 ? 10.0f : -10.0f);
+                    v.set ("lowEmph", event % 2 == 0 ? 0.0f : 10.0f);
+                    v.set ("highEmph", event % 2 == 0 ? 10.0f : 0.0f);
+                    m->setParams (v.data());
+                    ++event;
+                }
+                size_t end = std::min (start + (size_t) block, out.size());
+                if (event < 4)
+                    end = std::min (end, events[event]);
+                float* ch[] { out.l.data() + start, out.r.data() + start };
+                m->process (ch, (int) (end - start), ctx);
+                start = end;
+            }
+            return out;
+        };
+        const auto expected = render (1);
+        for (const int block : { 7, 8, 17, 333, 512 })
+        {
+            const auto actual = render (block);
+            CHECK (actual.l == expected.l);
+            CHECK (actual.r == expected.r);
+        }
+    }
+}
+
 TEST_CASE ("tape. parameter changes are click-free")
 {
     struct Move
@@ -718,7 +792,7 @@ TEST_CASE ("tape. parameter changes are click-free")
 
 TEST_CASE ("tape. stable, finite and denormal-safe at the extremes")
 {
-    for (const double sr : { 44100.0, 96000.0 })
+    for (const double sr : { 44100.0, 96000.0, 192000.0 })
     {
         Values vals;
         auto m = makeTape (sr, vals);
@@ -750,7 +824,7 @@ TEST_CASE ("tape. stable, finite and denormal-safe at the extremes")
 
         // every control at its maximum on a full-scale sine: bounded
         Values hot;
-        hot.set ("drive", 20.0f);
+        hot.set ("drive", 30.0f);
         hot.set ("bias", 10.0f);
         hot.set ("harmonics", 10.0f);
         hot.set ("lowEmph", 10.0f);
@@ -834,7 +908,7 @@ TEST_CASE ("tape. invalid audio cannot poison the oversampler or the other chann
 
 TEST_CASE ("tape. reset and repeated prepare clear both lanes and pending control ramps")
 {
-    for (const double sr : { 44100.0, 48000.0, 96000.0 })
+    for (const double sr : { 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 })
         for (const bool reprepare : { false, true })
         {
             Values v;
@@ -845,7 +919,7 @@ TEST_CASE ("tape. reset and repeated prepare clear both lanes and pending contro
             v.set ("drive", 20.0f);
             v.set ("bias", 10.0f);
             v.set ("harmonics", 10.0f);
-            v.set ("speed", 2.0f);
+            v.set ("speed", 0.0f);
             run (*m, v, dual (std::vector<float> (103, 0.2f)), 7);
             const double rate = sr;
             if (reprepare)

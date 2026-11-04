@@ -10,9 +10,9 @@
 //                 same amount in the same gesture (one undo step); the move stops where either reaches its limit
 //   LevelKnob     a ParamKnob for Threshold or Ceiling: its own drag / wheel / double-click / menu while linked (through
 //                 LevelLink), the plain ParamKnob behaviour otherwise
-//   HistoryView   the scrolling gain-reduction history (0 dB at the top): the tube stage's reduction in the module
-//                 colour, the brickwall's share below it in the gain-reduction amber, a time ruler, and two meters on
-//                 the right (Tube stage, Brickwall) on the same scale
+//   HistoryView   the scrolling gain-reduction history (0 dB at the top): the slow stage's reduction in the module
+//                 colour, the fast stage's share below it in the gain-reduction amber, a time ruler, and two meters on
+//                 the right (Slow, Fast) on the same scale
 //
 // None of them takes keyboard focus; only left clicks edit (right-click opens a menu).
 namespace ps::ui::clim

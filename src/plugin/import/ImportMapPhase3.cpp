@@ -54,7 +54,7 @@ namespace vdef
     constexpr Def compMakeup     = known (0.0);      // dB (confirmed)
     constexpr Def compAutoGain   = known (1.0);      // on (the check save that turns it off stores 0)
     constexpr Def compChMode     = known (0.0);      // stereo (the mid/side check save stores 1)
-    constexpr Def compScHpf      = guess (45.0);     // Hz (read off the detection-filter curve)
+    constexpr Def compScHpf      = guess (40.0);     // Hz (fitted on the renders; the curve reads ~45)
     constexpr Def compScBellHz   = guess (2000.0);   // Hz (read off the curve; a check save stores 1000)
     constexpr Def compScBellDb   = known (0.0);      // dB (confirmed)
     constexpr Def compScShelfHz  = guess (6000.0);   // Hz (read off the curve)

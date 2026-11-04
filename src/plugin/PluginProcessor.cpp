@@ -43,6 +43,31 @@ constexpr int kStateVersion = 1;
 constexpr double kGestureSettleMs = 250.0;
 constexpr double kStuckGestureMs = 10000.0;   // a gesture the host never ended stops blocking the history after 10 s
 
+// A loaded value passes through the parameter's normalised form, and a float does not always survive that trip (one
+// ulp on log ranges), so a state saved again after loading would differ from the file it was loaded from. Saves write
+// the fixed point of that trip, which reloads exactly; the live parameter keeps its value.
+void writeReloadStableValues (juce::AudioProcessorValueTreeState& apvts, juce::ValueTree& paramsTree)
+{
+    static const juce::Identifier idProperty ("id"), valueProperty ("value");
+    for (auto child : paramsTree)
+        if (auto* p = apvts.getParameter (child[idProperty].toString()))
+        {
+            const auto saved = (float) (double) child[valueProperty];
+            auto stable = saved;
+            // Each trip moves a log-range value by an ulp at most, so it settles within a few dozen trips (worst seen:
+            // 31). The cap only guards a host's save against a rounding cycle; a non-finite value is left alone.
+            for (int trip = 0; trip < 4096 && std::isfinite (stable); ++trip)
+            {
+                const auto next = p->convertFrom0to1 (p->convertTo0to1 (stable));
+                if (juce::exactlyEqual (next, stable))
+                    break;
+                stable = next;
+            }
+            if (! juce::exactlyEqual (stable, saved))
+                child.setProperty (valueProperty, stable, nullptr);
+        }
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
@@ -832,7 +857,9 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
     }
     juce::ValueTree state (kStateTag);
     state.setProperty (kVersion, kStateVersion, nullptr);
-    state.appendChild (d.apvts.copyState(), nullptr);
+    auto paramsTree = d.apvts.copyState();
+    writeReloadStableValues (d.apvts, paramsTree);
+    state.appendChild (paramsTree, nullptr);
     state.appendChild (psplug::chainToTree (d.chain.getOrder()), nullptr);
 
     {

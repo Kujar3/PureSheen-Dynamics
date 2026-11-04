@@ -9,7 +9,7 @@
 
 // Classic Limiter panel. Owner: mod-clim. Layout and interactions: see ClassicLimiterPanel.h.
 //
-// Meters: ClassicLimiterMeters (both stages' current reduction; the output peak, exchanged once per tick and held for
+// Meters: ClassicLimiterMeters (the slow and fast stages' current reduction; the output peak, exchanged once per tick and held for
 // 1 s here). The history FIFO has exactly one consumer: this panel (stale data is dropped when it opens).
 namespace ps::ui
 {
@@ -22,9 +22,9 @@ const char* modeDescription (int mode)
 {
     switch (mode)
     {
-        case 1:  return "Smooth tube limiting. Its warm colour (mostly 2nd harmonic) grows with the gain reduction.";
-        case 2:  return "Half the tube colour, blended with a clean limiter: thick, yet transparent on the peaks.";
-        default: return "Fast and clean. The detector ignores the deep lows, so the bass stays tight.";
+        case 1:  return "Smooth, levelling limiting: the slow stage holds the reduction longest at high Character.";
+        case 2:  return "Light and quick: the slow stage takes a small share and recovers fast, the peak stage the rest.";
+        default: return "Steady limiting: the slow stage holds most of the reduction and recovers evenly.";
     }
 }
 
@@ -124,9 +124,9 @@ struct ClassicLimiterPanel::Impl
                             "-0.8 dB before MP3 or AAC.\nDrag to change (Ctrl: fine), double-click to reset.");
         linkToggle.setTooltip ("Link: Threshold and Ceiling move together by the same amount, so the drive into the "
                                "limiter stays the same while you change the output level.");
-        mode.setTooltip ("Mode. Analog: fast attack, clean, tight lows. Tube: smooth, warm limiting whose colour depends "
-                         "on how hard it works. Modern: the tube colour blended with clean, transparent limiting.");
-        character.setTooltip ("Character: the attack and release of the tube stage, from Fast (0) to Slow (10). The "
+        mode.setTooltip ("Mode. Analog: steady limiting, most of it in the slow stage. Tube: smoother, with the longest "
+                         "recovery at high Character. Modern: the lightest slow stage and the fastest recovery.");
+        character.setTooltip ("Character: how quickly the limiter recovers, from Fast (0) to Slow (10). The "
                               "actual times depend on the mode; a long stretch of limiting always releases slower.\n"
                               "Drag to change (Ctrl: fine), double-click to reset.");
         truePeak.setTooltip ("True Peak: also keeps the peaks between the samples under the ceiling (they can be more "

@@ -98,7 +98,7 @@ struct HelpOverlay::Impl
               moduleColour (ps::ModuleType::ClassicComp) },
             { "**Passive EQ** - broad, musical boosts and cuts at a few classic frequencies.",
               moduleColour (ps::ModuleType::PassiveEq) },
-            { "**Classic Limiter** - warm tube-style limiting; lower the threshold to get louder.",
+            { "**Classic Limiter** - slow and fast limiting stages; lower the threshold to get louder.",
               moduleColour (ps::ModuleType::ClassicLimiter) },
             { "**Tape** - the warmth, low-end bump and soft highs of recording to tape.",
               moduleColour (ps::ModuleType::Tape) },

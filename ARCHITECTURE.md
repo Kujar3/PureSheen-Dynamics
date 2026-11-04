@@ -20,8 +20,8 @@ Later phases (enums are append-only, so they slot in):
   Definition, Smoother, Punch, Low Contrast, Bass Shaper, and the Transient/Sustain channel mode
 - Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
 - Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (done, from RefMatch, see
-  "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (done, not yet
-  fitted to the reference, see "Vintage-style modules (phase 3)" below), a de-limiter, and one plug-in per module
+  "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (done, fitted to the
+  reference, see "Vintage-style modules (phase 3)" below), a de-limiter, and one plug-in per module
   ("PureSheen EQ", ...)
 - Phase 4: MCP bridge
 
@@ -629,18 +629,17 @@ quieter than the master (Short-term follows what is heard). The reference plays 
 ## Vintage-style modules (phase 3)
 
 Four modules modelled on classic analog circuit classes, under our own names: a feedback compressor, a passive LC
-program EQ with a passive midrange EQ and a tube make-up stage, a variable-mu feedback tube limiter with a brickwall
-stage, and a two-head tape machine. Clean room: public documentation and black-box renders only. Until the renders are
-fitted, every module is built from first principles of its circuit class with every coefficient in one named constant
-block (`k...` in an anonymous namespace at the top of its .cpp), so the fit only changes numbers. The ranges, defaults,
-choice lists and units are the reference's, confirmed from the user's screenshots, min-max notes and saved presets
-(2026-11-03; table below); nothing is installed before the fit.
+program EQ with a passive midrange EQ and a tube make-up stage, a two-stage limiter with a true-peak guard, and a
+two-head tape machine. Clean room: public documentation and black-box renders only. The models are
+fitted to those renders, with every fitted coefficient in one named constant block (`k...` in an anonymous namespace
+at the top of its .cpp). The ranges, defaults, choice lists and units are the reference's, confirmed from the user's
+screenshots, min-max notes, saved presets and measurements (table below).
 
 | ModuleType | prefix | display name (short) | channel modes | T/S twin | params | latency (44.1 / 48 kHz) | owner |
 |---|---|---|---|---|---|---|---|
 | ClassicComp | ccmp | Classic Compressor (Classic Comp) | St, M/S | no | 29 | 0 | mod-ccmp |
 | PassiveEq | peq | Passive EQ | St, M/S, L/R, T/S | yes | 36 | 3 (`kPassiveEqLatency`) | mod-peq |
-| ClassicLimiter | clim | Classic Limiter | St | no | 7 | 109 / 117 (`ClassicLimiter::latencyFor`) | mod-clim |
+| ClassicLimiter | clim | Classic Limiter | St | no | 7 | 104 / 112 (`ClassicLimiter::latencyFor`) | mod-clim |
 | Tape | tape | Tape | St | no | 7 | 5 (`kTapeLatency`) | mod-tape |
 
 (params = slot params incl. `.ts.*` + module params; 79 entries appended after `bass.autoGain`, indices 841..919,
@@ -669,7 +668,7 @@ per channel set where the module has two; TBC = read off a screenshot curve or n
 | | Mode (`mode`) | Sharp, Balanced, Smooth (0..2) | Balanced | |
 | | Gain (`makeup`) | -30 .. +30 | 0 | dB |
 | | Auto Gain (`autoGain`) | off / on | on | |
-| | detection high-pass (`sc.hpf`) | 20 .. 400 (log), fixed shape | 45 (TBC) | Hz |
+| | detection high-pass (`sc.hpf`) | 20 .. 400 (log), fixed shape | 40 (measured; the curve reads ~45) | Hz |
 | | detection bell (`sc.bellHz` / `sc.bellDb`) | 800 .. 9000 (log) / -8 .. +8, fixed shape | 2000 (TBC) / 0 | Hz / dB |
 | | detection high shelf (`sc.shelfHz` / `sc.shelfDb`) | 4000 .. 12000 (log) / -8 .. +8, fixed shape | 6000 (TBC) / 0 | Hz / dB |
 | Passive EQ | Low frequency (`lowHz`) | 20, 30, 45, 60, 100 | 45 | Hz |
@@ -694,30 +693,36 @@ per channel set where the module has two; TBC = read off a screenshot curve or n
 | | Low Emphasis (`lowEmph`, head bump) | 0 .. 10 | 2 | |
 | | High Emphasis (`highEmph`) | 0 .. 10 (4 = flat) | 4 | |
 
-**Contracts** (headers are contracts, rule 1; the stubs pass audio through delayed by the contract's latency):
-- `ClassicComp.h`: feedback detector (the gain-stage output of the previous sample through the sidechain EQ: 12 dB/oct
-  high-pass, wide bell, high shelf), linked in Stereo, per set in M/S, peak / RMS blend; knee per mode (Sharp 2,
-  Balanced 6, Smooth 12 dB) with the feedback ratio mapping c = ratio - 1 (closed-form fixed point); attack scaled per
-  mode, program-dependent release (held share, 300 ms); the mode saturator scaled by the reduction depth; auto gain
-  before makeup; latency 0; neutral at ratio 1 / makeup 0 / auto gain off; `soloDetectionFilter` = hear the sidechain;
-  meters per set (reduction, 1 s hold, sidechain level, auto gain); panel helpers `detectorResponseDb`,
-  `staticCurveDb`.
-- `PassiveEq.h`: seven matched-biquad sections per channel (resonant low shelf boost, low shelf cut above it, high
-  peak with bandwidth and boost coupling, high shelf cut, low-mid / mid / high-mid proportional-Q peaks), a knob law
-  table, then the 2x minimum-phase oversampled tube stage (Drive; at 0 an exact delay); latency 3 at every rate whatever the
-  drive; neutral at the defaults (= input delayed by 3); twin per the Module.h rules; `getMagnitudeDb (set, hz)` for the
-  panel (both sets designed by instance A, published through a seqlock).
-- `ClassicLimiter.h`: input gain ceiling - threshold, the variable-mu stage (feedback detector, g = 1 / (1 + u^k) with
-  a 10 dB soft knee, exactly 1 below it; attack / release tables per mode over Character; program-dependent release;
-  Analog = clean with a 60 Hz detector high-pass, Tube = saturation scaled by the reduction, Modern = a blend), the
-  saturator 2x minimum-phase oversampled (Analog: an exact 3-sample delay), then the Maximizer's `maxi::LimiterCore`
-  (1.5 ms lookahead) and `maxi::Guard` (0.5 ms, true peak when on, always in the path); latency `latencyFor (rate)`;
-  Delta excludes the Threshold / Ceiling gain (handlesDelta, as the Maximizer); meters (both stages, peak reduction,
-  output peak) and a reduction history FIFO.
-- `Tape.h`: 4x minimum-phase oversampled record EQ (pre-emphasis at 500 Hz / 1 kHz / 2 kHz for 7.5 / 15 / 30 ips) ->
-  drive -> hysteretic saturator shaped by bias, even harmonics -> de-emphasis -> head bump (40 / 60 / 110 Hz, 0..+10 dB)
-  -> gap loss -> high emphasis (4 = flat) -> static make-up (-18 dBFS pink in = out); no noise, wow or flutter; latency
-  5; no neutral setting; meters (drive level, saturation); `responseDb` for the panel's emphasis view.
+**Contracts** (headers are contracts, rule 1):
+- `ClassicComp.h` (fitted): feedback detector (the gain-stage output, one sample of loop delay; Stereo: the mean of
+  L and R, one gain; M/S: per set) through the sidechain EQ (1st-order high-pass at `sc.hpf`, a wide bell with half the
+  knob's dB, a high shelf with twice it); a diode peak detector with a slow second capacitor (onset delay, slow creep,
+  fast release after a short hit, slower after a long hold); c = ratio - 1; knees Sharp / Balanced quadratic, Smooth a
+  softplus knee 10 dB above the threshold; no saturator (the odd harmonics are the detector ripple); auto gain = the
+  ratio of 0.5 s averages of |x| and |v|, clamped 0 .. 20 dB, before makeup; latency 0; neutral (bit-exact) at ratio 1 /
+  makeup 0 / auto gain off; `soloDetectionFilter` = hear the sidechain; meters per set (reduction, 1 s hold, detector
+  level, auto gain); panel helpers `detectorResponseDb`, `staticCurveDb`.
+- `PassiveEq.h` (fitted): seven sections per channel (first-order low boost and low cut with their measured
+  interaction, bilinear; a high boost peak at the position's measured centre with its upper skirt carried by the high
+  cut section; a first-order high cut; low-mid / mid / high-mid peaks: matched designs), the measured amount laws
+  (labels 0 .. 10; low boost 5 = +8.7 dB, high boost 5 = +3.3 dB peak), then our 2x minimum-phase oversampled tube stage
+  (Drive; at 0 an exact delay); latency 3 at every rate whatever the drive; neutral at the defaults (= input delayed
+  by 3); twin per the Module.h rules; `getMagnitudeDb (set, hz)` for the panel (both sets designed by instance A,
+  published through a seqlock).
+- `ClassicLimiter.h` (fitted): input gain ceiling - threshold plus the mode's measured make-up (+0.35 dB Analog / Tube,
+  +0.125 dB Modern, faded to 0 at threshold = ceiling); per channel (unlinked) and per mode (all three run, a mode change
+  crossfades 20 ms) a slow stage on the overshoot over ceiling - 0.01 dB (measured depth and release laws per mode and
+  Character) and a fast stage held over a short window W (mode, Character), the gain a box average over W; no knee and
+  no colour below the ceiling; then `maxi::Guard` (0.5 ms, true peak at ceiling - 0.02 dB when on) and a sample clamp;
+  latency `latencyFor (rate)` = (Wmax - 1) + the guard (104 / 112 / 210 at 44.1 / 48 / 96 kHz); Delta excludes the
+  Threshold / Ceiling gain and the make-up (handlesDelta); meters (slow stage, the rest, peak reduction, output peak)
+  and a reduction history FIFO.
+- `Tape.h` (fitted): 4x minimum-phase oversampled: bias tilt -> record pre-emphasis (2nd-order high shelf +1.58 dB at
+  1.32 kHz x speed / 30 ips) -> drive and the bias drive -> a memoryless quadratic soft clipper (no hysteresis),
+  Harmonics shifting its operating point -> de-emphasis and the speed's reproduce bells -> high emphasis (4 = flat) ->
+  top roll-off; at the base rate the speed's low end and the head bump (15 / 25 / 44 Hz) -> the speed's level times the
+  measured drive compensation (high drives come out louder; bias uncompensated); no noise, wow or flutter; latency 5;
+  no neutral setting; meters (drive level, saturation); `responseDb` (relative to 1 kHz) for the panel.
 
 **Registration** (done in the contracts wave): Chain (`createModule`, the Passive EQ twin), the Add menu (its own
 section), state / presets / undo (generic by id prefix), the chain strip (from 15 modules the compact tiles pack to
@@ -739,6 +744,13 @@ Ownership for the module wave (only edit your files; ask the lead for contract c
   the status section came with the integration (below); version 0.6.0 comes with the release after the fit.
 
 ## Status (vintage integration)
+
+The current models, remaining errors and verification are in "Status (vintage fit)" below.
+
+### Historical baseline before the measured fit
+
+The implementation descriptions, measurements and verification results below record the earlier first-principles
+integration. They are retained as history, not as the current model contracts or current fit results.
 
 Done: the four vintage-style modules with real DSP, their own tests and a dedicated panel each (no stubs left), 18
 factory presets (Classic Compressor 5, Passive EQ 5, Classic Limiter 4, Tape 4), the importer map, selftest coverage
@@ -821,7 +833,7 @@ import` of the 56 factory presets: 56 imported, 0 unmapped, 0 clamped, all finit
 (`PURESHEEN_SNAPSHOT_ONLY=vintage`): the four panels at 980x600 / 1180x720 / 1800x1100, Passive EQ in M/S and T/S,
 Classic Compressor in M/S, the strip with all 18 modules, Help, reviewed by eye.
 
-Known limitations (vintage):
+Known limitations of that pre-fit baseline:
 - Not yet fitted to the reference's renders: curves, ballistics, saturation and knob laws are first-principles
   values. The factory presets were chosen from the models' behaviour, not by listening, and need a listening pass
   after the fit.
@@ -835,3 +847,75 @@ Known limitations (vintage):
 - Passive EQ: Drive is our addition (no foreign counterpart; the importer leaves it at 0).
 - Classic Limiter: the per-sample brickwall costs about 20 % more CPU than a block-wise one (still 111x realtime).
 - Not done: pluginval / clap-validator on this build, renders against the reference, listening tests in FL Studio.
+
+## Status (vintage fit)
+
+All four modules are fitted to black-box renders of the reference (17 .. 36 renders per module, two render rounds);
+the contracts above and the DSP headers describe the measured models, every fitted coefficient is in the constant
+block at the top of its .cpp. Version 0.6.0. Not installed.
+
+Remaining error against the reference (worst render of each group, dB; FR = max magnitude error of the -30 / -10 dBFS
+sweeps at 1/24 octave, static = max staircase gain error, env = gain-envelope error on the step blocks, null = music
+residual, worst (best) render):
+
+| module | group (renders) | FR max | static max | env rms / max | music null |
+|---|---|---|---|---|---|
+| Classic Compressor | auto gain off, round 2 (14) | 0.06 | 0.13 | 0.02 / 0.40 | -38.7 (-73.1) |
+| | auto gain off, round 1 (1) | 0.03 | 0.03 | 0.01 / 0.10 | -45.4 |
+| | auto gain on (9) | 2.49 (-30 dBFS at 20 Hz; -10 dBFS 0.05) | 0.03 | 0.10 / 0.50 | -37.6 (-47.9) |
+| Passive EQ | low boost / cut (15) | 0.030 | 0.012 | 0.002 / 0.21 | -45.3 (-63.3) |
+| | high boost (12) | 0.154 | 0.074 | 0.043 / 0.35 | -22.8 (-52.8) |
+| | high cut (4) | 0.182 | 0.069 | 0.032 / 0.55 | -38.7 (-50.8) |
+| | mid bands (4) | 0.070 | 0.035 | 0.004 / 0.19 | -41.0 (-62.6) |
+| Classic Limiter | Analog, Character 0 .. 10, ceiling, True Peak (8) | 0.015 | 0.076 | 0.06 / 0.18 | -42.2 (-47.5) |
+| | Tube default (2) | 0.004 | 0.134 | 0.01 / 0.06 | -79.7 (-86.1) |
+| | Tube Character 0 / 5 (2) | 0.015 | 0.079 | 0.05 / 0.18 | -41.5 (-46.6) |
+| | Tube Character 10 (1) | 0.010 | 0.198 | 0.15 / 0.20 | -35.4 |
+| | Modern Character 0 / 5 / 10 (3) | 0.004 | 0.453 | 0.03 / 0.14 | -48.6 (-55.7) |
+| | Analog threshold -12 (1) | 0.159 | 0.17 | 0.02 / 0.36 | -27.4 |
+| Tape | speed / emphasis (14) | 0.14 | 0.10 | 0.07 / 0.07 | -9.4 (-11.7) |
+| | drive (7) | 0.29 | 0.09 | 0.07 / 0.07 | -9.6 (-11.2) |
+| | bias (4) | 0.13 | 0.07 | 0.06 / 0.07 | -9.6 (-11.2) |
+| | harmonics (3) | 0.12 | 0.07 | 0.07 / 0.07 | -10.0 (-11.2) |
+
+Decisions the fit made:
+- Classic Compressor: detection high-pass default 40 Hz (the fit; the reference's curve reads about 45), parameter and
+  importer default. No saturator, the odd harmonics are the detector ripple (h3 within 0.5 dB at 1 kHz and 100 Hz).
+- Classic Limiter: no colour below the ceiling, no `maxi::LimiterCore`, channels unlinked; the panel now shows Slow /
+  Fast stages. Latency 104 / 112 / 210 / 408 samples at 44.1 / 48 / 96 / 192 kHz (was 109 / 117 / 213). The make-up
+  below 2 dB of gain was not measured: it fades to 0 at threshold = ceiling so that setting stays a pass-through.
+- Tape: memoryless curve (no hysteresis was measured), head bump 15 / 25 / 44 Hz, high drives come out louder (the
+  reference's law), bias uncompensated; latency stays 5.
+- Passive EQ: Drive remains our addition (the reference is fully linear); the importer leaves it at 0.
+- State: saves write each value's fixed point of the float -> normalised -> float trip, so save -> load -> save is
+  byte-identical (clap-validator `state-reproducibility-binary` failed on one ulp of a log-range value); the live
+  parameter keeps its value.
+
+Verification (build-v-int CoreTests / PureSheenDev, build PureSheen_VST3 / PureSheen_CLAP; 0 warnings in our sources):
+CoreTests 688 test cases, 0 failed; selftest 334 passed, 0 failed; importtest all passed; snapshots of the four panels
+at 980x600 / 1180x720 / 1800x1100, reviewed by eye; pluginval strictness 10 with GUI tests (VST3): SUCCESS;
+clap-validator: 31 passed, 0 failed, 12 skipped, 1 warning (`state-invalid-random`, see Core). Fit scripts rerun after
+the final review-and-fix pass (independent reviewer: state fixed-point cutoff, leftover colour claims in Help): no fitted
+constant changed.
+
+Known limitations (vintage):
+- Classic Compressor: at ratio >= 10 and attack <= 5 ms, a tone at or below the high-pass corner modulates the gain
+  irregularly (bounded and finite; filtering the input instead fit clearly worse, so the reference probably does the
+  same). Bell / shelf cuts, attack outside 1 .. 50 ms and other sample rates are not covered by any render. The auto-gain-on
+  renders start with leftover host auto gain, hence their 20 Hz error.
+- Passive EQ: phase drifts 5 .. 20 degrees near the top on big high boosts and cuts (the reference follows analog
+  filters to about 1 degree), which limits those nulls; closing it needs oversampled filters. The reference's
+  roll-off above 17 kHz is not modelled. Amounts between the measured ones, low cut at 30 / 45 Hz, high boost amounts
+  at positions other than 8 kHz, High Q at amounts other than 5, mid bands at other positions: smooth interpolation.
+- Classic Limiter: threshold -12 holds 0.4 .. 1.4 dB less slow reduction than the reference on dense overs; Tube
+  Character 10 overshoot and two-part release partly reproduced (level-step max error 4.3 dB); Modern Character 0
+  releases 2x slower just after a hold, its harmonics are up to 21 dB off; the reference's 0.13 dB of reduction just
+  under the ceiling is not modelled.
+- Tape: music null about -10 dB and true peak off by up to 1.1 dB: the reference leads by a constant 15 degrees from
+  20 Hz to 2 kHz with no delay and rolls its top off in linear phase. Correcting our render's phase offline reaches -38 dB,
+  so the level and saturation model holds. Matching it live would need 74+ samples of latency (not taken). At 192 kHz
+  the reproduce filters' phase is 0.74 sample (documented, tested).
+- Factory presets were chosen on the pre-fit models and passed an isolated level check only (worst Tape +1.41 dB RMS);
+  they need a listening pass. Limiter Threshold / Ceiling ranges and Link default, tape drive's low end, and the
+  compressor's bell / shelf default frequencies remain unconfirmed (TBC in the table above).
+- Not done: listening tests in FL Studio.

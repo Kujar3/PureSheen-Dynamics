@@ -12,51 +12,53 @@
  #define PS_TAPE_HAS_SSE 1
 #endif
 
-// Tape (mod-tape). Contract and signal flow: Tape.h. Choices made here (the header leaves them open), every number in
-// the constant block below so the fit to the reference's renders only changes numbers:
+// Tape (mod-tape). Contract and signal flow: Tape.h. The model and every number in the constant block below are
+// fitted to black-box renders of the reference (sweeps from 5 Hz, 100 Hz / 1 / 5 / 10 kHz staircases, step blocks
+// and music at every speed, drive -10 .. +30, bias -10 .. +10, harmonics 5 / 10, low emphasis 0 / 2 / 5 / 10 and
+// high emphasis 0 / 4 / 7 / 10). Choices made here:
 //
-// - Everything runs per channel at 4x (ps::Oversampler MinimumPhase, 5 samples). The linear sections are analog
-//   prototypes (s-domain, below) designed by the bilinear transform prewarped at their corner; at 4x the frequency
-//   warping is < 5 % at 20 kHz (44.1 kHz), and the response view (responseDb) evaluates the same prototypes. They run as
-//   ps::SmoothedBiquad (modulation-safe), whose ramp covers one control period, so a moving control interpolates
-//   between the designs of consecutive periods.
-// - Record / reproduce EQ: pre = (1 + S) / (1 + S / r), S = s / w0, w0 = the speed's equal-distortion frequency, r the
-//   plateau (kPreEmphasisDb, more at negative bias). De-emphasis is its exact reciprocal (same bilinear map), so the
-//   small-signal path is flat to double rounding.
-// - Tape curve c (x) on x = G * pre (in), G = drive * kTapeScale (* the over-bias drive at positive bias): a blend of
-//   three saturators with unit slope at 0, x / (1 + |x|^p)^(1 / p) for p = 4 (hard, bias -10), 2 (bias 0) and 1 (soft,
-//   bias +10), interpolated linearly in bias (a blend of monotonic curves with slope 1 at 0 stays monotonic).
-// - Hysteresis (rate independent, applied to the curve's residual r (x) = x - c (x), so small signals stay linear):
-//   R follows r with dR = (r - R) * min (1, |dx| / w) (w = loop width, kHystWidth over bias), y = c (x) - (r (x) - R).
-//   On a rising slope R lags behind r, the output sits under the curve (it lags the input, as magnetisation does).
-//   A moving drive rescales R with the input, and a slow leak (kHystLeakMs) lets a residue settle without motion.
-// - Even harmonics: e (x) = (c (d + x) + c (d - x)) / 2 - c (d), d = harmonics / 10 * kEvenOffsetMax: the even part of
-//   the offset curve (exactly 0 at harmonics 0), its DC removed by a first-order high-pass (kEvenDcHz) on e alone, in
-//   output units (e / G), so a drive change moves its DC without a 1 / G-amplified transient.
-// - Head bump: a resonant peak (bell) at kBumpHz on a Butterworth high-pass at kRollOffRatio x kBumpHz (the roll-off,
-//   kept at lowEmph 0). The bell's design gain includes the high-pass loss at kBumpHz, so lowEmph 10 peaks at exactly
-//   kBumpMaxDb.
-// - High end: the gap / spacing loss and the reproduce EQ that compensates it are one net first-order high shelf at
-//   the speed's kHfLossHz (so highEmph 4 is exactly flat, no residual phase): kHighEmphMinDb at 0 .. 0 at 4 ..
-//   kHighEmphMaxDb at 10, plus the bias's secondary HF tilt (kBiasHfDb, a lift at negative bias).
-// - Make-up (static): out = in for a steady -18 dBFS RMS pink noise (20 Hz .. 20 kHz). The curve's input is Gaussian
-//   with sigma = G * sigma_pre * 10^(-18 / 20) (sigma_pre = the pre-emphasis's RMS gain on that pink noise). By
-//   quadrature, the curve output (c + e, DC removed) splits into its linear part (Bussgang gain a) and the distortion;
-//   the de-emphasis returns the linear part to the input's level, and keeps kDistortionShare of the distortion power
-//   (fitted on band-limited pink noise: within 0.15 dB from drive -30 to +20, 0.32 dB at +30, every speed / bias /
-//   harmonics). The hysteresis is not in the estimate (its deficit is small at -18 dBFS). The make-up also undoes
-//   the pink-noise loss of the fixed linear parts (the speed's roll-off and the bias's HF tilt; the emphasis controls
-//   stay pure EQ), so the small-signal mid band sits a few tenths of a dB above 0 dB (+0.3 dB at 15 ips, drive 0).
+// - Per channel at 4x (ps::Oversampler MinimumPhase, 5 samples) up to the downsampler; the low-frequency reproduce
+//   sections (all below 600 Hz) and the head bump run at the base rate after it. The linear sections are analog
+//   prototypes (s-domain, below) designed by the bilinear transform prewarped at their own corner (the high-frequency
+//   sections at kHfWarpHz instead, so the band below 20 kHz is exact); the response view (responseDb) evaluates the same
+//   prototypes. The control-driven ones run as ps::SmoothedBiquad (modulation-safe, the ramp covers one control
+//   period), a speed's fixed high-rate sections as plain biquads (a speed change crossfades lanes).
+// - Record side (before the curve): the bias tilt (a 2nd-order high shelf at kTiltHz times a 1st-order low shelf at
+//   kTiltLowHz with its own gain; measured anchors at bias -10 / -5 / +5 / +10, a quadratic in |bias| per side through
+//   them, 0 at bias 0), then the pre-emphasis P: a 2nd-order high shelf of kPreDb centred kPreHz x (speed / 30 ips)
+//   (the highs reach the curve kPreDb hotter above a corner that moves with the speed, as measured on the 100 Hz ..
+//   10 kHz staircases). The tilt sits before the curve because the low-level third harmonic moves with it.
+// - The curve (memoryless: no hysteresis or memory was found, the harmonic phases are those of a memoryless curve
+//   followed by the reproduce filters): u = kCurveScale * 10^((drive + biasDrive) / 20) * x, the quadratic soft clipper
+//   f (u) = u - u |u| / 4 for |u| <= 2, sign (u) beyond (h3 rises 1 dB per dB, h5 = h3 - 17 dB), even harmonics by an
+//   operating-point shift f (u + b) - f (b), b = kEvenPerUnit x harmonics (no third harmonic until |u| > b; the small
+//   signal gain drops by f' (b) = 1 - b / 2, -0.22 dB at 10, as measured), divided by the same input gain, then the
+//   exact inverse of P (small-signal path unchanged). Bias drives the curve harder on both sides of 0 (kBiasDrive*).
+// - Reproduce side, per speed (kSpeed* tables, index 0 = 7.5, 1 = 15, 2 = 30 ips): 2nd-order high-pass, 1st-order
+//   high-pass, 1st-order low shelf, the head bump (S^2 + S / qn + 1) / (S^2 + S / (qn G) + 1), G = 1 + a x lowEmph (0 =
+//   flat, a peak of exactly G at the bump frequency), the ripple bell just above the bump, a mid bell, a broad top
+//   bell (the gap / spacing loss at the slow speeds) and a contour bell (the low-frequency contour ripple). The high-pass also removes the DC of the even harmonics.
+// - High emphasis: a 1st-order high shelf, measured anchors at 0 / 7 / 10 (4 = exactly flat), linear in dB between
+//   them (the corner log-interpolated between 7 and 10).
+// - Top roll-off: the reference's response falls from 18 kHz (-0.64 dB at 19 kHz, -2.1 dB at 20 kHz at 44.1 kHz,
+//   likely its oversampling filter): one elliptic-type section (a zero pair on the axis, a resonant pole pair) at
+//   kRollZeroHz / kRollPoleHz, scaled with the sample rate (at 48 kHz and above it moves above 20 kHz).
+// - Level: the reference's drive compensation is static and under-compensates high drives: the output is multiplied by
+//   c (drive) / c (0), c = U / f (U), U = kCompRefU x 10^(drive / 20) (a sine of peak U keeps its peak level; bias is not
+//   compensated), times the speed's kSpeedGainDb (the reference's small-signal level, +0.66 dB at 1 kHz at 30 ips).
 // - Controls: drive (dB), bias, harmonics, lowEmph and highEmph glide (a critically damped two-stage one-pole, 90 %
 //   of a step after kGlideMs, no corner at either end), evaluated once per control period of kControl base samples (at
 //   fixed sample positions, so the output does not depend on the host's block size) and interpolated per sample inside
 //   it. A speed change crossfades two processing lanes (raised cosine, kSpeedFadeMs): the new lane starts from a copy
-//   of the old lane's state with the new speed's filters.
-// - Meters: inputDriveDb = peak of |pre (in) * drive| (dBFS); saturationDb = 20 log10 (peak |x| / peak |curve out|) on
-//   the curve's internal signal, both peaks with a kMeterReleaseMs release.
-// - Latency: the oversampler's 5 samples is the group delay of the whole module from 1.5 to 4 kHz (within 0.2 sample at
-//   44.1 / 48 / 96 kHz); lower down the head-bump roll-off adds its own phase (a tape machine shifts phase, the docs say
-//   so), and the minimum-phase impulse response peaks one sample later.
+//   of the old lane's state with the new speed's filters. The base-rate sections belong to the lanes too: during the
+//   crossfade both lanes' sets filter the (crossfaded) downsampled signal and their outputs are crossfaded alike.
+// - Meters: inputDriveDb = peak of |P (tilt (in)) x drive x bias drive| (dBFS); saturationDb = 20 log10 (peak |u| /
+//   peak |curve out|), both peaks with a kMeterReleaseMs release.
+// - Latency: the oversampler's 5 samples at every rate. The reproduce filters add their own minimum-phase group delay:
+//   at 2 kHz at most 3.9 us (30 ips, no head bump; less at the other settings), a constraint of the fit
+//   (fit_tape_lin.py GD_MAX), so the measured 2 kHz delay stays within half a sample of 5 up to 96 kHz; across the mid
+//   band the fitted bells ripple within 1 sample, lower down the head-bump roll-off adds its own phase. (The reference also leads by a constant ~15 degrees over the band with zero group delay: not causal, so not
+//   reproduced; see Tape.h.)
 namespace ps
 {
 namespace
@@ -70,42 +72,59 @@ namespace
     constexpr double kSpeedFadeMs = 20.0;      // speed crossfade
     constexpr double kDriveMinDb = -30.0;      // the drive control's range (Params.h)
     constexpr double kDriveMaxDb = 30.0;
+    constexpr double kHfWarpHz = 16000.0;      // bilinear prewarp of the sections centred above it
 
-    // record EQ (pre-emphasis) and its exact inverse
-    constexpr double kPreEmphasisHz[3] { 500.0, 1000.0, 2000.0 };   // 7.5 / 15 / 30 ips: equal distortion (docs)
-    constexpr double kPreEmphasisDb = 10.0;                        // plateau at bias 0
-    constexpr double kBiasPreEmphasisDb = 4.0;                     // + at bias -10, - at bias +10
+    // record side: pre-emphasis (2nd-order high shelf), its corner proportional to the speed
+    constexpr double kPreDb = 1.578;
+    constexpr double kPreHz = 1316.8;          // at 30 ips
+    constexpr double kPreQ = 0.776;
 
-    // tape curve
-    constexpr double kTapeScale = 0.5;           // curve units per dBFS unit at drive 0 (0 dBFS = 0.5: the knee is 1)
-    constexpr double kOverBiasDriveDb = 10.0;    // extra drive into the curve at bias +10 (over-biased: compressed)
-    constexpr double kHystWidth[3] { 0.12, 0.06, 0.02 };   // loop width (curve units) at bias -10 / 0 / +10
-    constexpr double kHystLeakMs = 50.0;         // the loop memory settles without signal motion (rate independent
-                                                 //   above a few Hz)
-    constexpr double kEvenOffsetMax = 0.35;      // curve offset d at harmonics 10
-    constexpr double kEvenDcHz = 5.0;            // DC removal of the even part
+    // the curve
+    constexpr double kCurveScale = 0.2704;     // u per unit of input at drive 0
+    constexpr double kCurveLimit = 2.0;        // f (u) = sign (u) beyond (the flat top at 1)
+    constexpr double kEvenPerUnit = 0.00516;   // operating-point shift b per unit of harmonics
+    // bias: extra drive into the curve (dB), measured at |bias| 5 and 10 per side (quadratic in |bias| through them)
+    constexpr double kBiasDriveNeg[2] { 2.6870, 5.9505 };    // bias -5, -10
+    constexpr double kBiasDrivePos[2] { 4.4204, 15.8708 };   // bias +5, +10
+    // bias tilt (record side): overall gain (dB), 2nd-order high shelf (dB), 1st-order low shelf (dB) per side
+    // at |bias| 5 and 10, and the shapes' corners (the measured corners agree within 1 %, the low shelf's within 20 %)
+    constexpr double kTiltGainNeg[2] { -0.4571, -0.8510 }, kTiltGainPos[2] { 0.6283, 1.9124 };
+    constexpr double kTiltHighNeg[2] { 1.0190, 2.0248 }, kTiltHighPos[2] { -1.9803, -3.9655 };
+    constexpr double kTiltLowNeg[2] { 0.3200, 0.5688 }, kTiltLowPos[2] { -0.5644, -1.1382 };
+    constexpr double kTiltHz = 1206.4, kTiltQ = 0.701, kTiltLowHz = 107.6;
 
-    // head bump
-    constexpr double kBumpHz[3] { 40.0, 60.0, 110.0 };
-    constexpr double kBumpQ = 1.2;
-    constexpr double kBumpMaxDb = 10.0;           // at lowEmph 10 (documented maximum)
-    constexpr double kBumpLaw[11] { 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 };   // lowEmph -> share
-    constexpr double kRollOffRatio = 0.35;        // high-pass corner / bump frequency
-    constexpr double kRollOffQ = 0.7071067811865476;
+    // reproduce side per speed (index 0 = 7.5, 1 = 15, 2 = 30 ips)
+    constexpr double kSpeedGainDb[3] { 0.2187, 0.9127, 0.8153 };   // level (with the bells below: +0.66 dB at 1 kHz,
+                                                                  //   30 ips)
+    constexpr double kHp2Hz[3] { 12.849, 22.892, 42.933 }, kHp2Q[3] { 0.9758, 0.7846, 0.8060 };
+    constexpr double kHp1Hz[3] { 45.825, 32.444, 14.899 };
+    constexpr double kLowShelfHz[3] { 61.36, 41.22, 305.20 }, kLowShelfDb[3] { 5.0723, 4.1583, -0.6398 };
+    constexpr double kBumpHz[3] { 15.075, 25.036, 44.240 };
+    constexpr double kBumpQn[3] { 0.8319, 0.8939, 0.8069 };       // numerator Q of the bump
+    constexpr double kBumpPerUnit[3] { 0.2794, 0.2443, 0.2742 };  // G = 1 + a x lowEmph (+11.3 dB at 10, 30 ips)
+    constexpr double kRippleHz[3] { 35.148, 43.683, 85.039 }, kRippleQ[3] { 2.5234, 1.8955, 1.2613 };
+    constexpr double kRippleDb[3] { 0.2926, -0.7155, -1.3969 };
+    constexpr double kContourHz[3] { 59.53, 215.06, 404.43 }, kContourQ[3] { 2.7066, 0.7483, 1.2502 };
+    constexpr double kContourDb[3] { -0.6486, 0.4048, 0.3358 };
+    constexpr double kMidHz[3] { 455.90, 5044.52, 854.91 }, kMidQ[3] { 0.8070, 0.4504, 3.5184 };
+    constexpr double kMidDb[3] { 0.8420, -0.7587, -0.1362 };
+    constexpr double kTopHz[3] { 8208.28, 10494.44, 11051.11 }, kTopQ[3] { 0.5750, 0.8426, 0.6294 };
+    constexpr double kTopDb[3] { -1.0416, -0.7178, -0.1683 };
 
-    // high end
-    constexpr double kHfLossHz[3] { 6000.0, 9000.0, 13000.0 };   // corner of the net loss / emphasis shelf per speed
-    constexpr double kHighEmphMinDb = -9.0;       // highEmph 0: the loss uncompensated (gentle roll-off)
-    constexpr double kHighEmphMaxDb = 6.0;        // highEmph 10: "shimmer"
-    constexpr double kHighEmphFlat = 4.0;         // highEmph value of the flat response (documented)
-    constexpr double kBiasHfDb = 1.5;             // HF lift at bias -10 (cut at +10)
+    // high emphasis (1st-order high shelf): anchors at 0, 7 and 10; 4 = flat
+    constexpr double kHighEmphFlat = 4.0;
+    constexpr double kHigh0Db = -4.9578, kHigh0Hz = 26276.9;
+    constexpr double kHigh7Db = 3.0839, kHigh7Hz = 21708.9;
+    constexpr double kHigh10Db = 4.9620, kHigh10Hz = 17246.2;
 
-    // make-up reference
-    constexpr double kRefDbfs = -18.0;            // steady pink noise level the make-up holds
-    constexpr double kPinkLoHz = 20.0, kPinkHiHz = 20000.0;
-    constexpr int kPinkPoints = 64, kQuadPoints = 64;
-    constexpr double kQuadRange = 6.0;            // +-6 sigma
-    constexpr double kDistortionShare = 0.4;      // share of the distortion power left after de-emphasis (fit)
+    // top roll-off at 44.1 kHz (scaled with the sample rate)
+    constexpr double kRollRefRate = 44100.0;
+    constexpr double kRollZeroHz = 21660.0, kRollPoleHz = 21326.0, kRollPoleQ = 6.48;
+
+    // drive compensation: c (drive) / c (0), c = U / f (U), U = kCompRefU x 10^(drive / 20)
+    constexpr double kCompRefU = 0.09957;
+
+    constexpr double kResponseRefHz = 1000.0;   // responseDb is relative to the small-signal level here
 
     constexpr double kMeterReleaseMs = 300.0;
     constexpr float kMaxInput = 1.0e6f;          // reject corrupt audio above +120 dBFS before the float oversampler
@@ -113,23 +132,24 @@ namespace
     inline double dbToGain (double db) noexcept { return std::pow (10.0, db * 0.05); }
 
     //==========================================================================
-    // Analog prototypes in S = s / w0: H (S) = (b0 + b1 S + b2 S^2) / (a0 + a1 S + a2 S^2).
+    // Analog prototypes in S = s / w0: H (S) = (b0 + b1 S + b2 S^2) / (a0 + a1 S + a2 S^2), digitised at `warp` Hz.
     struct Proto
     {
-        double hz = 1000.0;
+        double hz = 1000.0, warp = 1000.0;
         double b0 = 1.0, b1 = 0.0, b2 = 0.0, a0 = 1.0, a1 = 0.0, a2 = 0.0;
 
-        double magnitude (double f) const noexcept
+        std::complex<double> response (double f) const noexcept
         {
             const std::complex<double> S (0.0, f / hz);
-            return std::abs ((b0 + b1 * S + b2 * S * S) / (a0 + a1 * S + a2 * S * S));
+            return (b0 + b1 * S + b2 * S * S) / (a0 + a1 * S + a2 * S * S);
         }
+        double magnitude (double f) const noexcept { return std::abs (response (f)); }
 
-        // Bilinear transform prewarped at hz: S = c (1 - z^-1) / (1 + z^-1), c = 1 / tan (pi hz / fs).
+        // Bilinear transform prewarped at `warp`: S = c (1 - z^-1) / (1 + z^-1), c = (warp / hz) / tan (pi warp / fs).
         BiquadCoeffs digital (double fs) const noexcept
         {
-            const double f = std::min (hz, 0.45 * fs);
-            const double c = 1.0 / std::tan (kPi * f / fs), c2 = c * c;
+            const double w = std::min (warp, 0.45 * fs);
+            const double c = (w / hz) / std::tan (kPi * w / fs), c2 = c * c;
             BiquadCoeffs k;
             if (b2 == 0.0 && a2 == 0.0)
             {
@@ -151,187 +171,185 @@ namespace
         }
     };
 
-    Proto preEmphasis (double hz, double plateauDb) noexcept
+    Proto proto (double hz) noexcept
     {
         Proto p;
         p.hz = hz;
-        p.b0 = 1.0; p.b1 = 1.0;
-        p.a0 = 1.0; p.a1 = 1.0 / dbToGain (plateauDb);
+        p.warp = std::min (hz, kHfWarpHz);
         return p;
     }
 
-    Proto deEmphasis (double hz, double plateauDb) noexcept
+    Proto scaled (Proto p, double g) noexcept
     {
-        Proto p = preEmphasis (hz, plateauDb);
-        std::swap (p.b0, p.a0);
-        std::swap (p.b1, p.a1);
+        p.b0 *= g;
+        p.b1 *= g;
+        p.b2 *= g;
         return p;
     }
 
     Proto highPass2 (double hz, double q) noexcept
     {
-        Proto p;
-        p.hz = hz;
+        Proto p = proto (hz);
         p.b0 = 0.0; p.b1 = 0.0; p.b2 = 1.0;
         p.a0 = 1.0; p.a1 = 1.0 / q; p.a2 = 1.0;
+        return p;
+    }
+
+    Proto highPass1 (double hz) noexcept
+    {
+        Proto p = proto (hz);
+        p.b0 = 0.0; p.b1 = 1.0;
+        p.a0 = 1.0; p.a1 = 1.0;
+        return p;
+    }
+
+    // First-order high shelf: DC gain 1, HF gain 10^(gainDb / 20), half the gain (in dB) at hz.
+    Proto highShelf1 (double hz, double gainDb) noexcept
+    {
+        const double sg = std::pow (10.0, gainDb / 40.0);
+        Proto p = proto (hz);
+        p.b0 = 1.0; p.b1 = sg;
+        p.a0 = 1.0; p.a1 = 1.0 / sg;
+        return p;
+    }
+
+    // First-order low shelf: DC gain 10^(gainDb / 20), HF gain 1, half the gain at hz.
+    Proto lowShelf1 (double hz, double gainDb) noexcept
+    {
+        return scaled (highShelf1 (hz, -gainDb), dbToGain (gainDb));
+    }
+
+    // Second-order high shelf: DC gain 1, HF gain A^2 (A = 10^(gainDb / 40)), A at hz.
+    Proto highShelf2 (double hz, double gainDb, double q) noexcept
+    {
+        const double A = std::pow (10.0, gainDb / 40.0), sa = std::sqrt (A);
+        Proto p = proto (hz);
+        p.b0 = A; p.b1 = A * sa / q; p.b2 = A * A;
+        p.a0 = A; p.a1 = sa / q; p.a2 = 1.0;
+        return p;
+    }
+
+    Proto inverse (Proto p) noexcept
+    {
+        std::swap (p.b0, p.a0);
+        std::swap (p.b1, p.a1);
+        std::swap (p.b2, p.a2);
         return p;
     }
 
     Proto bell (double hz, double q, double gainDb) noexcept
     {
         const double a = std::pow (10.0, gainDb / 40.0);
-        Proto p;
-        p.hz = hz;
+        Proto p = proto (hz);
         p.b0 = 1.0; p.b1 = a / q; p.b2 = 1.0;
         p.a0 = 1.0; p.a1 = 1.0 / (a * q); p.a2 = 1.0;
         return p;
     }
 
-    // First-order high shelf: DC gain 1, HF gain g, half the gain (in dB) at hz.
-    Proto highShelf (double hz, double gainDb) noexcept
+    // The head bump: (S^2 + S / qn + 1) / (S^2 + S / (qn G) + 1), exactly G at hz, 1 at G = 1.
+    Proto headBump (double hz, double qn, double g) noexcept
     {
-        const double sg = std::pow (10.0, gainDb / 40.0);
+        Proto p = proto (hz);
+        p.b0 = 1.0; p.b1 = 1.0 / qn; p.b2 = 1.0;
+        p.a0 = 1.0; p.a1 = 1.0 / (qn * g); p.a2 = 1.0;
+        return p;
+    }
+
+    // Top roll-off: (1 + S^2 (fp / fz)^2) / (1 + S / Q + S^2), S = s / wp (a zero pair on the axis at fz).
+    Proto rollOff (double rate) noexcept
+    {
+        const double k = rate / kRollRefRate, fz = kRollZeroHz * k, fp = kRollPoleHz * k;
         Proto p;
-        p.hz = hz;
-        p.b0 = 1.0; p.b1 = sg;
-        p.a0 = 1.0; p.a1 = 1.0 / sg;
+        p.hz = fp;
+        p.warp = fp;
+        const double r = fp / fz;
+        p.b0 = 1.0; p.b1 = 0.0; p.b2 = r * r;
+        p.a0 = 1.0; p.a1 = 1.0 / kRollPoleQ; p.a2 = 1.0;
         return p;
     }
 
     //==========================================================================
     // Control-value laws (shared by the DSP and responseDb).
     inline int speedIndex (TapeSpeed s) noexcept { return std::clamp ((int) s, 0, 2); }
-    inline double biasUnit (double bias) noexcept { return std::clamp (bias / 10.0, -1.0, 1.0); }
-    inline double preEmphasisDb (double bias) noexcept { return kPreEmphasisDb - biasUnit (bias) * kBiasPreEmphasisDb; }
 
-    double bumpShare (double lowEmph) noexcept
+    // c1 |b| + c2 b^2 through the values at |b| = 5 and 10 (0 at 0).
+    inline double sideLaw (const double (&v)[2], double absBias) noexcept
     {
-        const double x = std::clamp (lowEmph, 0.0, 10.0);
-        const int i = std::min (9, (int) x);
-        return kBumpLaw[i] + (x - i) * (kBumpLaw[i + 1] - kBumpLaw[i]);
+        const double c2 = (v[1] - 2.0 * v[0]) / 50.0;
+        const double c1 = (v[0] - 25.0 * c2) / 5.0;
+        return absBias * (c1 + c2 * absBias);
     }
 
-    double highShelfDb (double highEmph, double bias) noexcept
+    inline double biasLaw (double bias, const double (&neg)[2], const double (&pos)[2]) noexcept
+    {
+        const double b = std::clamp (bias, -10.0, 10.0);
+        return b < 0.0 ? sideLaw (neg, -b) : sideLaw (pos, b);
+    }
+
+    inline double biasDriveDb (double bias) noexcept { return biasLaw (bias, kBiasDriveNeg, kBiasDrivePos); }
+
+    Proto tiltHighFor (double bias) noexcept
+    {
+        return scaled (highShelf2 (kTiltHz, biasLaw (bias, kTiltHighNeg, kTiltHighPos), kTiltQ),
+                       dbToGain (biasLaw (bias, kTiltGainNeg, kTiltGainPos)));
+    }
+
+    Proto tiltLowFor (double bias) noexcept { return lowShelf1 (kTiltLowHz, biasLaw (bias, kTiltLowNeg, kTiltLowPos)); }
+
+    Proto preFor (int s) noexcept { return highShelf2 (kPreHz * kTapeSpeedIps[(size_t) s] / 30.0, kPreDb, kPreQ); }
+
+    Proto bumpFor (int s, double lowEmph) noexcept
+    {
+        return headBump (kBumpHz[s], kBumpQn[s], 1.0 + kBumpPerUnit[s] * std::clamp (lowEmph, 0.0, 10.0));
+    }
+
+    Proto highEmphFor (double highEmph) noexcept
     {
         const double e = std::clamp (highEmph, 0.0, 10.0);
-        const double emph = e <= kHighEmphFlat ? kHighEmphMinDb * (kHighEmphFlat - e) / kHighEmphFlat
-                                               : kHighEmphMaxDb * (e - kHighEmphFlat) / (10.0 - kHighEmphFlat);
-        return emph - biasUnit (bias) * kBiasHfDb;
+        if (e <= kHighEmphFlat)
+            return highShelf1 (kHigh0Hz, kHigh0Db * (kHighEmphFlat - e) / kHighEmphFlat);
+        if (e <= 7.0)
+            return highShelf1 (kHigh7Hz, kHigh7Db * (e - kHighEmphFlat) / (7.0 - kHighEmphFlat));
+        const double t = (e - 7.0) / 3.0;
+        return highShelf1 (kHigh7Hz * std::pow (kHigh10Hz / kHigh7Hz, t), kHigh7Db + t * (kHigh10Db - kHigh7Db));
     }
 
-    Proto rollOffFor (int speed) noexcept { return highPass2 (kBumpHz[speed] * kRollOffRatio, kRollOffQ); }
-    Proto biasTiltFor (int speed, double bias) noexcept
+    // The reproduce sections of a speed that run at the high rate (they reach into the top octave), in order: the
+    // de-emphasis (exact reciprocal of the record pre-emphasis), the mid bell, the top bell.
+    constexpr int kNumHigh = 3;
+    void highSectionsFor (int s, Proto (&out)[kNumHigh]) noexcept
     {
-        return highShelf (kHfLossHz[speed], -biasUnit (bias) * kBiasHfDb);
+        out[0] = inverse (preFor (s));
+        out[1] = bell (kMidHz[s], kMidQ[s], kMidDb[s]);
+        out[2] = bell (kTopHz[s], kTopQ[s], kTopDb[s]);
     }
 
-    Proto bumpFor (int speed, double lowEmph) noexcept
+    // The low-frequency reproduce sections of a speed, at the base rate after the downsampler (all below 600 Hz, so
+    // the bilinear map is exact enough there): high-passes, low shelf, ripple and contour bells. The head bump follows.
+    constexpr int kNumLow = 5;
+    void lowSectionsFor (int s, Proto (&out)[kNumLow]) noexcept
     {
-        const double share = bumpShare (lowEmph);
-        const double hpLossDb = -20.0 * std::log10 (rollOffFor (speed).magnitude (kBumpHz[speed]));
-        return bell (kBumpHz[speed], kBumpQ, share * (kBumpMaxDb + hpLossDb));
-    }
-
-    Proto shelfFor (int speed, double highEmph, double bias) noexcept
-    {
-        return highShelf (kHfLossHz[speed], highShelfDb (highEmph, bias));
+        out[0] = highPass2 (kHp2Hz[s], kHp2Q[s]);
+        out[1] = highPass1 (kHp1Hz[s]);
+        out[2] = lowShelf1 (kLowShelfHz[s], kLowShelfDb[s]);
+        out[3] = bell (kRippleHz[s], kRippleQ[s], kRippleDb[s]);
+        out[4] = bell (kContourHz[s], kContourQ[s], kContourDb[s]);
     }
 
     //==========================================================================
-    // The tape curve: c (x) = (1 - |b|) c2 (x) + |b| (b < 0 ? c4 : c1) (x), b = bias / 10.
-    inline double c1 (double x) noexcept { return x / (1.0 + std::abs (x)); }
-    inline double c2 (double x) noexcept { return x / std::sqrt (1.0 + x * x); }
-    inline double c4 (double x) noexcept { const double x2 = x * x; return x / std::sqrt (std::sqrt (1.0 + x2 * x2)); }
-
-    struct Curve
+    // The tape curve: f (u) = u - u |u| / 4 for |u| <= 2, sign (u) beyond.
+    inline double curve (double u) noexcept
     {
-        double wHard = 0.0, wSoft = 0.0;   // weights of c4 and c1 (c2 gets the rest)
-
-        void set (double b) noexcept
-        {
-            wHard = b < 0.0 ? -b : 0.0;
-            wSoft = b > 0.0 ? b : 0.0;
-        }
-
-        inline double operator() (double x) const noexcept
-        {
-            double y = (1.0 - wHard - wSoft) * c2 (x);
-            if (wHard > 0.0)
-                y += wHard * c4 (x);
-            if (wSoft > 0.0)
-                y += wSoft * c1 (x);
-            return y;
-        }
-    };
-
-    inline double hystWidthFor (double b) noexcept
-    {
-        return b < 0.0 ? kHystWidth[1] + (-b) * (kHystWidth[0] - kHystWidth[1])
-                       : kHystWidth[1] + b * (kHystWidth[2] - kHystWidth[1]);
+        const double a = std::min (std::abs (u), kCurveLimit);
+        const double y = a - 0.25 * a * a;
+        return u < 0.0 ? -y : y;
     }
 
-    inline double curveGainFor (double driveDb, double bias) noexcept
+    // Drive compensation c (drive) / c (0).
+    double compFor (double driveDb) noexcept
     {
-        return dbToGain (driveDb + std::max (0.0, biasUnit (bias)) * kOverBiasDriveDb) * kTapeScale;
-    }
-
-    // RMS gain of the pre-emphasis on pink noise (equal power per octave, kPinkLoHz .. kPinkHiHz).
-    double pinkPreGain (int speed, double bias) noexcept
-    {
-        const auto pre = preEmphasis (kPreEmphasisHz[speed], preEmphasisDb (bias));
-        const double span = std::log (kPinkHiHz / kPinkLoHz);
-        double sum = 0.0;
-        for (int i = 0; i < kPinkPoints; ++i)
-        {
-            const double f = kPinkLoHz * std::exp (span * (i + 0.5) / kPinkPoints);
-            const double m = pre.magnitude (f);
-            sum += m * m;
-        }
-        return std::sqrt (sum / kPinkPoints);
-    }
-
-    // RMS gain of the fixed linear parts (roll-off, bias tilt) on the same pink noise.
-    double pinkLinearGain (int speed, double bias) noexcept
-    {
-        const auto roll = rollOffFor (speed);
-        const auto tilt = biasTiltFor (speed, bias);
-        const double span = std::log (kPinkHiHz / kPinkLoHz);
-        double sum = 0.0;
-        for (int i = 0; i < kPinkPoints; ++i)
-        {
-            const double f = kPinkLoHz * std::exp (span * (i + 0.5) / kPinkPoints);
-            const double m = roll.magnitude (f) * tilt.magnitude (f);
-            sum += m * m;
-        }
-        return std::sqrt (sum / kPinkPoints);
-    }
-
-    // Make-up gain of the curve for a Gaussian input of RMS sigma (curve units). Bussgang split of the output y = c + e
-    // (DC removed): the linear part a x (a = E [x y] / sigma^2) and the distortion (the rest, power P). The output keeps
-    // the linear part's power and kDistortionShare of P (the distortion is broader than the pre-emphasised spectrum,
-    // so the de-emphasis and the downsampler remove more of it): make-up = sigma / sqrt (a^2 sigma^2 + share P).
-    double makeupFor (double sigma, const Curve& curve, double d) noexcept
-    {
-        const double cd = curve (d);
-        double sw = 0.0, sy2 = 0.0, se = 0.0, sxc = 0.0;
-        for (int i = 0; i < kQuadPoints; ++i)   // u > 0 only: c is odd, e even
-        {
-            const double u = kQuadRange * (i + 0.5) / kQuadPoints;
-            const double w = std::exp (-0.5 * u * u);
-            const double x = sigma * u;
-            const double c = curve (x);
-            const double e = d != 0.0 ? 0.5 * (curve (d + x) + curve (d - x)) - cd : 0.0;
-            sw += w;
-            sy2 += w * (c * c + e * e);   // E [c e] = 0 (odd times even)
-            se += w * e;
-            sxc += w * x * c;             // E [x e] = 0
-        }
-        const double meanE = se / sw;
-        const double var = sy2 / sw - meanE * meanE;
-        const double lin = sxc / sw;      // a sigma^2
-        const double linPow = lin * lin / (sigma * sigma);
-        const double out = linPow + kDistortionShare * std::max (0.0, var - linPow);
-        return out > 1.0e-30 ? sigma / std::sqrt (out) : 1.0;
+        const auto c = [] (double u) { return u / curve (u); };
+        return c (kCompRefU * dbToGain (driveDb)) / c (kCompRefU);
     }
 
     //==========================================================================
@@ -364,29 +382,34 @@ struct Tape::Impl
     // Values of one control period's end (the start is the previous period's end), interpolated per sample.
     struct Shape
     {
-        double g = kTapeScale;     // input gain into the curve
-        double invG = 1.0 / kTapeScale;
-        double d = 0.0, cd = 0.0;  // even offset and c (d)
-        double bias = 0.0;         // bias / 10 (curve blend)
-        double width = kHystWidth[1];
-        double driveGain = 1.0;    // drive alone (meter)
+        double g = kCurveScale;    // input gain into the curve (u per unit of the pre-emphasised input)
+        double b = 0.0;            // even-harmonics operating point
+        double meterGain = 1.0;    // drive and bias drive alone (meter)
     };
 
+    // High-rate sections of one channel of one lane. The speed's own sections are fixed for the lane's life (a speed
+    // change crossfades lanes); the control-driven ones glide.
     struct Channel
     {
-        SmoothedBiquad pre, de, roll, bump, shelf;
-        double evenX1 = 0.0, evenY1 = 0.0;   // first-order DC removal of the even part
-        double hystR = 0.0, xPrev = 0.0, gPrev = kTapeScale;
+        SmoothedBiquad tiltHigh, tiltLow, emph;
+        Biquad pre, high[kNumHigh], roll;
+    };
+
+    // Base-rate low-frequency sections of one channel of one lane (after the shared downsampler: during a speed
+    // crossfade both lanes' sets filter the crossfaded signal and their outputs are crossfaded the same way).
+    struct LowChannel
+    {
+        SmoothedBiquad low[kNumLow], bump;
     };
 
     struct Lane
     {
-        int speed = 1;
+        int speed = 2;
         Channel ch[2];
+        LowChannel lowCh[2];
         double makeupStart = 1.0, makeupEnd = 1.0;
         // designed control values (filters are re-targeted only when these change)
-        double dBias = 1.0e9, dLow = 1.0e9, dHigh = 1.0e9;
-        double mDrive = 1.0e9, mBias = 1.0e9, mHarm = 1.0e9;
+        double dBias = 1.0e9, dLow = 1.0e9, dHigh = 1.0e9, mDrive = 1.0e9;
     };
 
     TapeMeters meters;
@@ -405,9 +428,6 @@ struct Tape::Impl
     Shape shapeStart, shapeEnd;
     int controlPos = 0;   // base samples into the current control period (0 = a new period starts)
 
-    double evenDcA = 0.0;   // even-part DC removal: y = a (y1 + x - x1)
-    double hystLeak = 0.0;  // per high-rate sample
-
     // meters (internal units)
     double peakIn = 0.0, peakLin = 0.0, peakOut = 0.0, meterDecay = 0.0;
 
@@ -415,41 +435,56 @@ struct Tape::Impl
     void setLaneFilters (Lane& lane, bool snap) noexcept
     {
         const double b = bias.value, lo = lowEmph.value, hi = highEmph.value;
-        const int s = lane.speed;
         if (snap || b != lane.dBias)
         {
-            const double pd = preEmphasisDb (b);
-            const auto pre = preEmphasis (kPreEmphasisHz[s], pd).digital (osr);
-            const auto de = deEmphasis (kPreEmphasisHz[s], pd).digital (osr);
+            const auto th = tiltHighFor (b).digital (osr);
+            const auto tl = tiltLowFor (b).digital (osr);
             for (auto& c : lane.ch)
             {
-                c.pre.setTarget (pre);
-                c.de.setTarget (de);
+                c.tiltHigh.setTarget (th);
+                c.tiltLow.setTarget (tl);
             }
+        }
+        if (snap || hi != lane.dHigh)
+        {
+            const auto emph = highEmphFor (hi).digital (osr);
+            for (auto& c : lane.ch)
+                c.emph.setTarget (emph);
         }
         if (snap || lo != lane.dLow)
         {
-            const auto bump = bumpFor (s, lo).digital (osr);
-            for (auto& c : lane.ch)
+            const auto bump = bumpFor (lane.speed, lo).digital (sr);
+            for (auto& c : lane.lowCh)
                 c.bump.setTarget (bump);
-        }
-        if (snap || hi != lane.dHigh || b != lane.dBias)
-        {
-            const auto shelf = shelfFor (s, hi, b).digital (osr);
-            for (auto& c : lane.ch)
-                c.shelf.setTarget (shelf);
         }
         if (snap)
         {
-            const auto roll = rollOffFor (s).digital (osr);
+            Proto lp[kNumLow];
+            lowSectionsFor (lane.speed, lp);
+            for (int i = 0; i < kNumLow; ++i)
+            {
+                const auto k = lp[i].digital (sr);
+                for (auto& c : lane.lowCh)
+                {
+                    c.low[i].setTarget (k);
+                    c.low[i].snapToTarget();
+                }
+            }
+            for (auto& c : lane.lowCh)
+                c.bump.snapToTarget();
+            Proto hp[kNumHigh];
+            highSectionsFor (lane.speed, hp);
+            const auto pre = preFor (lane.speed).digital (osr);
+            const auto roll = rollOff (sr).digital (osr);
             for (auto& c : lane.ch)
             {
-                c.roll.setTarget (roll);
-                c.pre.snapToTarget();
-                c.de.snapToTarget();
-                c.roll.snapToTarget();
-                c.bump.snapToTarget();
-                c.shelf.snapToTarget();
+                c.pre.setCoeffs (pre);
+                for (int i = 0; i < kNumHigh; ++i)
+                    c.high[i].setCoeffs (hp[i].digital (osr));
+                c.roll.setCoeffs (roll);
+                c.tiltHigh.snapToTarget();
+                c.tiltLow.snapToTarget();
+                c.emph.snapToTarget();
             }
         }
         lane.dBias = b;
@@ -460,17 +495,10 @@ struct Tape::Impl
     void setLaneMakeup (Lane& lane, bool snap) noexcept
     {
         lane.makeupStart = lane.makeupEnd;
-        if (snap || drive.value != lane.mDrive || bias.value != lane.mBias || harmonics.value != lane.mHarm)
+        if (snap || drive.value != lane.mDrive)
         {
-            Curve curve;
-            curve.set (biasUnit (bias.value));
-            const double sigma = curveGainFor (drive.value, bias.value) * pinkPreGain (lane.speed, bias.value)
-                                 * dbToGain (kRefDbfs);
-            const double d = std::clamp (harmonics.value, 0.0, 10.0) / 10.0 * kEvenOffsetMax;
-            lane.makeupEnd = finiteOr (makeupFor (sigma, curve, d) / pinkLinearGain (lane.speed, bias.value), 1.0);
+            lane.makeupEnd = finiteOr (compFor (drive.value) * dbToGain (kSpeedGainDb[lane.speed]), 1.0);
             lane.mDrive = drive.value;
-            lane.mBias = bias.value;
-            lane.mHarm = harmonics.value;
         }
         if (snap)
             lane.makeupStart = lane.makeupEnd;
@@ -479,15 +507,9 @@ struct Tape::Impl
     Shape shapeNow() const noexcept
     {
         Shape s;
-        s.g = curveGainFor (drive.value, bias.value);
-        s.invG = 1.0 / s.g;
-        s.bias = biasUnit (bias.value);
-        s.d = std::clamp (harmonics.value, 0.0, 10.0) / 10.0 * kEvenOffsetMax;
-        Curve c;
-        c.set (s.bias);
-        s.cd = c (s.d);
-        s.width = hystWidthFor (s.bias);
-        s.driveGain = dbToGain (drive.value);
+        s.meterGain = dbToGain (drive.value + biasDriveDb (bias.value));
+        s.g = kCurveScale * s.meterGain;
+        s.b = kEvenPerUnit * std::clamp (harmonics.value, 0.0, 10.0);
         return s;
     }
 
@@ -513,13 +535,19 @@ struct Tape::Impl
         for (auto& lane : lanes)
             for (auto& c : lane.ch)
             {
+                for (auto* f : { &c.tiltHigh, &c.tiltLow, &c.emph })
+                    f->reset();
                 c.pre.reset();
-                c.de.reset();
                 c.roll.reset();
+                for (auto& f : c.high)
+                    f.reset();
+            }
+        for (auto& lane : lanes)
+            for (auto& c : lane.lowCh)
+            {
                 c.bump.reset();
-                c.shelf.reset();
-                c.evenX1 = c.evenY1 = c.hystR = c.xPrev = 0.0;
-                c.gPrev = kTapeScale;
+                for (auto& f : c.low)
+                    f.reset();
             }
         peakIn = peakLin = peakOut = 0.0;
         meters.inputDriveDb.store (-100.0f);
@@ -541,7 +569,6 @@ struct Tape::Impl
             lanes[next].speed = speedIndex (target.speed);
             setLaneFilters (lanes[next], true);
             setLaneMakeup (lanes[next], true);
-            lanes[next].makeupStart = lanes[next].makeupEnd;
             fading = true;
             fadePos = 0;
         }
@@ -558,50 +585,21 @@ struct Tape::Impl
         shapeEnd = shapeNow();
     }
 
-    // One channel of one lane at the high rate. lin / out: |x| and |curve output| (curve units, for the meters).
-    static inline double tick (Channel& c, double in, double g, double invG, const Curve& curve, double d, double cd,
-                               double width, double leak, double evenA, double& lin, double& out, double& pre) noexcept
+    // One channel of one lane at the high rate. lin / out: |u| and |curve output| (for the meters), pre: the
+    // pre-emphasised input.
+    static inline double tick (Channel& c, double in, double g, double invG, double b, double fb, double& lin,
+                               double& out, double& pre) noexcept
     {
-        pre = c.pre.processSample (in);
-        const double x = pre * g;
-
-        // a moving drive rescales the loop's memory with the input (no jump of the output-referred deficit, which
-        // 1 / G would otherwise amplify after a drive cut); the leak lets a residue settle without signal motion
-        if (g != c.gPrev)
-        {
-            const double k = g / c.gPrev;
-            c.hystR *= k;
-            c.xPrev *= k;
-            c.gPrev = g;
-        }
-        const double cx = curve (x);
-        const double r = x - cx;
-        const double step = std::min (1.0, std::abs (x - c.xPrev) / width + leak);
-        c.hystR += (r - c.hystR) * step;
-        c.xPrev = x;
-        const double y = cx - (r - c.hystR);
-
-        lin = std::abs (x);
+        pre = c.pre.processSample (c.tiltLow.processSample (c.tiltHigh.processSample (in)));
+        const double u = pre * g;
+        const double y = curve (u + b) - fb;
+        lin = std::abs (u);
         out = std::abs (y);
         double v = y * invG;
-
-        // even part, DC removed in output units (a drive change moves its DC without a 1 / G-amplified transient)
-        if (d != 0.0 || c.evenY1 != 0.0 || c.evenX1 != 0.0)
-        {
-            const double e = d != 0.0 ? (0.5 * (curve (d + x) + curve (d - x)) - cd) * invG : 0.0;
-            double eh = evenA * (c.evenY1 + e - c.evenX1);
-            if (e == 0.0 && std::abs (eh) < 1.0e-30)
-                eh = 0.0;
-            c.evenX1 = e;
-            c.evenY1 = eh;
-            v += eh;
-            out = std::abs (y + eh * g);
-        }
-
-        v = c.de.processSample (v);
-        v = c.roll.processSample (v);
-        v = c.bump.processSample (v);
-        return c.shelf.processSample (v);
+        for (auto& f : c.high)
+            v = f.processSample (v);
+        v = c.emph.processSample (v);
+        return c.roll.processSample (v);
     }
 
     void processSegment (float* const* ch, int n) noexcept
@@ -618,8 +616,11 @@ struct Tape::Impl
         const int base4 = controlPos * kOs;
         const double fadeStep = 1.0 / (double) fadeLen;
 
-        double blockIn = 0.0, blockLin = 0.0, blockOut = 0.0;
-        Curve curve;
+        double sampleIn = 0.0, sampleLin = 0.0, sampleOut = 0.0;
+        // the lanes at the segment's start and the new lane's crossfade weight at each base sample
+        const int laneA = active;
+        const bool fadeAtStart = fading;
+        double wBase[kControl] {};
 
         for (int i = 0; i < n4; ++i)
         {
@@ -627,12 +628,9 @@ struct Tape::Impl
             auto lerp = [t] (double a, double b) { return a + (b - a) * t; };
             const double g = lerp (shapeStart.g, shapeEnd.g);
             const double invG = 1.0 / g;
-            const double d = lerp (shapeStart.d, shapeEnd.d);
-            const double b = lerp (shapeStart.bias, shapeEnd.bias);
-            curve.set (b);
-            const double cd = d != 0.0 ? curve (d) : 0.0;
-            const double width = lerp (shapeStart.width, shapeEnd.width);
-            const double driveGain = lerp (shapeStart.driveGain, shapeEnd.driveGain);
+            const double b = lerp (shapeStart.b, shapeEnd.b);
+            const double fb = curve (b);
+            const double meterGain = lerp (shapeStart.meterGain, shapeEnd.meterGain);
 
             double wNew = 0.0;
             if (fading)
@@ -646,13 +644,12 @@ struct Tape::Impl
                 const double x = up[c][i];
                 auto& la = lanes[active];
                 double lin = 0.0, out = 0.0, pre = 0.0;
-                double y = tick (la.ch[c], x, g, invG, curve, d, cd, width, hystLeak, evenDcA, lin, out, pre)
-                           * lerp (la.makeupStart, la.makeupEnd);
+                double y = tick (la.ch[c], x, g, invG, b, fb, lin, out, pre) * lerp (la.makeupStart, la.makeupEnd);
                 if (fading)
                 {
                     auto& lb = lanes[1 - active];
                     double lin2 = 0.0, out2 = 0.0, pre2 = 0.0;
-                    const double y2 = tick (lb.ch[c], x, g, invG, curve, d, cd, width, hystLeak, evenDcA, lin2, out2, pre2)
+                    const double y2 = tick (lb.ch[c], x, g, invG, b, fb, lin2, out2, pre2)
                                       * lerp (lb.makeupStart, lb.makeupEnd);
                     y += wNew * (y2 - y);
                     if (wNew > 0.5)
@@ -663,11 +660,21 @@ struct Tape::Impl
                     }
                 }
                 up[c][i] = (float) y;
-                blockIn = std::max (blockIn, std::abs (pre) * driveGain);
-                blockLin = std::max (blockLin, lin);
-                blockOut = std::max (blockOut, out);
+                sampleIn = std::max (sampleIn, std::abs (pre) * meterGain);
+                sampleLin = std::max (sampleLin, lin);
+                sampleOut = std::max (sampleOut, out);
             }
 
+            if ((i + 1) % kOs == 0)
+            {
+                wBase[i / kOs] = fading ? wNew : (fadeAtStart ? 1.0 : 0.0);
+                // Release once per base sample, after collecting its four high-rate peaks. A segment peak would
+                // hold earlier samples until the segment's end, making the meters depend on host block boundaries.
+                peakIn = std::max (sampleIn, peakIn * meterDecay);
+                peakLin = std::max (sampleLin, peakLin * meterDecay);
+                peakOut = std::max (sampleOut, peakOut * meterDecay);
+                sampleIn = sampleLin = sampleOut = 0.0;
+            }
             if (fading && ++fadePos >= fadeLen)
             {
                 fading = false;
@@ -677,10 +684,24 @@ struct Tape::Impl
 
         os.downsample (ch, n);
 
-        const double decay = std::pow (meterDecay, (double) n);
-        peakIn = std::max (blockIn, peakIn * decay);
-        peakLin = std::max (blockLin, peakLin * decay);
-        peakOut = std::max (blockOut, peakOut * decay);
+        // the base-rate low-frequency sections and the head bump (both lanes' during a crossfade)
+        auto low = [] (LowChannel& lc, double v) {
+            for (auto& f : lc.low)
+                v = f.processSample (v);
+            return lc.bump.processSample (v);
+        };
+        for (int c = 0; c < 2; ++c)
+        {
+            float* d = ch[c];
+            for (int i = 0; i < n; ++i)
+            {
+                double y = low (lanes[laneA].lowCh[c], d[i]);
+                if (fadeAtStart)
+                    y += wBase[i] * (low (lanes[1 - laneA].lowCh[c], d[i]) - y);
+                d[i] = (float) y;
+            }
+        }
+
         if (peakIn < 1.0e-30) peakIn = 0.0;
         if (peakLin < 1.0e-30) peakLin = 0.0;
         if (peakOut < 1.0e-30) peakOut = 0.0;
@@ -707,15 +728,20 @@ void Tape::prepare (double sampleRate, int)
     const double glidePole = std::exp (-(double) kControl / (kGlideStageRatio * kGlideMs * 0.001 * m.sr));
     for (auto* g : { &m.drive, &m.bias, &m.harmonics, &m.lowEmph, &m.highEmph })
         g->c = glidePole;
-    m.fadeLen = std::max (1, (int) std::lround (kSpeedFadeMs * 0.001 * m.osr));
-    // matched first-order high-pass of the even part: y = a (y1 + x - x1), a = 1 / (1 + w T)
-    m.evenDcA = 1.0 / (1.0 + 2.0 * kPi * kEvenDcHz / m.osr);
-    m.hystLeak = 1.0 / (kHystLeakMs * 0.001 * m.osr);
+    m.fadeLen = std::max (kOs, (int) std::lround (kSpeedFadeMs * 0.001 * m.osr));
     m.meterDecay = std::exp (-1.0 / (kMeterReleaseMs * 0.001 * m.sr));
     for (auto& lane : m.lanes)
+    {
         for (auto& c : lane.ch)
-            for (auto* f : { &c.pre, &c.de, &c.roll, &c.bump, &c.shelf })
+            for (auto* f : { &c.tiltHigh, &c.tiltLow, &c.emph })
                 f->setRampLength (kControl * kOs);
+        for (auto& c : lane.lowCh)
+        {
+            c.bump.setRampLength (kControl);
+            for (auto& f : c.low)
+                f.setRampLength (kControl);
+        }
+    }
     m.prepared = true;
     m.resetState();
 }
@@ -730,7 +756,7 @@ void Tape::setParams (ParamValues v) noexcept
     p.driveDb = (float) finiteOr (p.driveDb, 0.0);
     p.bias = (float) finiteOr (p.bias, 0.0);
     p.harmonics = (float) finiteOr (p.harmonics, 0.0);
-    p.lowEmphasis = (float) finiteOr (p.lowEmphasis, 5.0);
+    p.lowEmphasis = (float) finiteOr (p.lowEmphasis, 2.0);
     p.highEmphasis = (float) finiteOr (p.highEmphasis, kHighEmphFlat);
     m.target = p;
 
@@ -792,8 +818,23 @@ double Tape::responseDb (const TapeParams& p, double hz) noexcept
         return 0.0;
     const int s = speedIndex (p.speed);
     const double b = std::clamp (finiteOr (p.bias, 0.0), -10.0, 10.0);
-    const double mag = rollOffFor (s).magnitude (hz) * bumpFor (s, finiteOr (p.lowEmphasis, 5.0)).magnitude (hz)
-                       * shelfFor (s, finiteOr (p.highEmphasis, kHighEmphFlat), b).magnitude (hz);
-    return 20.0 * std::log10 (std::max (mag, 1.0e-12));
+    Proto hp[kNumHigh], lp[kNumLow];
+    highSectionsFor (s, hp);
+    lowSectionsFor (s, lp);
+    const Proto controls[4] { tiltHighFor (b), tiltLowFor (b), bumpFor (s, finiteOr (p.lowEmphasis, 2.0)),
+                              highEmphFor (finiteOr (p.highEmphasis, kHighEmphFlat)) };
+    // hp[0] (the de-emphasis) cancels the record pre-emphasis: both are left out
+    auto mag = [&hp, &lp, &controls] (double f)
+    {
+        double m = 1.0;
+        for (int i = 1; i < kNumHigh; ++i)
+            m *= hp[i].magnitude (f);
+        for (const auto& c : lp)
+            m *= c.magnitude (f);
+        for (const auto& c : controls)
+            m *= c.magnitude (f);
+        return std::max (m, 1.0e-12);
+    };
+    return 20.0 * std::log10 (mag (hz) / mag (kResponseRefHz));
 }
 } // namespace ps
