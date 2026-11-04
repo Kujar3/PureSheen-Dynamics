@@ -115,6 +115,7 @@ def main():
     check("tools" in result["capabilities"], "declares tools")
     check(result["serverInfo"]["name"] == "puresheen-dynamics", "server name")
     check("cannot hear" in result["instructions"], "tells Claude what it cannot do")
+    check("never leave" not in result["instructions"] and "sample peak" in result["instructions"], "explains the ceiling's two modes")
 
     helper.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))   # no answer expected
     check(helper.request("ping")["result"] == {}, "ping")
@@ -211,6 +212,30 @@ def main():
         peak = helper.tool_json("get_meters")["output"]["true_peak_dbtp"]
         check(peak is not None and -40 < peak < 3, f"true peak since the last read: {peak}")
 
+        # The Maximizer's gain reduction: limiting shows in the peak, whatever one audio block happened to say.
+        base_gain = helper.tool_json("get_parameters", {"ids": ["max.gain"]})["parameters"][0]["value"]
+        helper.tool_json("set_parameters", {"changes": [{"id": "max.gain", "value": 18.0}], "description": "limiter test"})
+        helper.tool_json("get_meters")
+        time.sleep(0.5)
+        limiting = helper.tool_json("get_meters")["maximizer"]
+        check(limiting["peak_gain_reduction_db"] < -1.0, f"the peak shows the limiting: {limiting}")
+        helper.tool_json("undo")
+        time.sleep(1.0)
+        helper.tool_json("get_meters")     # clears the peak held from the limiting
+        time.sleep(0.5)
+        quiet = helper.tool_json("get_meters")["maximizer"]
+        check(quiet["peak_gain_reduction_db"] > -0.5, f"and it clears without limiting: {quiet}")
+        check(abs(helper.tool_json("get_parameters", {"ids": ["max.gain"]})["parameters"][0]["value"] - base_gain) < 0.01, "undo restored the gain")
+
+        # Which peak the ceiling limits: the meters say, so a true peak above a sample-peak ceiling is not read as a fault.
+        was_on = helper.tool_json("get_parameters", {"ids": ["max.truePeak"]})["parameters"][0]["value"] >= 0.5
+        for switch, mode in ((True, "true peak"), (False, "sample peak")):
+            helper.tool_json("set_parameters", {"changes": [{"id": "max.truePeak", "value": switch}]})
+            maximizer = helper.tool_json("get_meters")["maximizer"]
+            check(maximizer["ceiling_applies_to"] == mode, f"the ceiling applies to {mode}: {maximizer}")
+            check(isinstance(maximizer["ceiling_db"], (int, float)), "the ceiling is reported")
+        helper.tool_json("set_parameters", {"changes": [{"id": "max.truePeak", "value": was_on}]})
+
         # Bypass stays with the user.
         error, text = helper.tool("set_parameters", {"changes": [{"id": "io.bypass", "value": True}]})
         check(error and "monitoring" in text, "bypass is refused")
@@ -287,6 +312,32 @@ def main():
             check(abs(back["value"] - 42) > 0.5, "undo moves the macro back")
             error, _ = helper.tool("assistant_set_macro", {"macro": "nope", "value": 1})
             check(error, "an unknown macro is an error")
+
+            # A macro says when it moved the gain, and turning matching off leaves a hand-set gain alone.
+            helper.tool_json("set_parameters", {"changes": [{"id": "max.gain", "value": 2.0}]})
+            moved = helper.tool_json("assistant_set_macro", {"macro": "Width", "value": 80})
+            gain_now = helper.tool_json("get_parameters", {"ids": ["max.gain"]})["parameters"][0]["value"]
+            check(abs(moved["maximizer_gain_db"] - gain_now) < 0.01, "the reply has the gain")
+            check(("note" in moved) == (abs(gain_now - 2.0) > 0.005), f"the note follows the gain: {moved}")
+            helper.tool_json("assistant_settings", {"loudness_matched": False})
+            helper.tool_json("set_parameters", {"changes": [{"id": "max.gain", "value": 2.5}]})
+            moved = helper.tool_json("assistant_set_macro", {"macro": "Width", "value": 30})
+            check(abs(moved["maximizer_gain_db"] - 2.5) < 0.01 and "note" not in moved, f"matching off keeps the gain: {moved}")
+            helper.tool_json("assistant_settings", {"loudness_matched": True})
+
+            # Settings alone keep the current sound; a rebuild is asked for.
+            steps = len(helper.tool_json("get_history", {"limit": 1000})["steps"])
+            kept = helper.tool_json("assistant_settings", {"intensity": "strong"})
+            check(kept["rebuilt"] is False and kept["settings"]["intensity"] == "strong", "settings do not rebuild by themselves")
+            check(len(helper.tool_json("get_history", {"limit": 1000})["steps"]) == steps, "and add no undo step")
+            width = next(m for m in helper.tool_json("get_assistant")["macros"] if "Width" in m["name"])
+            check(abs(width["value"] - 30) < 0.5, f"and keep the changes: {width['value']}")
+            check(helper.tool_json("assistant_settings", {"rebuild": True})["rebuilt"] is True, "a rebuild is reported")
+            check(wait_for(lambda: helper.tool_json("get_assistant"), lambda a: a["applied"] >= 0, 60) is not None, "a rebuild brings suggestions")
+
+        # Comparing without a reference: no placeholder numbers.
+        empty = helper.tool_json("get_comparison")
+        check(empty["ready"] is False and empty["master"] == {"valid": False}, f"no master numbers without a reference: {empty['master']}")
 
         # References: load, compare, loop, remove. The file stays on disk.
         added = helper.tool_json("add_reference", {"path": str(wav)})

@@ -39,6 +39,7 @@ struct MaximizerMeters
     AtomicFloat gainReductionDb[2];      // L, R current limiter gain change (<= 0)
     AtomicFloat upwardGainDb;            // current upward compression gain (>= 0)
     AtomicFloat peakGainReductionDb;     // max GR since the UI last read it (exchange)
+    AtomicFloat bridgePeakGainReductionDb;   // the same for the connection to Claude: its reads must not take the UI's peak
 };
 
 class Maximizer final : public Module

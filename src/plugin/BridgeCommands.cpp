@@ -35,7 +35,7 @@ juce::var number (float v, double scale = 10000.0)
 {
     if (! std::isfinite (v) || v <= ps::kNoValue)
         return {};
-    return std::round ((double) v * scale) / scale;
+    return std::round ((double) v * scale) / scale + 0.0;   // + 0.0: never "-0.0"
 }
 
 juce::var numberD (double v)
@@ -265,8 +265,11 @@ juce::var cmdGetMeters (PureSheenProcessor& p, Args)
     {
         auto& m = static_cast<ps::Maximizer&> (chain.getModule (ps::ModuleType::Maximizer)).getMeters();
         object.getDynamicObject()->setProperty ("maximizer", makeObject ({
-            { "gain_reduction_left_db", number (m.gainReductionDb[0].load(), 100.0) },
-            { "gain_reduction_right_db", number (m.gainReductionDb[1].load(), 100.0) },
+            { "ceiling_db", number (p.getParameterValue ("max.ceiling"), 100.0) },
+            { "ceiling_applies_to", p.getParameterValue ("max.truePeak") >= 0.5f ? "true peak" : "sample peak" },
+            { "peak_gain_reduction_db", number (m.bridgePeakGainReductionDb.exchange (0.0f), 100.0) },
+            { "gain_reduction_now_left_db", number (m.gainReductionDb[0].load(), 100.0) },
+            { "gain_reduction_now_right_db", number (m.gainReductionDb[1].load(), 100.0) },
             { "upward_gain_db", number (m.upwardGainDb.load(), 100.0) } }));
     }
     return object;
@@ -669,8 +672,16 @@ juce::var cmdAssistantSetMacro (PureSheenProcessor& p, Args args)
         const auto& info = ps::assist::macroInfo (macro);
         if (id.equalsIgnoreCase (info.id) || id.equalsIgnoreCase (info.name))
         {
+            const float gainBefore = p.getParameterValue ("max.gain");
             p.getAssistant().setMacro (macro, juce::jlimit (info.minValue, info.maxValue, requireNumber (args, "value")), true);
-            return makeObject ({ { "macro", juce::String (info.id) }, { "value", number (p.getAssistant().getMacros()[(size_t) i], 100.0) } });
+            const float gainAfter = p.getParameterValue ("max.gain");
+
+            auto result = makeObject ({ { "macro", juce::String (info.id) }, { "value", number (p.getAssistant().getMacros()[(size_t) i], 100.0) },
+                                        { "maximizer_gain_db", number (gainAfter, 100.0) } });
+            if (std::abs (gainAfter - gainBefore) > 0.005f)
+                result.getDynamicObject()->setProperty ("note", "This also moved the Maximizer gain from " + juce::String (gainBefore, 2) + " to "
+                    + juce::String (gainAfter, 2) + " dB" + (macro == ps::assist::Macro::Loudness ? "." : ", to keep the loudness steady. loudness_matched in assistant_settings turns that off."));
+            return result;
         }
     }
     fail ("Unknown macro '" + id + "'. get_assistant lists them.");
@@ -713,16 +724,21 @@ juce::var cmdAssistantSettings (PureSheenProcessor& p, Args args)
     if (args.hasProperty ("use_maximizer"))
         settings.engine.useMaximizer = (bool) args["use_maximizer"];
     if (args.hasProperty ("ceiling_db"))
-        settings.engine.ceilingDb = juce::jlimit (-6.0f, 0.0f, requireNumber (args, "ceiling_db"));
+        settings.engine.ceilingDb = juce::jlimit (-3.0f, 0.0f, requireNumber (args, "ceiling_db"));
     if (args.hasProperty ("true_peak"))
         settings.engine.truePeak = (bool) args["true_peak"];
     if (args.hasProperty ("analysis_seconds"))
         settings.analysisSeconds = juce::jlimit (Assistant::kMinSeconds, Assistant::kMaxSeconds, requireNumber (args, "analysis_seconds"));
 
-    a.setSettings (settings, true);
+    // A rebuild applies a new suggestion over the current settings, so it only happens when asked for.
+    const bool rebuild = (bool) args["rebuild"] && a.hasAnalysis();
+    a.setSettings (settings, rebuild);
     if (args.hasProperty ("loudness_matched"))
         a.setLoudnessMatched ((bool) args["loudness_matched"]);
-    return assistantToVar (a);
+
+    auto result = assistantToVar (a);
+    result.getDynamicObject()->setProperty ("rebuilt", rebuild);
+    return result;
 }
 
 //==============================================================================
@@ -825,6 +841,9 @@ juce::var cmdSetReferenceLoop (PureSheenProcessor& p, Args args)
 
 juce::var profileToVar (const ps::TrackProfile& profile)
 {
+    if (! profile.valid)   // its stereo fields hold placeholders until there is audio
+        return makeObject ({ { "valid", false } });
+
     return makeObject ({ { "valid", profile.valid }, { "analysed_seconds", numberD (profile.analysedSeconds) },
                          { "integrated_lufs", number (profile.integratedLufs, 100.0) },
                          { "short_term_lufs", number (profile.shortTermLufs, 100.0) },

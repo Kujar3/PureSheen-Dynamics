@@ -1027,6 +1027,8 @@ void Maximizer::process (float* const* channels, int numSamples, const ProcessCo
     m.meters.upwardGainDb.store ((float) upMax);
     if ((float) grTotal < m.meters.peakGainReductionDb.load())
         m.meters.peakGainReductionDb.store ((float) grTotal);
+    if ((float) grTotal < m.meters.bridgePeakGainReductionDb.load())
+        m.meters.bridgePeakGainReductionDb.store ((float) grTotal);
 }
 
 int Maximizer::getLatencySamples() const noexcept { return impl->reportedLatency.load (std::memory_order_relaxed); }

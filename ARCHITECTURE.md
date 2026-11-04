@@ -1013,6 +1013,15 @@ stdin during a call, so MCP cancellation has no effect: a call ends within its t
 Every line is checked for size and nesting before `juce::JSON::parse`, which recurses: otherwise anything that can reach the
 port could overflow the stack and take the host down, token or not.
 
+The Maximizer's `gainReductionDb` is one block's value, usually 0 between peaks, and the panel takes `peakGainReductionDb`, so
+the chain keeps a third value for the bridge (`bridgePeakGainReductionDb`): a read here must not take the panel's peak.
+`assistant_settings` rebuilds only with `rebuild: true`, unlike the panel's Start, because Claude changing one setting should
+not replace the settings the user is hearing.
+
+`get_meters` reports true peak but no sample peak, so it also says which peak the ceiling limits (`ceiling_applies_to`).
+Otherwise an AI client reads the Assistant's normal result as a fault and fixes it unprompted: suggestions start with True Peak
+off and a -0.1 dB ceiling, as the reference's do, so their true peak can read above the ceiling.
+
 `get_meters` reads the true peak meters with `exchange` (nothing else reads them), and leaves out `IoMeters::inputPeak` and
 `outputPeak`: the chain does not write them, as the I/O panel measures from its own stream. The spectrum FIFOs have one consumer,
 the editor, so the bridge does not offer a live spectrum.

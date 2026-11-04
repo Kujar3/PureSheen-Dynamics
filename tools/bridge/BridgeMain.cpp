@@ -36,8 +36,10 @@ constexpr const char* kInstructions =
     "with while the user plays their track, so ask them to press play when a step needs audio. Decide from measurements, "
     "and let the user's ears make the final call. Start with get_status. Each change to settings or the chain is one undo "
     "step, shown in the plugin's history, and undo reverts it. Prefer small moves, say what you changed, and check "
-    "get_meters afterwards. Keep the peaks under control: never leave the output above its ceiling. Bypass and Gain Match "
-    "stay with the user.";
+    "get_meters afterwards. get_meters says whether the Maximizer's ceiling applies to true peak or to sample peak. With "
+    "True Peak off (max.truePeak), the reported true peak can pass the ceiling without anything being wrong: that is how "
+    "the Assistant's suggestions start, on purpose. Turn it on when the master is for streaming or the user asks, and say "
+    "that you did. With True Peak on, the true peak should stay at the ceiling. Bypass and Gain Match stay with the user.";
 
 var makeObject (std::initializer_list<std::pair<const char*, var>> properties)
 {
@@ -68,7 +70,7 @@ const std::vector<Tool>& tools()
           R"({"id":{"type":"string","description":"An id from list_instances."}})", R"(["id"])", false, true },
         { "get_status", "The overview: version, host, track, sample rate, latency, preset, bypass, the module chain, undo state.",
           R"({})", "[]", true, true },
-        { "get_meters", "Loudness now (momentary, short-term, integrated LUFS, loudness range) at the input and output, the Maximizer's gain reduction, and each module's level change. True peak is the highest since the last get_meters call, so call it once to clear old peaks and again after the audio you care about. Null until there is audio.",
+        { "get_meters", "Loudness now (momentary, short-term, integrated LUFS, loudness range) at the input and output, the Maximizer's gain reduction, and each module's level change. True peak and the Maximizer's peak gain reduction are the highest since the last get_meters call, so call it once to clear old peaks and again after the audio you care about. The gain reduction 'now' values are one audio block, usually 0 between peaks: use the peak value to judge limiting. ceiling_applies_to says which peak the Maximizer's ceiling limits: with 'sample peak', the true peak can read above the ceiling and that is expected. Null until there is audio.",
           R"({})", "[]", false, false },
         { "reset_loudness", "Restarts the integrated loudness and loudness range measurements, for instance when the user plays the track from the top.",
           R"({})", "[]", false, true },
@@ -104,7 +106,7 @@ const std::vector<Tool>& tools()
           R"({"name":{"type":"string"},"scope":{"type":"string"},"category":{"type":"string"},"overwrite":{"type":"boolean","description":"Only when the user agreed."}})", R"(["name"])", false, false },
         { "learn", "Starts, cancels or checks a learn function while the user plays the loudest part: 'maximizer' sets the Maximizer gain, 'de_limiter' sets the De-limiter threshold.",
           R"({"target":{"type":"string","enum":["maximizer","de_limiter"]},"action":{"type":"string","enum":["start","cancel","status"]}})", R"(["target"])", false, false },
-        { "get_assistant", "The Assistant: phase, progress, suggestions, the applied one, macros, settings. Suggestions are ready to use once they are listed. 'working' can stay true for a minute or two while it refines their loudness in the background: no need to wait for it.",
+        { "get_assistant", "The Assistant: phase, progress, suggestions, the applied one, macros, settings. Suggestions are ready to use once they are listed. 'working' can stay true for a minute or two while it refines their loudness in the background: no need to wait for it. 'applied' is the suggestion applied last: undo restores the settings but does not change it. Suggestions start with True Peak off and a -0.1 dB ceiling on purpose, so their true peak can read above the ceiling. That is not a fault to fix unprompted.",
           R"({})", "[]", true, true },
         { "assistant_listen", "Makes the Assistant listen to the input while the user plays their track (silence does not count), then build suggestions. It applies the default suggestion by itself. Poll get_assistant. action 'cancel' stops it.",
           R"({"action":{"type":"string","enum":["start","cancel"]}})", "[]", false, false },
@@ -112,11 +114,11 @@ const std::vector<Tool>& tools()
           R"({"path":{"type":"string","description":"Full path."}})", R"(["path"])", false, false },
         { "assistant_apply", "Applies one of the Assistant's suggestions: a whole chain, as one undo step.",
           R"({"index":{"type":"integer"}})", R"(["index"])", false, true },
-        { "assistant_set_macro", "Moves one of the Assistant's macros, as one undo step.",
+        { "assistant_set_macro", "Moves one of the Assistant's macros, as one undo step. With loudness matching on (the default) a macro also moves the Maximizer gain to keep the loudness steady, replacing a gain set by hand. The reply says when it did.",
           R"({"macro":{"type":"string"},"value":{"type":"number"}})", R"(["macro","value"])", false, true },
-        { "assistant_settings", "Changes what the Assistant aims for, and rebuilds its suggestions from the audio it has. Give only what changes.",
-          R"({"profile":{"type":"string","description":"'detect' or a genre name such as Rock, Hip-Hop, EDM."},"auto_loudness":{"type":"boolean"},"loudness_lufs":{"type":"number","description":"-20 to -5."},"intensity":{"type":"string","enum":["gentle","balanced","strong"]},"use_maximizer":{"type":"boolean"},"ceiling_db":{"type":"number"},"true_peak":{"type":"boolean"},"analysis_seconds":{"type":"number","description":"5 to 30."},"loudness_matched":{"type":"boolean"}})", "[]", false, true },
-        { "assistant_use_reference", "Makes a reference from get_references the Assistant's target, or returns to its own target with id 0.",
+        { "assistant_settings", "Changes what the Assistant aims for. Give only what changes. These apply to the next suggestions, not to the current settings. Pass rebuild: true to build suggestions from the audio it has: that applies a new suggestion and replaces changes made since, though undo brings them back. loudness_matched applies straight away.",
+          R"({"profile":{"type":"string","description":"'detect' or a genre name such as Rock, Hip-Hop, EDM."},"auto_loudness":{"type":"boolean"},"loudness_lufs":{"type":"number","description":"-20 to -5."},"intensity":{"type":"string","enum":["gentle","balanced","strong"]},"use_maximizer":{"type":"boolean"},"ceiling_db":{"type":"number","description":"-3 to 0."},"true_peak":{"type":"boolean"},"analysis_seconds":{"type":"number","description":"5 to 30."},"loudness_matched":{"type":"boolean"},"rebuild":{"type":"boolean","description":"Default false."}})", "[]", false, true },
+        { "assistant_use_reference", "Makes a reference from get_references the Assistant's target, or returns to its own target with id 0. Setting a reference rebuilds the suggestions, which applies a new one over the current settings. Undo brings them back.",
           R"({"id":{"type":"integer"}})", R"(["id"])", false, true },
         { "get_references", "The reference track list: id, file, state, loudness, true peak, loops.",
           R"({})", "[]", true, true },
@@ -128,7 +130,7 @@ const std::vector<Tool>& tools()
           R"({"id":{"type":"integer"}})", R"(["id"])", false, true },
         { "set_reference_loop", "Chooses the part of a reference to compare with. With start and end: sets that loop letter and makes it active. Letter alone: makes it active. With clear: clears it. No letter: the whole track.",
           R"({"id":{"type":"integer"},"letter":{"type":"string","enum":["A","B","C","D","E"]},"start_seconds":{"type":"number"},"end_seconds":{"type":"number"},"clear":{"type":"boolean"}})", R"(["id"])", false, true },
-        { "get_comparison", "The master against the selected reference: loudness, true peak, dynamics, tonal balance and width per band, and plain-language hints. Fills in while the user's master plays.",
+        { "get_comparison", "The master against the selected reference: loudness, true peak, dynamics, tonal balance and width per band, and plain-language hints. The master is only analysed while a reference is in the list, so its width and mono compatibility need one too, and they fill in while the user's master plays.",
           R"({})", "[]", true, true },
     };
     return list;
