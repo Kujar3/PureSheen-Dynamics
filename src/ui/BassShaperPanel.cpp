@@ -63,9 +63,9 @@ struct BassShaperPanel::Impl
         balance.setColour (colour);
         punch.setColour (colour);
         balance.setTooltip ("Balance: the level of everything below the cutoff.\nDrag to change (Ctrl: fine), "
-                            "double-click to reset.");
+                            "double-click to type a value, right-click to reset.");
         punch.setTooltip ("Punch: the level of the low-end hits (kicks, plucked bass) without touching the sustained "
-                          "body.\nDrag to change (Ctrl: fine), double-click to reset.");
+                          "body.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
 
         for (auto* k : { &susThr, &susAmount })
             k->setColour (Colours::info);

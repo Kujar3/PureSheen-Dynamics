@@ -2,6 +2,7 @@
 
 #include "ui/Controls.h"
 #include "ui/DynamicsViews.h"
+#include "ui/ImagerExciterCommon.h"
 #include "ui/MultibandDisplay.h"
 
 #include "dsp/Dynamics.h"
@@ -646,8 +647,8 @@ struct DynamicsPanel::Impl
         const auto name = line == 0 ? "comp.thr" : "lim.thr";
         const auto id = dynamicsBandParamId (activeSet(), band, name);
         const int other = linkedSet();
-        ParamGesture::setComplete (processor, id, other >= 0 ? dynamicsBandParamId (other, band, name) : juce::String(),
-                                   ParamGesture::defaultOf (id));
+        stereo::promptParamValue (display, processor, id, other >= 0 ? dynamicsBandParamId (other, band, name) : juce::String(),
+                                  "Band " + juce::String (band + 1) + (line == 0 ? " compressor threshold" : " limiter threshold"));
         return true;
     }
 
@@ -670,11 +671,13 @@ struct DynamicsPanel::Impl
         juce::PopupMenu menu;
         menu.addSectionHeader ("Band " + juce::String (band + 1) + (line == 0 ? " compressor threshold" : " limiter threshold"));
         menu.addItem (1, "Reset to default (" + dbShort (ParamGesture::defaultOf (id)) + " dB)");
+        menu.addItem (3, "Enter value...");
         menu.addItem (2, line == 0 ? "Compressor on" : "Limiter on", true, on);
 
         juce::Component::SafePointer<DynamicsPanel> safe (&owner);
         auto& p = processor;
-        showMenu (menu, display, [safe, &p, id, linkedId, onId, onLinked, on] (int result)
+        const auto title = "Band " + juce::String (band + 1) + (line == 0 ? " compressor threshold" : " limiter threshold");
+        showMenu (menu, display, [safe, &p, id, linkedId, onId, onLinked, on, title] (int result)
         {
             if (safe == nullptr)
                 return;
@@ -683,6 +686,8 @@ struct DynamicsPanel::Impl
                 ParamGesture::setComplete (p, id, linkedId, ParamGesture::defaultOf (id));
             else if (result == 2)
                 ParamGesture::setComplete (p, onId, onLinked, on ? 0.0f : 1.0f);
+            else if (result == 3)
+                stereo::promptParamValue (*safe, p, id, linkedId, title);
         });
         return true;
     }

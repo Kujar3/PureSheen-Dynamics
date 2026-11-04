@@ -2523,9 +2523,25 @@ void testTsPanelBindings()
                                 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, juce::Time(), pos, juce::Time(), 1, false);
     };
     const auto bandEvent = eventAt (display, display.getBandArea (0).getCentre());
+    // A band's double-click asks for a value: answer the prompt.
+    const auto answerPrompt = [] (const char* text)
+    {
+        if (auto* prompt = dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0)))
+        {
+            prompt->getTextEditor ("text")->setText (text, false);
+            prompt->exitModalState (1);
+        }
+       #if JUCE_WINDOWS || JUCE_LINUX
+        const auto end = juce::Time::getMillisecondCounter() + 50u;
+        while (juce::Time::getMillisecondCounter() < end)
+            if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
+                juce::Thread::sleep (1);
+       #endif
+    };
     p.setParameterValue ("img.b1.width", 45.0f);
     p.setParameterValue ("img.b.b1.width", -55.0f);
     display.onBandDoubleClick (0, bandEvent);
+    answerPrompt ("0");
     check (p.getParameterValue ("img.b1.width") == 45.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
            "UI: Imager Sustain width edit affects only set B when unlinked");
 
@@ -2533,6 +2549,7 @@ void testTsPanelBindings()
     panel.refresh();
     p.setParameterValue ("img.b.b1.width", -55.0f);
     display.onBandDoubleClick (0, bandEvent);
+    answerPrompt ("0");
     check (p.getParameterValue ("img.b1.width") == 0.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
            "UI: Imager linked width edit updates both T/S sets");
 
@@ -2551,7 +2568,16 @@ void testTsPanelBindings()
     };
     auto* knob = findKnob (panel);
     if (knob != nullptr)
+    {
         knob->mouseDoubleClick (eventAt (*knob, knob->getLocalBounds().toFloat().getCentre()));
+
+        for (auto* child : knob->getChildren())
+            if (auto* entry = dynamic_cast<juce::TextEditor*> (child))
+            {
+                entry->setText ("0", false);
+                entry->onReturnKey();
+            }
+    }
     check (knob != nullptr && p.getParameterValue ("img.stz.amount") == 33.0f
            && p.getParameterValue ("img.b.stz.amount") == 0.0f,
            "UI: Imager Sustain Stereoize control binds to set B");
@@ -2839,6 +2865,71 @@ void testPromptLifetime()
         prompt->exitModalState (1);
     pump();
     check (calls == 1 && prompt == nullptr, "UI: accepting a prompt with a live parent calls back once");
+}
+
+void testValueEntry()
+{
+    const auto specOf = [] (const char* id) { return &ps::paramSpecs()[(size_t) ps::paramIndex (id)]; };
+    const auto parses = [] (const ps::ParamSpec* s, const char* text, float expected)
+    {
+        float v = 0.0f;
+        return ps::ui::parseValueText (*s, text, v) && std::abs (v - expected) < 1.0e-3f;
+    };
+    const auto* hz = specOf ("eq1.a.b3.freq");
+    const auto* db = specOf ("clim.thr");
+    float unused = 0.0f;
+
+    check (parses (hz, "208.84", 208.84f) && parses (hz, "2.5k", 2500.0f) && parses (hz, "2,5 kHz", 2500.0f)
+               && parses (hz, "350 Hz", 350.0f) && parses (db, "-3 dB", -3.0f) && parses (db, "-1,5", -1.5f)
+               && ! ps::ui::parseValueText (*db, "abc", unused) && ! ps::ui::parseValueText (*db, "", unused),
+           "UI: typed values take plain numbers, units, k and a decimal comma, and refuse anything else");
+    check (ps::ui::fmt::editNumber (208.84f) == "208.84" && ps::ui::fmt::editNumber (2500.0f) == "2500"
+               && ps::ui::fmt::editNumber (-3.5f) == "-3.5" && ps::ui::fmt::editNumber (0.001f) == "0",
+           "UI: a value entry starts from the plain number, not the rounded label");
+
+    PureSheenProcessor p;
+    const auto left = [] (juce::Component& c)
+    {
+        return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), juce::Point<float> (10.0f, 10.0f),
+                                 juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, juce::Time(),
+                                 { 10.0f, 10.0f }, juce::Time(), 2, false);
+    };
+    const auto editorOf = [] (juce::Component& c) -> juce::TextEditor*
+    {
+        for (auto* child : c.getChildren())
+            if (auto* t = dynamic_cast<juce::TextEditor*> (child))
+                return t;
+        return nullptr;
+    };
+
+    ps::ui::ParamKnob knob (p, "lowc.a.contrast");
+    knob.setSize (80, 100);
+    knob.setLinkedParamId ("lowc.b.contrast");
+    p.setParameterValue ("lowc.a.contrast", 37.25f);
+    knob.mouseDoubleClick (left (knob));
+    auto* entry = editorOf (knob);
+    check (entry != nullptr && std::abs (p.getParameterValue ("lowc.a.contrast") - 37.25f) < 1.0e-3f,
+           "UI: double-clicking a knob opens value entry and leaves the value alone");
+
+    if (entry != nullptr)
+    {
+        check (entry->getText() == "37.25", "UI: value entry shows the precise value", entry->getText().toStdString());
+        entry->setText ("12,5", false);
+        entry->onReturnKey();
+        check (std::abs (p.getParameterValue ("lowc.a.contrast") - 12.5f) < 1.0e-3f
+                   && std::abs (p.getParameterValue ("lowc.b.contrast") - 12.5f) < 1.0e-3f,
+               "UI: a typed value lands on the parameter and its linked twin");
+    }
+
+    knob.mouseDoubleClick (left (knob));
+    if (auto* again = editorOf (knob))
+    {
+        again->setText ("1000000", false);
+        again->onReturnKey();
+        const auto* spec = specOf ("lowc.a.contrast");
+        check (std::abs (p.getParameterValue ("lowc.a.contrast") - spec->maxValue) < 1.0e-3f, "UI: a typed value is clamped to the range");
+    }
 }
 
 void testPanelGestures()
@@ -3832,6 +3923,7 @@ int runSelfTest()
     testTsPanelBindings();
     testPhase2PanelRouting();
     testPanelGestures();
+    testValueEntry();
     testBassScopeFeed();
     testPromptLifetime();
     testThreads();

@@ -71,7 +71,7 @@ struct HelpOverlay::Impl
             "Reference page shows where they differ and loops A - E pick the part to compare.",
             "**Undo and History** - every change is listed; click an entry to go back to that point.",
             "**A B C D** - store up to four versions of your master and click between them to compare.",
-            "**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to reset, right-click to type a value.",
+            "**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to type a value, right-click to reset.",
             "**Mid / Side** - Mid is the centre (vocal, kick, bass), Side is the edges (width, reverb, room).",
             "**T/S** - Transient / Sustain: the hits and what rings on after them get their own settings.",
             "**Integrated LUFS** - the loudness of the whole song. Streaming plays songs at about -14 LUFS.",

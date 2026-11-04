@@ -15,8 +15,8 @@
 //   - the difference curve: LowContrastMeters::diffDb of the selected channel set (the T/S twin's meters for the
 //     Sustain part), filled toward 0 dB (teal for boost, amber for cut)
 // Mouse: drag an edge = one gesture on its cutoff (the other edge is pushed to stay 1/3 octave away, inside the same
-// gesture); drag inside the region = both edges (their ratio kept); Ctrl / Shift = fine; double-click an edge = its
-// default, inside the region = both defaults; right-click = Reset / Enter value (an edge) or the region menu;
+// gesture); drag inside the region = both edges (their ratio kept); Ctrl / Shift = fine; double-click an edge = type a
+// value, inside the region = both defaults; right-click = Reset / Enter value (an edge) or the region menu;
 // Alt + left click = region solo while held; S = region solo on / off. Never takes keyboard focus; left-click-only
 // edits.
 namespace ps::ui

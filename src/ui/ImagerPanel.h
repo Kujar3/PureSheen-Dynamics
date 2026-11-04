@@ -9,7 +9,7 @@
 //   left, top    : MultibandDisplay (input / output spectra, crossovers, band count, solo) with a width overlay per
 //                  band: the band's width as a bar from the centre line (up = wider, down = narrower) with a value
 //                  handle; drag vertically anywhere in the band = "img.b<n>.width" (one gesture per drag, Ctrl / Shift
-//                  = fine, double-click = default, right-click = Reset / Enter value); a correlation bar per band
+//                  = fine, double-click = type a value, right-click = Reset / Enter value); a correlation bar per band
 //                  (ImagerMeters) along the band's bottom edge
 //   left, bottom : cards: Width (Amount, Prevent antiphase), Stereoize (On, Mode I / II, Amount; dimmed while no band
 //                  is wider than 0), Recover Sides (On, Gain; dimmed while no band is narrowed), Crossover (type)

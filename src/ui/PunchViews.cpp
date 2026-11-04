@@ -277,7 +277,7 @@ PunchBandCard::PunchBandCard (PureSheenProcessor& p, int b, juce::Colour c)
     setBadge (band + 1);
     amount.setColour (c);
     amount.setTooltip ("Punch amount of this band. Up: the hits stand out more (punchier). Down: the hits are "
-                       "softened (denser). Double-click: 0 %.");
+                       "softened (denser). Double-click: type a value.");
     onToggle.setOnColour (c);
     onToggle.setTooltip ("Band on / off (off: the band passes unprocessed)");
     addAndMakeVisible (amount);

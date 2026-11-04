@@ -3,6 +3,7 @@
 #include "dsp/DynamicEq.h"
 #include "ui/Controls.h"
 #include "ui/DynamicEqDisplay.h"
+#include "ui/ImagerExciterCommon.h"
 #include "ui/EqModel.h"
 
 #include <cmath>
@@ -140,7 +141,7 @@ private:
 //==============================================================================
 // Threshold meter of the selected band: the detector level (wide bar, the part over the threshold in the band colour)
 // against the threshold line, and the dynamic gain (narrow bar from a centre line: down = cut, up = boost).
-// Drag vertically = threshold (one gesture), double-click = default. Left clicks only.
+// Drag vertically = threshold (one gesture), double-click = type a value, right-click = Reset / Enter value.
 class ThresholdMeter final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -150,7 +151,7 @@ public:
         setRepaintsOnMouseActivity (true);
         setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
         setTooltip ("Threshold meter: the band's detector level (wide bar) against its threshold (line), and how far "
-                    "the band moves right now (narrow bar). Drag up or down to set the threshold; double-click resets it.");
+                    "the band moves right now (narrow bar). Drag up or down to set the threshold; double-click to type a value, right-click to reset.");
     }
 
     ~ThresholdMeter() override { endGesture(); }
@@ -254,6 +255,12 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        if (e.mods.isPopupMenu())
+        {
+            stereo::showParamMenu (*this, processor, paramId, linkedParamId, "Threshold");
+            return;
+        }
+
         if (! isLeftClick (e))
             return;
 
@@ -304,12 +311,7 @@ public:
             return;
 
         endGesture();
-        const float def = dynEqDefaultOf (paramId);
-
-        if (linkedParamId.isNotEmpty())
-            processor.setParameterValues ({ { paramId, def }, { linkedParamId, def } }, "Threshold: " + fmt::db (def, 1, false));
-        else
-            processor.setParameterValue (paramId, def);
+        stereo::promptParamValue (*this, processor, paramId, linkedParamId, "Threshold");
     }
 
 private:

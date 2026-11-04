@@ -65,10 +65,24 @@ juce::String formatSpecValue (const ps::ParamSpec& s, float v)
     return unit.isEmpty() ? number : number + " " + unit;
 }
 
-// "1.2k", "350 Hz", "-3 dB", "4:1" -> number in the parameter's unit (kHz / s suffixes scaled).
+juce::String editNumberText (float v, int decimals)
+{
+    auto text = plainNumber (v, decimals);
+    return text.containsChar ('.') ? text.trimCharactersAtEnd ("0").trimCharactersAtEnd (".") : text;
+}
+
+juce::String editSpecValue (const ps::ParamSpec& s, float v)
+{
+    if (s.kind != ps::ParamKind::Float)
+        return formatSpecValue (s, v);
+
+    return editNumberText (v, s.interval >= 1.0f ? 0 : (s.maxValue - s.minValue <= 2.0f ? 3 : 2));
+}
+} // namespace
+
 bool parseValueText (const ps::ParamSpec& s, juce::String text, float& result)
 {
-    text = text.trim().toLowerCase();
+    text = text.trim().toLowerCase().replaceCharacter (',', '.');
 
     if (text.isEmpty())
         return false;
@@ -107,6 +121,8 @@ bool parseValueText (const ps::ParamSpec& s, juce::String text, float& result)
     return true;
 }
 
+namespace
+{
 //==============================================================================
 // One bound parameter (and an optional linked one). Message thread only.
 class Binding
@@ -179,6 +195,8 @@ public:
 
     juce::String text() const { return spec != nullptr ? formatSpecValue (*spec, shown (value)) : juce::String ("--"); }
     juce::String textFor (float plain) const { return spec != nullptr ? formatSpecValue (*spec, shown (plain)) : juce::String(); }
+    juce::String editText() const { return spec != nullptr ? editSpecValue (*spec, shown (value)) : juce::String(); }
+    bool isTypable() const noexcept { return spec != nullptr && spec->kind == ps::ParamKind::Float; }
 
     // Display scale (ParamKnob::setDisplayScale): text shows scale x plain + offset; fromShown inverts it.
     void setDisplayScale (float s, float o) noexcept { shownScale = s != 0.0f ? s : 1.0f; shownOffset = o; }
@@ -332,7 +350,11 @@ public:
         if (isLeftClick (e) && binding.isValid())
         {
             binding.end();
-            binding.setComplete (binding.getDefault());
+
+            if (binding.isTypable() && onEnterValue != nullptr)
+                onEnterValue();
+            else
+                binding.setComplete (binding.getDefault());
         }
     }
 
@@ -422,7 +444,8 @@ public:
     {
         parent.addAndMakeVisible (this);
         setBounds (area);
-        setText (binding.text().upToFirstOccurrenceOf (" ", false, false), false);
+        initialText = binding.editText();
+        setText (initialText, false);
         grabKeyboardFocus();
         selectAll();
     }
@@ -432,7 +455,7 @@ private:
     {
         float v = 0.0f;
 
-        if (const auto* spec = binding.getSpec(); spec != nullptr && parseValueText (*spec, getText(), v))
+        if (const auto* spec = binding.getSpec(); spec != nullptr && getText() != initialText && parseValueText (*spec, getText(), v))
             binding.setComplete (juce::jlimit (spec->minValue, spec->maxValue, binding.fromShown (v)));
 
         close();
@@ -451,6 +474,7 @@ private:
     }
 
     Binding& binding;
+    juce::String initialText;
 };
 
 void setNoFocus (juce::Component& c)
@@ -519,6 +543,16 @@ namespace fmt
 
         return {};
     }
+
+    juce::String editNumber (float v, int decimals) { return editNumberText (v, decimals); }
+
+    juce::String paramEditValue (const PureSheenProcessor& p, const juce::String& paramId)
+    {
+        if (const auto* spec = findSpec (paramId))
+            return editSpecValue (*spec, p.getParameterValue (paramId));
+
+        return {};
+    }
 }
 
 //==============================================================================
@@ -576,7 +610,7 @@ ParamKnob::~ParamKnob() = default;
 void ParamKnob::setParamId (const juce::String& paramId)
 {
     impl->binding.bind (paramId);
-    setTooltip (impl->binding.hostName() + "\nDrag to change (Ctrl: fine), double-click to reset, right-click for more.");
+    setTooltip (impl->binding.hostName() + "\nDrag to change (Ctrl: fine), double-click to type a value, right-click for more.");
     setTitle (impl->caption.isNotEmpty() ? impl->caption : impl->binding.hostName());
     repaint();
 }
@@ -708,7 +742,7 @@ ParamFader::~ParamFader() = default;
 void ParamFader::setParamId (const juce::String& paramId)
 {
     impl->binding.bind (paramId);
-    setTooltip (impl->binding.hostName() + "\nDrag to change (Ctrl: fine), double-click to reset, right-click for more.");
+    setTooltip (impl->binding.hostName() + "\nDrag to change (Ctrl: fine), double-click to type a value, right-click for more.");
     setTitle (impl->binding.hostName());
     repaint();
 }

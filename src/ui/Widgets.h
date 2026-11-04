@@ -21,12 +21,17 @@ namespace fmt
     juce::String ratio (float r);                                     // "2.0:1", "-1.5:1" (upward), "1:1"
     juce::String lufs (float v);                                      // "-9.8 LUFS", "--"
     juce::String paramValue (const PureSheenProcessor&, const juce::String& paramId);   // spec unit aware
+    juce::String editNumber (float v, int decimals = 2);              // text field start: "208.84", "2500", "-3"
+    juce::String paramEditValue (const PureSheenProcessor&, const juce::String& paramId);   // the same, in spec units
 }
 
+// Typed value -> number in the parameter's unit: "1.2k", "2,5 kHz", "350 Hz", "-3 dB", "4:1", "1.2 s" (not clamped).
+bool parseValueText (const ps::ParamSpec&, juce::String text, float& result);
+
 //==============================================================================
-// Rotary knob bound to one parameter: caption above, value text below (editable on double-click is NOT used:
-// double-click resets to default, the reference suite does "Alt/Option-click resets"; we do: double-click = reset,
-// Ctrl-drag = fine, right-click = menu "Reset to default / Enter value... / (MIDI learn reserved)").
+// Rotary knob bound to one parameter: caption above, value text below. Double-click = type a value (a choice or a
+// switch has nothing to type, so it resets), Ctrl-drag = fine, right-click = menu "Reset to default / Enter value... /
+// (MIDI learn reserved)".
 // One undo step per drag (begin/end gesture through juce::SliderParameterAttachment).
 class ParamKnob : public juce::Component, public juce::SettableTooltipClient
 {
@@ -48,7 +53,7 @@ public:
 
     void resized() override;
     void paint (juce::Graphics&) override;
-    // (added) mouse handling: drag / Ctrl-drag fine / wheel / double-click reset / right-click menu
+    // (added) mouse handling: drag / Ctrl-drag fine / wheel / double-click type a value / right-click menu
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
@@ -71,7 +76,7 @@ public:
     void setColour (juce::Colour);                          // (added) fill colour (default accent)
     void resized() override;
     void paint (juce::Graphics&) override;
-    // (added) mouse handling: drag / Ctrl-drag fine / wheel / double-click reset / right-click menu
+    // (added) mouse handling: drag / Ctrl-drag fine / wheel / double-click type a value / right-click menu
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;

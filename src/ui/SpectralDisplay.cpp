@@ -909,12 +909,16 @@ struct SpectralDisplay::Impl
         owner.repaint();
     }
 
+    // A typed cutoff keeps the region at least minRatio wide (the handles' own limit).
+    std::function<float (float)> lowConstraint()  { return [this] (float hz) { return juce::jmin (hz, highHz() / minRatio); }; }
+    std::function<float (float)> highConstraint() { return [this] (float hz) { return juce::jmax (hz, lowHz() * minRatio); }; }
+
     void showMenuFor (Target t, int index)
     {
         if (t == Target::lowHandle)
-            stereo::showParamMenu (owner, processor, lowId, linkedLowId, regionName() + " low cutoff");
+            stereo::showParamMenu (owner, processor, lowId, linkedLowId, regionName() + " low cutoff", lowConstraint());
         else if (t == Target::highHandle)
-            stereo::showParamMenu (owner, processor, highId, linkedHighId, regionName() + " high cutoff");
+            stereo::showParamMenu (owner, processor, highId, linkedHighId, regionName() + " high cutoff", highConstraint());
         else if (t == Target::zone && index >= 0 && index < (int) zones.size())
             stereo::showParamMenu (owner, processor, zones[(size_t) index].paramId, zones[(size_t) index].linkedId,
                                    zones[(size_t) index].name + " amount");
@@ -957,7 +961,7 @@ struct SpectralDisplay::Impl
         switch (hoverTarget)
         {
             case Target::lowHandle:
-            case Target::highHandle: tip = "Drag to set where the action region starts / ends. Double-click resets it, "
+            case Target::highHandle: tip = "Drag to set where the action region starts / ends. Double-click to type a value, "
                                            "right-click for a menu."; break;
             case Target::pill:       tip = withSolo ? "Drag to move the whole region. Alt + click: solo the region while "
                                                       "the mouse is held." : "Drag to move the whole region."; break;
@@ -965,7 +969,7 @@ struct SpectralDisplay::Impl
                                            "processing)."; break;
             case Target::zone:       tip = hoverIndex >= 0 && hoverIndex < (int) zones.size() && zones[(size_t) hoverIndex].tooltip.isNotEmpty()
                                                ? zones[(size_t) hoverIndex].tooltip
-                                               : juce::String ("Drag to set how much this region is corrected. Double-click resets it.");
+                                               : juce::String ("Drag to set how much this region is corrected. Double-click to type a value, right-click to reset.");
                                      break;
             case Target::none:
             default:                 tip = baseTooltip; break;
@@ -1423,13 +1427,11 @@ void SpectralDisplay::mouseDoubleClick (const juce::MouseEvent& e)
     switch (hit.first)
     {
         case Target::lowHandle:
-            if (const auto* s = specFor (d.lowId))
-                stereo::setParam (d.processor, d.lowId, d.linkedLowId, juce::jmin (s->defaultValue, d.highHz() / d.minRatio));
+            stereo::promptParamValue (*this, d.processor, d.lowId, d.linkedLowId, d.regionName() + " low cutoff", d.lowConstraint());
             break;
 
         case Target::highHandle:
-            if (const auto* s = specFor (d.highId))
-                stereo::setParam (d.processor, d.highId, d.linkedHighId, juce::jmax (s->defaultValue, d.lowHz() * d.minRatio));
+            stereo::promptParamValue (*this, d.processor, d.highId, d.linkedHighId, d.regionName() + " high cutoff", d.highConstraint());
             break;
 
         case Target::pill:
@@ -1437,9 +1439,8 @@ void SpectralDisplay::mouseDoubleClick (const juce::MouseEvent& e)
             break;
 
         case Target::zone:
-            if (const auto* s = specFor (d.zones[(size_t) hit.second].paramId))
-                stereo::setParam (d.processor, d.zones[(size_t) hit.second].paramId, d.zones[(size_t) hit.second].linkedId,
-                                  s->defaultValue);
+            stereo::promptParamValue (*this, d.processor, d.zones[(size_t) hit.second].paramId, d.zones[(size_t) hit.second].linkedId,
+                                      d.zones[(size_t) hit.second].name + " amount");
             break;
 
         case Target::solo:

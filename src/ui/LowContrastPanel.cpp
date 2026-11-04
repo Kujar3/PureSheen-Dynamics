@@ -146,8 +146,8 @@ struct LowContrastPanel::Impl
                          "shapes sustained bass notes; subtler on short hits.");
         contrast.setTooltip ("Contrast: positive values make the loud moments of the low end stand out from the quiet "
                              "ones (tighter, punchier); negative values even them out (rounder, denser).\nDrag to change "
-                             "(Ctrl: fine), double-click to reset.");
-        gain.setTooltip ("Gain: make-up gain of the action region.\nDrag to change (Ctrl: fine), double-click to reset.");
+                             "(Ctrl: fine), double-click to type a value, right-click to reset.");
+        gain.setTooltip ("Gain: make-up gain of the action region.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         lowKnob.setTooltip ("Low cutoff: where the action region starts (it fades in over 1/3 octave below).");
         highKnob.setTooltip ("High cutoff: where the action region ends (it fades out over 1/3 octave above). It stays "
                              "at least 1/3 octave above the low cutoff.");

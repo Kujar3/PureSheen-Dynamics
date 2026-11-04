@@ -124,9 +124,9 @@ struct MaximizerPanel::Impl
         truePeak.setTooltip ("True Peak: also catches the peaks between samples (as a converter or an MP3 encoder "
                              "would see them), so the output never goes over Output Level.");
         character.setTooltip ("Character: how fast the limiter reacts. Low values are fast and clip-like, high values "
-                              "are slow and smooth.\nDrag to change (Ctrl: fine), double-click to reset.");
+                              "are slow and smooth.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         upward.setTooltip ("Upward Compress: lifts the quiet passages by up to this many dB before the limiter. "
-                           "Full-scale peaks stay where they are.\nDrag to change (Ctrl: fine), double-click to reset.");
+                           "Full-scale peaks stay where they are.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         siTransient.setTooltip ("Stereo Independence for transients: 0 % limits both channels together, higher "
                                 "values let left and right react on their own (wider, less stable image).");
         siSustain.setTooltip ("Stereo Independence for sustained sounds: 0 % limits both channels together, higher "
@@ -136,7 +136,7 @@ struct MaximizerPanel::Impl
         transOn.setTooltip ("Transient Emphasis on / off: brings the attacks forward before limiting.");
         transAmount.setTooltip ("Transient Emphasis amount: how much the attacks are brought forward.");
         learnTarget.setTooltip ("Learn target: the loudness (LUFS) that Learn Input Gain aims for.\nDrag to change "
-                                "(Ctrl: fine), double-click to reset.");
+                                "(Ctrl: fine), double-click to type a value, right-click to reset.");
 
         learn.onClick = [this]
         {

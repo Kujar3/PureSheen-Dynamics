@@ -3,6 +3,7 @@
 #include "dsp/DynamicEq.h"
 #include "ui/Controls.h"
 #include "ui/EqModel.h"
+#include "ui/ImagerExciterCommon.h"
 
 #include <cmath>
 
@@ -733,12 +734,38 @@ struct DynamicEqDisplay::Impl
         juce::PopupMenu menu;
         menu.addSectionHeader ("Band " + juce::String (b + 1) + " threshold");
         menu.addItem (1, "Reset to default (" + fmt::db (def, 1, false) + ")");
+        menu.addItem (2, "Enter value...");
 
         showMenuAt (menu, owner, juce::Desktop::getMousePosition(), [this, b, def] (int result)
         {
             if (result == 1)
                 applyBandValues (b, { { "thr", def } }, bandLabel (b) + " Threshold: " + fmt::db (def, 1, false));
+            else if (result == 2)
+                promptThreshold (b);
         }, 180);
+    }
+
+    void promptThreshold (int b)
+    {
+        const auto id = model.bandId (activeSet(), b, "thr");
+        const auto* spec = stereo::specOf (id);
+
+        if (spec == nullptr)
+            return;
+
+        juce::Component::SafePointer<juce::Component> safe (&owner);
+        promptForText (owner, bandLabel (b) + " Threshold",
+                       "Enter a value (" + juce::String (spec->minValue) + " to " + juce::String (spec->maxValue) + " dB)",
+                       fmt::paramEditValue (model.processor, id), [this, safe, spec, b] (juce::String text)
+                       {
+                           float v = 0.0f;
+
+                           if (safe != nullptr && parseValueText (*spec, text, v))
+                           {
+                               v = juce::jlimit (spec->minValue, spec->maxValue, v);
+                               applyBandValues (b, { { "thr", v } }, bandLabel (b) + " Threshold: " + fmt::db (v, 1, false));
+                           }
+                       });
     }
 
     //==========================================================================
@@ -1644,8 +1671,7 @@ void DynamicEqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
     {
         if (d.hitThreshold (e.position))
         {
-            const float def = dynEqDefaultOf (d.model.bandId (d.activeSet(), d.selected, "thr"));
-            d.applyBandValues (d.selected, { { "thr", def } }, d.bandLabel (d.selected) + " Threshold: " + fmt::db (def, 1, false));
+            d.promptThreshold (d.selected);
         }
         else if (d.plot.contains (e.position))
         {

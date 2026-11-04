@@ -13,7 +13,7 @@
 //   | MultibandDisplay: spectra, crossovers, band count, band headers (S solo), and per band:      |
 //   |   - the amount as a bar from the centre line (up = punchier, rose; down = softer, sky) with a |
 //   |     value pill; drag vertically anywhere in the band (one gesture; Ctrl / Shift = fine;      |
-//   |     double-click = 0 %; right-click = menu); with Link Bands every band moves by the same     |
+//   |     double-click = type a value; right-click = menu); with Link Bands every band moves by the same     |
 //   |     amount                                                                                    |
 //   |   - the live gain trace (last 3 s, min / max per 30 Hz tick, +-12 dB over 70 % of the band's |
 //   |     height; mint above 0 dB, amber below) and the current gain                                |

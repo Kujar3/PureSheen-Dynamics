@@ -18,7 +18,7 @@ constexpr int kGap = 8;
 constexpr float kSpectrumMinDb = -90.0f, kSpectrumMaxDb = 0.0f;
 constexpr float kRangeDb = 24.0f;   // the response view shows +-24 dB (measured: low boost 16.6, low cut -19.5, high cut
                                     // -22.5 at 10 on 5 kHz, a narrow high boost 10 about +17)
-constexpr const char* kDragHelp = "\nDrag to change (Ctrl: fine), double-click to reset.";
+constexpr const char* kDragHelp = "\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.";
 
 // Control groups: knob arcs and the curve's section areas share their colour.
 enum Group { kGroupLow, kGroupHighBoost, kGroupHighCut, kGroupLowMid, kGroupMidCut, kGroupHighMid, kGroupTube };

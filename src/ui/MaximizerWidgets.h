@@ -65,6 +65,7 @@ public:
     void setComplete (Target, float value);           // reset / typed value: one complete gesture
     void resetToDefault (Target);
     void showMenu (Target, juce::Component& target);  // right-click: reset / enter value
+    void promptValue (Target, juce::Component& target);   // double-click and the menu: type a value
 
     std::function<void()> onChange;
 

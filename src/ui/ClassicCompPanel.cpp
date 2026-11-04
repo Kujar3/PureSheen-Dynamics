@@ -103,28 +103,6 @@ ps::ClassicCompSetParams readSet (const PureSheenProcessor& p, int set)
     return s;
 }
 
-// "Enter value" prompt for one parameter (plain value; "k" multiplies by 1000) and its Link twin.
-void promptParam (juce::Component& parent, PureSheenProcessor& p, const juce::String& id, const juce::String& linkedId,
-                  const juce::String& title)
-{
-    const auto* spec = stereo::specOf (id);
-    if (spec == nullptr)
-        return;
-    const float lo = spec->minValue, hi = spec->maxValue;
-    promptForText (parent, title,
-                   "Enter a value (" + juce::String (lo) + " to " + juce::String (hi) + " " + juce::String (spec->unit) + ")",
-                   fmt::paramValue (p, id), [&p, id, linkedId, lo, hi] (juce::String text)
-                   {
-                       const auto t = text.trim().toLowerCase();
-                       if (! t.containsAnyOf ("0123456789"))
-                           return;
-                       float v = t.retainCharacters ("-+.0123456789").getFloatValue();
-                       if (t.containsChar ('k'))
-                           v *= 1000.0f;
-                       stereo::setParam (p, id, linkedId, juce::jlimit (lo, hi, v));
-                   });
-}
-
 //==============================================================================
 // Gain-reduction needle on an arc: 0 dB at the right end, -20 dB at the left, square-root scale (small reductions get
 // room, as mastering needs).
@@ -306,7 +284,7 @@ public:
     {
         setTooltip ("Transfer curve: output level against input level for a steady tone (the knee follows the Mode, "
                     "Attack and Release).\n"
-                    "Drag the dot to set the threshold; double-click resets it, right-click for a menu. The ball shows "
+                    "Drag the dot to set the threshold; double-click to type a value, right-click for a menu. The ball shows "
                     "the current level.");
     }
 
@@ -474,7 +452,7 @@ public:
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
         if (isLeftClick (e) && nearNode (e.position))
-            stereo::setParam (processor, setParamId (set, "thr"), linkedId(), stereo::defaultValueOf (setParamId (set, "thr")));
+            stereo::promptParamValue (*this, processor, setParamId (set, "thr"), linkedId(), "Threshold");
     }
 
 private:
@@ -780,9 +758,9 @@ private:
             if (result == 1)
                 v.resetNode (n);
             else if (result == 2)
-                promptParam (v, v.processor, id (freqName (n), v.set), v.linkedOf (freqName (n)), juce::String (titles[n]) + " frequency");
+                stereo::promptParamValue (v, v.processor, id (freqName (n), v.set), v.linkedOf (freqName (n)), juce::String (titles[n]) + " frequency");
             else if (result == 3)
-                promptParam (v, v.processor, id (gainName (n), v.set), v.linkedOf (gainName (n)), juce::String (titles[n]) + " gain");
+                stereo::promptParamValue (v, v.processor, id (gainName (n), v.set), v.linkedOf (gainName (n)), juce::String (titles[n]) + " gain");
         });
     }
 
@@ -810,15 +788,15 @@ struct ClassicCompPanel::Impl
         grMeter.setTooltip ("Gain reduction: how far the compressor turns the level down right now (the tick marks the "
                             "deepest point of the last second). Detector = the level the compressor reacts to.");
         threshold.setTooltip ("Threshold: the level where compression starts. Lower = more compression.\nDrag to change "
-                              "(Ctrl: fine), double-click to reset.");
+                              "(Ctrl: fine), double-click to type a value, right-click to reset.");
         ratio.setTooltip ("Ratio: how strongly levels above the threshold are turned down (4:1 = 4 dB more input gives 1 dB "
-                          "more output).\nDrag to change (Ctrl: fine), double-click to reset.");
+                          "more output).\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         attack.setTooltip ("Attack: how fast the compressor reacts to a louder sound. Slower lets more of the hits "
-                           "through.\nDrag to change (Ctrl: fine), double-click to reset.");
+                           "through.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         release.setTooltip ("Release: how fast it recovers after a short hit. Long stretches of compression recover "
-                            "slower on their own, which avoids pumping.\nDrag to change (Ctrl: fine), double-click to reset.");
+                            "slower on their own, which avoids pumping.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         makeup.setTooltip ("Gain: output gain after the compressor (added on top of Auto Gain).\nDrag to change (Ctrl: "
-                           "fine), double-click to reset.");
+                           "fine), double-click to type a value, right-click to reset.");
         mode.setTooltip ("Mode: Sharp = the hardest knee. Balanced = a slightly softer knee. Smooth = a soft knee that "
                          "starts about 10 dB above the threshold and compresses more gently.");
         autoGain.setTooltip ("Auto Gain: keeps the output as loud as the input while you compress (follows over about "

@@ -18,7 +18,7 @@
 //            Auto Gain
 // Every control follows the selected channel set (M/S) and edits both sets with Link on. Every ClassicCompSetParams
 // parameter has a control; "ccmp.on" lives in the chain strip, the channel mode and Link in the header. Node drags are
-// one undo step; double-click resets, right-click opens a menu. Never takes keyboard focus; left-click-only edits.
+// one undo step; double-click types a value (a detection node resets), right-click opens a menu. Never takes keyboard focus; left-click-only edits.
 // The detector solo ends when the panel closes.
 namespace ps::ui
 {

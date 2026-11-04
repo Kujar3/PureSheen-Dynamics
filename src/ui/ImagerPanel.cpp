@@ -129,7 +129,7 @@ struct ImagerPanel::Impl
         display.onBandMouseDown = [this] (int band, const juce::MouseEvent& e) { return bandMouseDown (band, e); };
         display.onBandMouseDrag = [this] (int band, const juce::MouseEvent& e) { bandMouseDrag (band, e); };
         display.onBandMouseUp = [this] (int, const juce::MouseEvent&) { endDrag(); };
-        display.onBandDoubleClick = [this] (int band, const juce::MouseEvent&) { return resetBand (band); };
+        display.onBandDoubleClick = [this] (int band, const juce::MouseEvent&) { return enterBandValue (band); };
         display.onBandPopupMenu = [this] (int band, const juce::MouseEvent&) { return bandMenu (band); };
         display.onBandMouseMove = [this] (int band, const juce::MouseEvent&) { setHoverBand (band); };
         display.getBandCursor = [] (int, juce::Point<float>) { return juce::MouseCursor (juce::MouseCursor::UpDownResizeCursor); };
@@ -312,7 +312,7 @@ struct ImagerPanel::Impl
         if (display.getSelectedBand() != band)
             display.setSelectedBand (band);
 
-        if (e.getNumberOfClicks() >= 2)   // the double-click resets (onBandDoubleClick): no drag
+        if (e.getNumberOfClicks() >= 2)   // the double-click types a value (onBandDoubleClick): no drag
             return true;
 
         drag.start (bandWidthId (band), twinWidthId (band));
@@ -344,14 +344,13 @@ struct ImagerPanel::Impl
         dragBand = -1;
     }
 
-    bool resetBand (int band)
+    bool enterBandValue (int band)
     {
         if (band < 0 || band >= numBands())
             return false;
 
         endDrag();
-        stereo::setParam (processor, bandWidthId (band), twinWidthId (band), stereo::defaultValueOf (bandWidthId (band)));
-        display.repaint();
+        stereo::promptParamValue (display, processor, bandWidthId (band), twinWidthId (band), "Band " + juce::String (band + 1) + " Width");
         return true;
     }
 

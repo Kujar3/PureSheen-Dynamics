@@ -407,7 +407,7 @@ struct MultibandDisplay::Impl
         t.setColour (juce::TextEditor::textColourId, Colours::text);
         t.setColour (juce::TextEditor::outlineColourId, colour);
         t.setColour (juce::TextEditor::focusedOutlineColourId, colour);
-        t.setText (hzLong (xoverHz (i)), false);
+        t.setText (fmt::editNumber (xoverHz (i)), false);
 
         juce::Component::SafePointer<MultibandDisplay> safe (&owner);
         t.onReturnKey = [safe]
@@ -1153,7 +1153,7 @@ void MultibandDisplay::mouseDoubleClick (const juce::MouseEvent& e)
     if (const int x = d.xoverAt (e.position); x >= 0)
     {
         d.endXoverGesture();
-        d.setXoverComplete (x, d.defaultXover (x));
+        d.openEntry (x);
         return;
     }
 

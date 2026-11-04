@@ -411,7 +411,7 @@ struct MatchDisplay::Impl
         t.setColour (juce::TextEditor::textColourId, Colours::text);
         t.setColour (juce::TextEditor::outlineColourId, colour);
         t.setColour (juce::TextEditor::focusedOutlineColourId, colour);
-        t.setText (hzLong (cutoffHz (high)), false);
+        t.setText (fmt::editNumber (cutoffHz (high)), false);
 
         juce::Component::SafePointer<MatchDisplay> safe (&owner);
         t.onReturnKey = [safe]
@@ -992,7 +992,7 @@ MatchDisplay::MatchDisplay (MatchEqModel& m, EditorServices& s) : impl (std::mak
     setMouseClickGrabsKeyboardFocus (false);
     setOpaque (false);
     setTooltip ("Reference and Current spectra with the matched curve. Drag the handles to set the frequency range that "
-                "is matched (double-click: full range). Alt-drag to listen to one frequency range. Right-click for the "
+                "is matched (double-click: type a value). Alt-drag to listen to one frequency range. Right-click for the "
                 "display range.");
 }
 
@@ -1181,6 +1181,6 @@ void MatchDisplay::mouseDoubleClick (const juce::MouseEvent& e)
     const int h = d.handleAt (e.position);
 
     if (h >= 0)
-        d.setCutoffComplete (h == 1, Impl::defaultCutoff (h == 1));
+        d.openEntry (h == 1);
 }
 } // namespace ps::ui

@@ -184,11 +184,11 @@ struct ToneBalancePanel::Impl
         display.setAccentColour (c);
         display.setZones ({
             { 20.0f, 100.0f, "Low", setParamId (kType, s.set, "low"), twinParamId (kType, s, "low"),
-              "Low (below 100 Hz): drag to set how much the correction acts here. Double-click resets it." },
+              "Low (below 100 Hz): drag to set how much the correction acts here. Double-click to type a value, right-click to reset." },
             { 100.0f, 5600.0f, "Mid", setParamId (kType, s.set, "mid"), twinParamId (kType, s, "mid"),
-              "Mid (100 Hz to 5.6 kHz): drag to set how much the correction acts here. Double-click resets it." },
+              "Mid (100 Hz to 5.6 kHz): drag to set how much the correction acts here. Double-click to type a value, right-click to reset." },
             { 5600.0f, 20000.0f, "High", setParamId (kType, s.set, "high"), twinParamId (kType, s, "high"),
-              "High (above 5.6 kHz): drag to set how much the correction acts here. Double-click resets it." } });
+              "High (above 5.6 kHz): drag to set how much the correction acts here. Double-click to type a value, right-click to reset." } });
         display.setLegend ({ { "Target", c.withAlpha (0.6f) }, { "Measured", Colours::text.withAlpha (0.75f) },
                              { "Output", c.withAlpha (0.45f) }, { "Correction", c } });
         range.setBarColour (0, c);

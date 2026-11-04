@@ -64,6 +64,7 @@ public:
 
 private:
     void showLinkedMenu();
+    void promptLinkedValue();
 
     PureSheenProcessor& processor;
     LevelLink& link;

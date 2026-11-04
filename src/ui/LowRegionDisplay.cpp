@@ -135,27 +135,6 @@ struct LowRegionDisplay::Impl
 
     float defaultOf (const juce::String& id) const { return stereo::defaultValueOf (id); }
 
-    void resetEdge (bool isLow)
-    {
-        float lo = low(), hi = highRaw();
-
-        if (isLow)
-            lo = defaultOf (kLowId);
-        else
-            hi = defaultOf (kHighId);
-
-        if (hi < lo * kThird)
-        {
-            if (isLow)
-                hi = juce::jmin (kRegionMax, lo * kThird);
-            else
-                lo = juce::jmax (kRegionMin, hi / kThird);
-        }
-
-        processor.setParameterValues ({ { kLowId, lo }, { kHighId, hi } }, "Low Contrast region: " + lowend::hzText (lo) + " - "
-                                                                                   + lowend::hzText (hi));
-    }
-
     void resetRegion()
     {
         processor.setParameterValues ({ { kLowId, defaultOf (kLowId) }, { kHighId, defaultOf (kHighId) } },
@@ -715,7 +694,7 @@ LowRegionDisplay::LowRegionDisplay (PureSheenProcessor& p, EditorServices& s) : 
     setWantsKeyboardFocus (false);
     setMouseClickGrabsKeyboardFocus (false);
     setTooltip ("Action region: Low Contrast works only between the two edges (and fades out over 1/3 octave beyond "
-                "them).\nDrag an edge or the region, double-click to reset, right-click for more. S or Alt-click: hear "
+                "them).\nDrag an edge or the region, double-click an edge to type a value, right-click for more. S or Alt-click: hear "
                 "only the region.");
     impl->shownSolo = impl->getSolo();
 }
@@ -892,7 +871,7 @@ void LowRegionDisplay::mouseDoubleClick (const juce::MouseEvent& e)
     d.drag = Target::none;
 
     if (t == Target::low || t == Target::high)
-        d.resetEdge (t == Target::low);
+        stereo::promptParamValue (*this, d.processor, t == Target::low ? kLowId : kHighId, {}, t == Target::low ? "Low cutoff" : "High cutoff");
     else if (t == Target::region)
         d.resetRegion();
 }

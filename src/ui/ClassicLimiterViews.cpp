@@ -243,10 +243,7 @@ void LevelKnob::mouseDoubleClick (const juce::MouseEvent& e)
     }
 
     if (isLeftClick (e))
-    {
-        const auto* spec = &ps::paramSpecs()[(size_t) ps::paramIndex (targetId (target))];
-        link.setComplete (target, spec->defaultValue);
-    }
+        promptLinkedValue();
 }
 
 void LevelKnob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
@@ -279,29 +276,31 @@ void LevelKnob::showLinkedMenu()
     menu.addItem (1, "Reset to default (" + fmt::db (def, 1, false) + ")");
     menu.addItem (2, "Enter value...");
 
-    ps::ui::showMenu (menu, *this, [this, thr, def, safe = juce::Component::SafePointer<juce::Component> (this)] (int result)
+    ps::ui::showMenu (menu, *this, [this, def, safe = juce::Component::SafePointer<juce::Component> (this)] (int result)
     {
         if (safe == nullptr)
             return;
 
         if (result == 1)
-        {
             link.setComplete (target, def);
-        }
         else if (result == 2)
-        {
-            promptForText (*safe, thr ? "Threshold" : "Ceiling",
-                           thr ? "Threshold in dB (-12 to 0), Ceiling follows:" : "Ceiling in dB (-12 to 0), Threshold follows:",
-                           juce::String (link.get (target), 1),
-                           [this, safe] (juce::String text)
-                           {
-                               const auto number = text.retainCharacters ("+-0123456789.");
-
-                               if (safe != nullptr && number.containsAnyOf ("0123456789"))
-                                   link.setComplete (target, (float) number.getDoubleValue());
-                           });
-        }
+            promptLinkedValue();
     });
+}
+
+void LevelKnob::promptLinkedValue()
+{
+    const bool thr = target == LevelLink::Target::threshold;
+    promptForText (*this, thr ? "Threshold" : "Ceiling",
+                   thr ? "Threshold in dB (-12 to 0), Ceiling follows:" : "Ceiling in dB (-12 to 0), Threshold follows:",
+                   fmt::editNumber (link.get (target)),
+                   [this, safe = juce::Component::SafePointer<juce::Component> (this)] (juce::String text)
+                   {
+                       const auto number = text.replaceCharacter (',', '.').retainCharacters ("+-0123456789.");
+
+                       if (safe != nullptr && number.containsAnyOf ("0123456789"))
+                           link.setComplete (target, (float) number.getDoubleValue());
+                   });
 }
 
 //==============================================================================

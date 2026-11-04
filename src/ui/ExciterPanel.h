@@ -9,7 +9,7 @@
 //   top    : MultibandDisplay (spectra, crossovers, band count, solo, selection) with a drive overlay per band: the
 //            band's model as a chip under the band header, its drive as a column from the bottom with a value handle
 //            (drag vertically anywhere in the band = "exc.<a|b>.b<n>.drive", one gesture per drag, Ctrl / Shift = fine,
-//            double-click = default, right-click = Reset / Enter value) and the harmonics it adds (ExciterMeters)
+//            double-click = type a value, right-click = Reset / Enter value) and the harmonics it adds (ExciterMeters)
 //            along the bottom edge
 //   bottom : the selected band's card (power, the seven models as a grid, Drive, Mix), the model's transfer curve at
 //            that drive, and the global card (Oversampling, Post filter on / freq / gain, crossover type)

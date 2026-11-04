@@ -2,6 +2,7 @@
 
 #include "dsp/Punch.h"
 #include "ui/Controls.h"
+#include "ui/ImagerExciterCommon.h"
 #include "ui/MultibandDisplay.h"
 #include "ui/PunchViews.h"
 
@@ -115,7 +116,7 @@ struct PunchPanel::Impl
         display.onBandMouseDown = [this] (int band, const juce::MouseEvent& e) { return bandMouseDown (band, e); };
         display.onBandMouseDrag = [this] (int band, const juce::MouseEvent& e) { bandMouseDrag (band, e); };
         display.onBandMouseUp = [this] (int, const juce::MouseEvent&) { endDrag(); };
-        display.onBandDoubleClick = [this] (int band, const juce::MouseEvent&) { return resetBand (band); };
+        display.onBandDoubleClick = [this] (int band, const juce::MouseEvent&) { return enterBandValue (band); };
         display.onBandPopupMenu = [this] (int band, const juce::MouseEvent&) { return bandMenu (band); };
         display.onBandMouseMove = [this] (int band, const juce::MouseEvent&) { setHoverBand (band); };
         display.getBandCursor = [] (int, juce::Point<float>) { return juce::MouseCursor (juce::MouseCursor::UpDownResizeCursor); };
@@ -553,7 +554,7 @@ struct PunchPanel::Impl
 
         selectBand (band);
 
-        if (e.getNumberOfClicks() >= 2)   // the double-click resets (onBandDoubleClick): no drag
+        if (e.getNumberOfClicks() >= 2)   // the double-click types a value (onBandDoubleClick): no drag
             return true;
 
         std::vector<juce::String> ids, twins;
@@ -587,14 +588,14 @@ struct PunchPanel::Impl
         dragBand = -1;
     }
 
-    bool resetBand (int band)
+    bool enterBandValue (int band)
     {
         if (band < 0 || band >= numBands())
             return false;
 
         endDrag();
-        stereo::setParam (processor, bandId (currentSet(), band, "amount"), twinId (band, "amount"), 0.0f);
-        display.repaint();
+        stereo::promptParamValue (display, processor, bandId (currentSet(), band, "amount"), twinId (band, "amount"),
+                                  "Band " + juce::String (band + 1) + " Amount");
         return true;
     }
 
@@ -631,14 +632,7 @@ struct PunchPanel::Impl
             }
             else if (result == 2)
             {
-                promptForText (*safe, title, "Enter a value (-100 to 100 %)", juce::String (juce::roundToInt (p.getParameterValue (id))),
-                               [&p, id, twin] (juce::String text)
-                               {
-                                   const auto numeric = text.retainCharacters ("0123456789.-+");
-
-                                   if (numeric.containsAnyOf ("0123456789"))
-                                       stereo::setParam (p, id, twin, juce::jlimit (-100.0f, 100.0f, numeric.getFloatValue()));
-                               });
+                stereo::promptParamValue (*safe, p, id, twin, title);
             }
             else if (result == 3)
             {

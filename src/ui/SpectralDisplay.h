@@ -21,14 +21,14 @@
 //     zone tint, veil and region shading, before the region handles, labels and legend
 //   - region (setRegion): two parameters (low / high cutoff, plus the A/B Link twins). Outside the region the plot is
 //     shaded; each cutoff is a vertical line with a grab handle: drag = one gesture on that parameter (they keep
-//     high >= low x minRatio), double-click = default, right-click = Reset / Enter value. The header shows a pill over
+//     high >= low x minRatio), double-click = type a value, right-click = Reset / Enter value. The header shows a pill over
 //     the region's x range ("2.00 kHz - 12.0 kHz"): drag it to move both cutoffs together (ratio kept, one gesture).
 //     With region solo, the pill carries an S button (ModuleMonitor::soloRegion, toggles; Alt + click on the pill =
 //     solo while held); destroying the display (leaving the panel, closing the editor) ends the region solo
 //   - zones (setZones): fixed frequency zones with one 0..100 % strength parameter each (Tone Balance Low / Mid / High):
 //     dashed dividers in the plot, the plot tinted darker where a zone is weaker, and one header segment per zone with
 //     its name, value and a strength bar; drag on a segment (up / right = more, Ctrl or Shift = fine) = one gesture,
-//     double-click = default, right-click = Reset / Enter value
+//     double-click = type a value, right-click = Reset / Enter value
 //   - veil (setVeilBelow): the plot below a frequency is dimmed and captioned ("Not processed")
 //   - legend (setLegend) at the bottom right, a centred status message (setStatusText)
 // Never takes keyboard focus; only left clicks edit; right-click never acts as a left click.

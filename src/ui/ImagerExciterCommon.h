@@ -39,9 +39,16 @@ void setParam (PureSheenProcessor&, const juce::String& paramId, const juce::Str
 float defaultValueOf (const juce::String& paramId);
 const ps::ParamSpec* specOf (const juce::String& paramId);
 
+// Asks for a typed value of a parameter (and its twin) on a custom control: the double-click of those controls and
+// the menu below. constrain (optional) limits the typed value further, for example against a second handle.
+void promptParamValue (juce::Component& target, PureSheenProcessor&, const juce::String& paramId,
+                       const juce::String& linkedId, const juce::String& title,
+                       std::function<float (float)> constrain = {});
+
 // Right-click menu of a parameter shown on a custom control: "Reset to default" / "Enter value...".
 void showParamMenu (juce::Component& target, PureSheenProcessor&, const juce::String& paramId,
-                    const juce::String& linkedId, const juce::String& title);
+                    const juce::String& linkedId, const juce::String& title,
+                    std::function<float (float)> constrain = {});
 
 //==============================================================================
 // Rounded inner card (same surface as the generic panel's group cards): title row with an optional band badge,

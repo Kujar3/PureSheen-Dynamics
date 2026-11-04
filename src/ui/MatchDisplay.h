@@ -18,7 +18,7 @@
 //
 // Mouse (left button only edits; right-click only opens menus; never takes keyboard focus):
 //   drag a cutoff handle    Low / High cutoff, one gesture per drag (Shift / Ctrl: fine); 1/6 octave apart at least
-//   double-click a handle   back to 20 Hz / 20 kHz
+//   double-click a handle   type a value
 //   right-click a handle    Reset / Enter value...
 //   right-click elsewhere   display range, reset both cutoffs
 //   Alt + drag              listen to a narrow range around the mouse (band-pass audition of the module input)

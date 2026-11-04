@@ -51,7 +51,7 @@ struct TapePanel::Impl
                           "the highs earlier.");
         drive.setTooltip ("Drive: how hard the signal hits the tape. More drive = more saturation and softer peaks; the "
                           "output level is partly compensated and can rise at high drive.\nDrag to change (Ctrl: "
-                          "fine), double-click to reset.");
+                          "fine), double-click to type a value, right-click to reset.");
         meter.setTooltip ("Level into tape: the peak level reaching the tape after Drive (the highs count more, as on a "
                           "real machine). Saturation: how much the tape squashes those peaks.");
         response.setTooltip ("Response at low levels, relative to 1 kHz: the low end and the highs set by High Emphasis "

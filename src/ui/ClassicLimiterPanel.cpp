@@ -119,16 +119,16 @@ struct ClassicLimiterPanel::Impl
 
         threshold.setTooltip ("Threshold: where the limiting starts. Lowering it adds the same amount of gain, so the "
                               "music gets louder while the peaks stay at the ceiling.\nDrag to change (Ctrl: fine), "
-                              "double-click to reset.");
+                              "double-click to type a value, right-click to reset.");
         ceiling.setTooltip ("Ceiling: the highest level the output may reach. Use about -0.3 dB with dither, -0.6 to "
-                            "-0.8 dB before MP3 or AAC.\nDrag to change (Ctrl: fine), double-click to reset.");
+                            "-0.8 dB before MP3 or AAC.\nDrag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         linkToggle.setTooltip ("Link: Threshold and Ceiling move together by the same amount, so the drive into the "
                                "limiter stays the same while you change the output level.");
         mode.setTooltip ("Mode. Analog: steady limiting, most of it in the slow stage. Tube: smoother, with the longest "
                          "recovery at high Character. Modern: the lightest slow stage and the fastest recovery.");
         character.setTooltip ("Character: how quickly the limiter recovers, from Fast (0) to Slow (10). The "
                               "actual times depend on the mode; a long stretch of limiting always releases slower.\n"
-                              "Drag to change (Ctrl: fine), double-click to reset.");
+                              "Drag to change (Ctrl: fine), double-click to type a value, right-click to reset.");
         truePeak.setTooltip ("True Peak: also keeps the peaks between the samples under the ceiling (they can be more "
                              "than 3 dB higher after conversion to analog or to MP3 / AAC). Uses a little more CPU.");
 

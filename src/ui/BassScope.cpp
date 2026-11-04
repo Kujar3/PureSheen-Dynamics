@@ -665,7 +665,7 @@ BassScope::BassScope (PureSheenProcessor& p) : impl (std::make_unique<Impl> (*th
     setMouseClickGrabsKeyboardFocus (false);
     setTooltip ("The low band (below the cutoff) over the last 4 seconds: hits in colour, the sustained body in grey.\n"
                 "Drag the dashed Sustain lines or the solid Peak lines to set the thresholds (this also switches the "
-                "section on). Double-click a line to reset it.");
+                "section on). Double-click a line to type a value, right-click to reset it.");
 }
 
 BassScope::~BassScope() = default;
@@ -807,8 +807,8 @@ void BassScope::mouseDoubleClick (const juce::MouseEvent& e)
         return;
 
     d.endGesture();
-    const auto& id = isSustain (l) ? kSusThr : kPeakThr;
-    d.processor.setParameterValue (id, stereo::defaultValueOf (id));
+    const bool sus = isSustain (l);
+    stereo::promptParamValue (*this, d.processor, sus ? kSusThr : kPeakThr, {}, sus ? "Sustain threshold" : "Peak threshold");
     repaint();
 }
 

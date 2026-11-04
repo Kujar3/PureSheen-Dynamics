@@ -114,7 +114,7 @@ struct ExciterPanel::Impl
         display.onBandMouseDrag = [this] (int band, const juce::MouseEvent& e) { bandMouseDrag (band, e); };
         display.onBandMouseUp = [this] (int, const juce::MouseEvent&) { endDrag(); };
         display.onBandSelected = [this] (int) { rebind(); };
-        display.onBandDoubleClick = [this] (int band, const juce::MouseEvent&) { return resetBand (band); };
+        display.onBandDoubleClick = [this] (int band, const juce::MouseEvent&) { return enterBandValue (band); };
         display.onBandPopupMenu = [this] (int band, const juce::MouseEvent&) { return bandMenu (band); };
         display.onBandMouseMove = [this] (int band, const juce::MouseEvent&) { setHoverBand (band); };
         display.getBandCursor = [] (int, juce::Point<float>) { return juce::MouseCursor (juce::MouseCursor::UpDownResizeCursor); };
@@ -361,7 +361,7 @@ struct ExciterPanel::Impl
             rebind();
         }
 
-        if (e.getNumberOfClicks() >= 2)   // the double-click resets (onBandDoubleClick): no drag
+        if (e.getNumberOfClicks() >= 2)   // the double-click types a value (onBandDoubleClick): no drag
             return true;
 
         drag.start (bandId (currentSet(), band, "drive"), twinId (band, "drive"));
@@ -392,15 +392,14 @@ struct ExciterPanel::Impl
         dragBand = -1;
     }
 
-    bool resetBand (int band)
+    bool enterBandValue (int band)
     {
         if (band < 0 || band >= numBands())
             return false;
 
         endDrag();
-        const auto id = bandId (currentSet(), band, "drive");
-        stereo::setParam (processor, id, twinId (band, "drive"), stereo::defaultValueOf (id));
-        display.repaint();
+        stereo::promptParamValue (display, processor, bandId (currentSet(), band, "drive"), twinId (band, "drive"),
+                                  "Band " + juce::String (band + 1) + " Drive");
         return true;
     }
 

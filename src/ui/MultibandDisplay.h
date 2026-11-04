@@ -11,7 +11,7 @@
 //   - background: the module's input (pre tap, grey) and output (post tap, module colour) spectra from
 //     EditorServices, on a FreqAxis (makeFreqAxis) with the frequency grid
 //   - crossover handles: vertical lines with a grab handle; drag = one gesture on "<prefix>.xover<n>" (kept ascending,
-//     at least 1/6 octave apart), double-click = default, right-click = Reset / Enter value; hover shows the frequency
+//     at least 1/6 octave apart), double-click = type a value, right-click = Reset / Enter value; hover shows the frequency
 //   - band count: "-" / "+" buttons bound to "<prefix>.bands"; bands above the count are not shown
 //   - per band: a header strip with the band's name and range ("Band 2  120 Hz - 1.0 kHz"), an S (solo) button
 //     (processor.setMonitor soloBand, exclusive, Alt-click anywhere in a band = solo while held) and selection

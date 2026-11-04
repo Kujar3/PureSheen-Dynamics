@@ -291,7 +291,6 @@ struct CutoffStrip::Impl
         {
             rangeLo = spec->minValue;
             rangeHi = spec->maxValue;
-            defaultHz = spec->defaultValue;
         }
     }
 
@@ -437,7 +436,7 @@ struct CutoffStrip::Impl
     juce::String paramId;
     juce::RangedAudioParameter* param = nullptr;
     juce::Colour colour = Colours::accent;
-    float rangeLo = 65.0f, rangeHi = 300.0f, defaultHz = 120.0f;
+    float rangeLo = 65.0f, rangeHi = 300.0f;
     float shownValue = -1.0f;
     float grabOffset = 0.0f, dragX = 0.0f, lastMouseX = 0.0f;
     bool gestureOpen = false, dragging = false, hover = false;
@@ -451,7 +450,7 @@ CutoffStrip::CutoffStrip (PureSheenProcessor& p, EditorServices& s, ps::ModuleTy
     setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
     const auto* spec = stereo::specOf (paramId);
     setTooltip ((spec != nullptr ? juce::String (spec->name) : paramId)
-                + ": everything below this frequency is shaped.\nDrag to change (Ctrl: fine), double-click to reset, "
+                + ": everything below this frequency is shaped.\nDrag to change (Ctrl: fine), double-click to type a value, "
                   "right-click for more.");
 }
 
@@ -563,7 +562,7 @@ void CutoffStrip::mouseDoubleClick (const juce::MouseEvent& e)
         return;
 
     impl->endGesture();
-    impl->processor.setParameterValue (impl->paramId, impl->defaultHz);
+    stereo::promptParamValue (*this, impl->processor, impl->paramId, {}, "Cutoff");
     repaint();
 }
 

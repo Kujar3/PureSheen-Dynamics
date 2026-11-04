@@ -15,7 +15,7 @@
 //     axis in dB (0 .. -48 dBFS, both polarities) with ticks at 0, -6, -12, -18, -24 and -36 dBFS
 //   - lines: +-Sustain threshold dashed (sky), +-Peak threshold solid (coral); a section that is off draws its lines
 //     dimmed. Drag a line vertically = one gesture on its threshold that also switches its section on; Ctrl / Shift =
-//     fine; double-click = default; right-click = Reset / Enter value; hover shows the value.
+//     fine; double-click = type a value; right-click = Reset / Enter value; hover shows the value.
 // Never takes keyboard focus; left-click-only edits.
 namespace ps::ui
 {

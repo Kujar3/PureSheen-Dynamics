@@ -85,32 +85,30 @@ void setParam (PureSheenProcessor& p, const juce::String& paramId, const juce::S
     p.setParameterValues ({ { paramId, plainValue }, { linkedId, plainValue } }, name + " (linked)");
 }
 
-namespace
+void promptParamValue (juce::Component& target, PureSheenProcessor& p, const juce::String& paramId,
+                       const juce::String& linkedId, const juce::String& title, std::function<float (float)> constrain)
 {
-bool parseValue (const ps::ParamSpec& spec, juce::String text, float& result)
-{
-    text = text.trim().toLowerCase();
+    const auto* spec = specOf (paramId);
 
-    if (text.isEmpty())
-        return false;
+    if (spec == nullptr)
+        return;
 
-    float scale = 1.0f;
+    promptForText (target, title, "Enter a value (" + juce::String (spec->minValue) + " to "
+                                      + juce::String (spec->maxValue) + " " + juce::String (spec->unit) + ")",
+                   fmt::paramEditValue (p, paramId), [&p, paramId, linkedId, spec, constrain = std::move (constrain)] (juce::String text)
+                   {
+                       float v = 0.0f;
 
-    if (juce::String (spec.unit) == "Hz" && text.containsChar ('k'))
-        scale = 1000.0f;
-
-    const auto numeric = text.retainCharacters ("0123456789.-+");
-
-    if (numeric.isEmpty() || ! numeric.containsAnyOf ("0123456789"))
-        return false;
-
-    result = juce::jlimit (spec.minValue, spec.maxValue, numeric.getFloatValue() * scale);
-    return true;
+                       if (parseValueText (*spec, text, v))
+                       {
+                           v = juce::jlimit (spec->minValue, spec->maxValue, v);
+                           setParam (p, paramId, linkedId, constrain != nullptr ? constrain (v) : v);
+                       }
+                   });
 }
-} // namespace
 
 void showParamMenu (juce::Component& target, PureSheenProcessor& p, const juce::String& paramId,
-                    const juce::String& linkedId, const juce::String& title)
+                    const juce::String& linkedId, const juce::String& title, std::function<float (float)> constrain)
 {
     const auto* spec = specOf (paramId);
 
@@ -123,24 +121,12 @@ void showParamMenu (juce::Component& target, PureSheenProcessor& p, const juce::
     menu.addItem (2, "Enter value...");
 
     juce::Component::SafePointer<juce::Component> safe (&target);
-    showMenu (menu, target, [&p, safe, paramId, linkedId, title, spec] (int result)
+    showMenu (menu, target, [&p, safe, paramId, linkedId, title, spec, constrain = std::move (constrain)] (int result)
     {
         if (result == 1)
-        {
             setParam (p, paramId, linkedId, spec->defaultValue);
-        }
         else if (result == 2 && safe != nullptr)
-        {
-            const auto current = fmt::paramValue (p, paramId);
-            promptForText (*safe, title, "Enter a value (" + juce::String (spec->minValue) + " to "
-                                             + juce::String (spec->maxValue) + " " + juce::String (spec->unit) + ")",
-                           current, [&p, paramId, linkedId, spec] (juce::String text)
-                           {
-                               float v = 0.0f;
-                               if (parseValue (*spec, text, v))
-                                   setParam (p, paramId, linkedId, v);
-                           });
-        }
+            promptParamValue (*safe, p, paramId, linkedId, title, constrain);
     });
 }
 

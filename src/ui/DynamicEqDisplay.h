@@ -21,7 +21,7 @@
 //
 // Mouse (left button only edits; right-click only opens menus; never takes keyboard focus):
 //   drag a node            frequency + gain (one gesture = one undo step); Shift = fine; Ctrl = one axis only
-//   drag the threshold bar threshold (one gesture); double-click it = default
+//   drag the threshold bar threshold (one gesture); double-click it = type a value
 //   wheel over a node      Q (one undo step per wheel burst); Ctrl + wheel = threshold
 //   double-click empty     turns on the first unused band there (shape by frequency, gain from the height)
 //   double-click a node    gain back to 0 dB

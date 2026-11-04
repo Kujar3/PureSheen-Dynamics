@@ -284,26 +284,28 @@ void MaxLevelEditor::showMenu (Target t, juce::Component& comp)
     menu.addItem (1, gain ? "Reset to default (0.0 dB)" : "Reset to default (-1.0 dB)");
     menu.addItem (2, "Enter value...");
 
-    ps::ui::showMenu (menu, comp, [this, t, gain, safe = juce::Component::SafePointer<juce::Component> (&comp)] (int result)
+    ps::ui::showMenu (menu, comp, [this, t, safe = juce::Component::SafePointer<juce::Component> (&comp)] (int result)
     {
         if (result == 1)
-        {
             resetToDefault (t);
-        }
         else if (result == 2 && safe != nullptr)
-        {
-            const auto current = juce::String (gain ? getGain() : getCeiling(), 1);
-            promptForText (*safe, gain ? "Gain" : "Output Level",
-                           gain ? "Gain in dB (0 to 20):" : "Output Level in dB (-20 to 0):", current,
-                           [this, t] (juce::String text)
-                           {
-                               const auto number = text.retainCharacters ("+-0123456789.");
-
-                               if (number.containsAnyOf ("0123456789"))
-                                   setComplete (t, (float) number.getDoubleValue());
-                           });
-        }
+            promptValue (t, *safe);
     });
+}
+
+void MaxLevelEditor::promptValue (Target t, juce::Component& comp)
+{
+    const bool gain = t == Target::gain;
+    promptForText (comp, gain ? "Gain" : "Output Level",
+                   gain ? "Gain in dB (0 to 20):" : "Output Level in dB (-20 to 0):",
+                   fmt::editNumber (gain ? getGain() : getCeiling()),
+                   [this, t] (juce::String text)
+                   {
+                       const auto number = text.replaceCharacter (',', '.').retainCharacters ("+-0123456789.");
+
+                       if (number.containsAnyOf ("0123456789"))
+                           setComplete (t, (float) number.getDoubleValue());
+                   });
 }
 
 //==============================================================================
@@ -313,7 +315,7 @@ MaxHistoryDisplay::MaxHistoryDisplay (MaxLevelEditor& e, juce::Colour c) : edito
 {
     noFocus (*this);
     setTooltip ("Level history. Grey: the music after Gain, before limiting. Colour: the output. Amber, from the top: "
-                "the gain reduction. Drag the Output line to set Output Level, double-click it to reset.");
+                "the gain reduction. Drag the Output line to set Output Level, double-click it to type a value.");
 }
 
 void MaxHistoryDisplay::setScale (const MaxLevelScale& s) { scale = s; repaint(); }
@@ -725,7 +727,7 @@ void MaxHistoryDisplay::mouseUp (const juce::MouseEvent& e)
 void MaxHistoryDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
     if (isLeftClick (e) && isOnCeilingLine (e.position))
-        editor.resetToDefault (MaxLevelEditor::Target::ceiling);
+        editor.promptValue (MaxLevelEditor::Target::ceiling, *this);
 }
 
 void MaxHistoryDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
@@ -744,10 +746,10 @@ MaxMeterColumn::MaxMeterColumn (Kind k, MaxLevelEditor& e, juce::Colour c) : kin
     setTitle (k == Kind::gain ? "Gain" : "Output Level");
     setTooltip (k == Kind::gain
                     ? "Gain: how hard the music is pushed into the limiter. Drag up or down (Ctrl: fine), double-click "
-                      "to reset, right-click to type a value. The meter shows the module input; the handle marks the "
+                      "to type a value, right-click to reset. The meter shows the module input; the handle marks the "
                       "threshold (Output Level minus Gain): everything above it is limited."
                     : "Output Level: the highest level the output may reach. Drag up or down (Ctrl: fine), "
-                      "double-click to reset, right-click to type a value. The meter shows the module output.");
+                      "double-click to type a value, right-click to reset. The meter shows the module output.");
 }
 
 void MaxMeterColumn::setScale (const MaxLevelScale& s) { scale = s; dirty = true; repaint(); }
@@ -934,7 +936,7 @@ void MaxMeterColumn::mouseUp (const juce::MouseEvent&)
 void MaxMeterColumn::mouseDoubleClick (const juce::MouseEvent& e)
 {
     if (isLeftClick (e))
-        editor.resetToDefault (target());
+        editor.promptValue (target(), *this);
 }
 
 void MaxMeterColumn::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)

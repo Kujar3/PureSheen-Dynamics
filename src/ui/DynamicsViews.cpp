@@ -1,6 +1,7 @@
 #include "ui/DynamicsViews.h"
 
 #include "ui/Controls.h"
+#include "ui/ImagerExciterCommon.h"
 
 #include <cmath>
 
@@ -201,7 +202,7 @@ DynamicsTransferGraph::DynamicsTransferGraph (PureSheenProcessor& p) : processor
     setMouseClickGrabsKeyboardFocus (false);
     colour = moduleColour (ps::ModuleType::Dynamics);
     setTooltip ("Transfer curve of the selected band: input level (left to right) against output level. Drag C "
-                "(compressor) or L (limiter) left or right to move its threshold; double-click resets it. The dot "
+                "(compressor) or L (limiter) left or right to move its threshold; double-click to type a value. The dot "
                 "follows the band's level.");
 }
 
@@ -546,9 +547,10 @@ void DynamicsTransferGraph::mouseDown (const juce::MouseEvent& e)
         juce::PopupMenu menu;
         menu.addSectionHeader (n == 0 ? "Compressor threshold" : "Limiter threshold");
         menu.addItem (1, "Reset to default (" + dbText (ParamGesture::defaultOf (id)) + ")");
+        menu.addItem (3, "Enter value...");
         menu.addItem (2, n == 0 ? "Compressor on" : "Limiter on", true, on);
         juce::Component::SafePointer<DynamicsTransferGraph> safe (this);
-        showMenu (menu, *this, [safe, id, linkedId, onId, onLinked, on] (int result)
+        showMenu (menu, *this, [safe, id, linkedId, onId, onLinked, on, n] (int result)
         {
             if (safe == nullptr)
                 return;
@@ -557,6 +559,8 @@ void DynamicsTransferGraph::mouseDown (const juce::MouseEvent& e)
                 ParamGesture::setComplete (safe->processor, id, linkedId, ParamGesture::defaultOf (id));
             else if (result == 2)
                 ParamGesture::setComplete (safe->processor, onId, onLinked, on ? 0.0f : 1.0f);
+            else if (result == 3)
+                stereo::promptParamValue (*safe, safe->processor, id, linkedId, n == 0 ? "Compressor threshold" : "Limiter threshold");
         });
         return;
     }
@@ -621,8 +625,8 @@ void DynamicsTransferGraph::mouseDoubleClick (const juce::MouseEvent& e)
 
     gesture.end();
     dragNode = -1;
-    const auto id = idFor (n, set);
-    ParamGesture::setComplete (processor, id, linkedSet >= 0 ? idFor (n, linkedSet) : juce::String(), ParamGesture::defaultOf (id));
+    stereo::promptParamValue (*this, processor, idFor (n, set), linkedSet >= 0 ? idFor (n, linkedSet) : juce::String(),
+                              n == 0 ? "Compressor threshold" : "Limiter threshold");
 }
 
 //==============================================================================
