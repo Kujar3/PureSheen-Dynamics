@@ -363,7 +363,10 @@ struct HeaderBar::Impl
             refs.setListening (! refs.isListening());
             update();
         };
-        save.setTooltip ("Save the whole chain and every setting as a preset");
+        const auto& product = proc.getProduct();
+        if (product.isLocked())
+            presetName.setTooltip ("Presets: click for the list of presets");
+        save.setTooltip (product.isSuite() ? "Save the whole chain and every setting as a preset" : "Save the settings as a preset");
         save.onClick = [this] { savePresetAs(); };
         presetMenu.setTooltip ("Preset options");
         presetMenu.onClick = [this] { showPresetOptions(); };
@@ -386,9 +389,16 @@ struct HeaderBar::Impl
         help.setTooltip ("How to use PureSheen");
         help.onClick = [this] { ctx.toggleHelp(); };
 
-        for (juce::Component* comp : std::initializer_list<juce::Component*> { &view, &refListen, &prev, &presetName, &next, &save, &presetMenu,
-                                                                            &undo, &redo, &history, &options, &help })
+        for (juce::Component* comp : std::initializer_list<juce::Component*> { &undo, &redo, &history, &options, &help })
             owner.addAndMakeVisible (comp);
+
+        if (product.isSuite())
+            for (juce::Component* comp : std::initializer_list<juce::Component*> { &view, &refListen })
+                owner.addAndMakeVisible (comp);
+
+        if (product.hasPresetBar())
+            for (juce::Component* comp : std::initializer_list<juce::Component*> { &prev, &presetName, &next, &save, &presetMenu })
+                owner.addAndMakeVisible (comp);
 
         for (auto& s : snapshots)
             owner.addAndMakeVisible (*s);
@@ -397,7 +407,8 @@ struct HeaderBar::Impl
     //==========================================================================
     void showPresetMenu()
     {
-        const auto presets = proc.getPresets (-1);
+        const int scope = proc.getProduct().presetScope();
+        const auto presets = proc.getPresets (scope);
         juce::PopupMenu menu, user;
         std::map<juce::String, juce::PopupMenu> categories;
         const auto current = proc.getCurrentPresetName();
@@ -414,7 +425,8 @@ struct HeaderBar::Impl
                 user.addItem (std::move (item));
         }
 
-        menu.addSectionHeader ("Global presets");
+        menu.addSectionHeader (proc.getProduct().isSuite() ? juce::String ("Global presets")
+                                                           : juce::String (proc.getProduct().title()) + " presets");
 
         if (categories.empty() && user.getNumItems() == 0)
             menu.addItem (juce::PopupMenu::Item ("No presets yet").setEnabled (false));
@@ -430,7 +442,7 @@ struct HeaderBar::Impl
         menu.addItem (2, "Import preset (.xml)...");
 
         presetName.setMenuOpen (true);
-        showMenu (menu, presetName, [this, presets] (int result)
+        showMenu (menu, presetName, [this, presets, scope] (int result)
         {
             presetName.setMenuOpen (false);
 
@@ -439,7 +451,7 @@ struct HeaderBar::Impl
             else if (result == 2)
                 importXmlPreset();
             else if (result >= 100 && result - 100 < (int) presets.size())
-                proc.loadPreset (-1, presets[(size_t) (result - 100)]);
+                proc.loadPreset (scope, presets[(size_t) (result - 100)]);
 
             update();
         }, presetName.getWidth());
@@ -448,15 +460,16 @@ struct HeaderBar::Impl
     void savePresetAs()
     {
         const auto current = proc.getCurrentPresetName();
-        promptForText (owner, "Save preset", "Name of the preset (saves the whole chain and every setting):",
-                       current == "Default" ? juce::String ("My master") : current,
+        promptForText (owner, "Save preset",
+                       proc.getProduct().isSuite() ? "Name of the preset (saves the whole chain and every setting):" : "Name of the preset:",
+                       current == "Default" ? juce::String (proc.getProduct().isSuite() ? "My master" : "My preset") : current,
                        [this, safe = juce::Component::SafePointer<HeaderBar> (&owner)] (juce::String name)
                        {
                            if (safe == nullptr)
                                return;
 
                            const auto legal = juce::File::createLegalFileName (name);
-                           ctx.notify (proc.savePreset (-1, legal) ? "Saved preset \"" + legal + "\""
+                           ctx.notify (proc.savePreset (proc.getProduct().presetScope(), legal) ? "Saved preset \"" + legal + "\""
                                                                    : juce::String ("Could not save the preset"));
                            update();
                        });
@@ -465,7 +478,7 @@ struct HeaderBar::Impl
     void showPresetOptions()
     {
         juce::PopupMenu menu;
-        const auto presets = proc.getPresets (-1);
+        const auto presets = proc.getPresets (proc.getProduct().presetScope());
         const auto current = proc.getCurrentPresetName();
         const PureSheenProcessor::PresetInfo* currentUser = nullptr;
 
@@ -515,7 +528,7 @@ struct HeaderBar::Impl
     // A foreign .xml preset: a whole chain replaces ours, a single-module file goes to its module (one undo step).
     void importXmlPreset()
     {
-        importer.launch (proc, -1, [this, safe = juce::Component::SafePointer<HeaderBar> (&owner)]
+        importer.launch (proc, proc.getProduct().presetScope(), [this, safe = juce::Component::SafePointer<HeaderBar> (&owner)]
                                    (const psplug::XmlImportResult& r)
         {
             if (safe == nullptr)
@@ -534,7 +547,7 @@ struct HeaderBar::Impl
 
         proc.setParameterValues (values, "Reset everything");
         proc.setChainOrder ({ ps::kDefaultChain.begin(), ps::kDefaultChain.end() });
-        ctx.notify ("Everything reset to the default chain");
+        ctx.notify (proc.getProduct().isSuite() ? "Everything reset to the default chain" : "Everything reset to default");
     }
 
     void snapshotClicked (int slot, bool rightClick)
@@ -654,8 +667,11 @@ struct HeaderBar::Impl
         menu.addSubMenu ("Undo history length", hist);
         menu.addSeparator();
         menu.addItem (3200, "Show tooltips", true, o.showTooltips);
-        menu.addItem (3201, "Dim bypassed modules", true, o.dimBypassed);
-        menu.addItem (3202, "Show the reference in the analysers", true, o.showReferenceSpectrum);
+        if (proc.getProduct().isSuite())
+        {
+            menu.addItem (3201, "Dim bypassed modules", true, o.dimBypassed);
+            menu.addItem (3202, "Show the reference in the analysers", true, o.showReferenceSpectrum);
+        }
 
         options.setToggleState (true, juce::dontSendNotification);
         showMenu (menu, options, [this] (int r)
@@ -702,7 +718,8 @@ struct HeaderBar::Impl
     //==========================================================================
     void update()
     {
-        presetName.set (proc.getCurrentPresetName(), proc.isPresetModified());
+        if (proc.getProduct().hasPresetBar())
+            presetName.set (proc.getCurrentPresetName(), proc.isPresetModified());
         undo.setEnabled (proc.canUndo());
         redo.setEnabled (proc.canRedo());
         history.setToggleState (ctx.isHistoryOpen(), juce::dontSendNotification);
@@ -710,7 +727,8 @@ struct HeaderBar::Impl
         const int sel = ctx.getSelection();
         view.set (sel == kAssistantSelection ? ViewSwitch::assistantView
                                              : (sel == kReferenceSelection ? ViewSwitch::referenceView : ViewSwitch::chainView));
-        updateRefListen();
+        if (proc.getProduct().isSuite())
+            updateRefListen();
 
         const int active = proc.getActiveSnapshot();
 
@@ -773,7 +791,7 @@ struct HeaderBar::Impl
         {
             g.setFont (font (10.0f, 700).withExtraKerningFactor (0.18f));
             g.setColour (Colours::textSubtle);
-            g.drawText ("DYNAMICS", text.withTrimmedLeft (textWidth (f, "PureSheen") + 8.0f).translated (0.0f, 1.5f),
+            g.drawText (juce::String (proc.getProduct().title()).toUpperCase(), text.withTrimmedLeft (textWidth (f, "PureSheen") + 8.0f).translated (0.0f, 1.5f),
                         juce::Justification::centredLeft, false);
         }
     }
@@ -852,10 +870,12 @@ void HeaderBar::resized()
     auto r = getLocalBounds().reduced (14, 0);
     const int icon = 28, gap = 4;
     int groupGap = 14;
+    const auto& product = d.proc.getProduct();
+    const bool hasPages = product.isSuite(), hasPresets = product.hasPresetBar();
 
     const auto f = font (18.5f, 700);
     const int wordW = (int) std::ceil (textWidth (f, "PureSheen"));
-    const int subW = (int) std::ceil (textWidth (font (10.0f, 700).withExtraKerningFactor (0.18f), "DYNAMICS")) + 8;
+    const int subW = (int) std::ceil (textWidth (font (10.0f, 700).withExtraKerningFactor (0.18f), juce::String (product.title()).toUpperCase())) + 8;
     const int fixedRight = 4 * 26 + 3 * 5 + 64 + 2 * icon + gap;   // snapshots + label + options + help
     const int middleTools = 3 * icon + 2 * gap;                     // undo, redo, history
     const int presetMin = 210, presetMax = 330;
@@ -865,7 +885,11 @@ void HeaderBar::resized()
     d.showSubtitle = true;
     auto brandWidth = [&] { return 30 + (d.showWordmark ? 9 + wordW + (d.showSubtitle ? subW : 0) : 0); };
     const int viewW = 102, refW = 50;
-    auto required = [&] { return brandWidth() + 6 * groupGap + viewW + 6 + refW + presetMin + presetTools + middleTools + fixedRight; };
+    auto required = [&]
+    {
+        return brandWidth() + (2 + (hasPages ? 2 : 0) + (hasPresets ? 2 : 0)) * groupGap + (hasPages ? viewW + 6 + refW : 0)
+               + (hasPresets ? presetMin + presetTools : 0) + middleTools + fixedRight;
+    };
 
     if (required() > r.getWidth()) d.showSubtitle = false;
     if (required() > r.getWidth()) groupGap = 10;
@@ -876,12 +900,15 @@ void HeaderBar::resized()
     r.removeFromLeft (groupGap);
     d.separators.push_back (r.getX());
     r.removeFromLeft (groupGap);
-    d.view.setBounds (r.removeFromLeft (viewW));
-    r.removeFromLeft (6);
-    d.refListen.setBounds (r.removeFromLeft (refW));
-    r.removeFromLeft (groupGap);
-    d.separators.push_back (r.getX());
-    r.removeFromLeft (groupGap);
+    if (hasPages)
+    {
+        d.view.setBounds (r.removeFromLeft (viewW));
+        r.removeFromLeft (6);
+        d.refListen.setBounds (r.removeFromLeft (refW));
+        r.removeFromLeft (groupGap);
+        d.separators.push_back (r.getX());
+        r.removeFromLeft (groupGap);
+    }
 
     // Right: help, options | snapshots
     d.help.setBounds (r.removeFromRight (icon).withSizeKeepingCentre (icon, icon));
@@ -901,19 +928,22 @@ void HeaderBar::resized()
     r.removeFromRight (64);   // "SNAPSHOTS" label
 
     // Middle: preset bar, then undo / redo / history.
-    const int presetW = juce::jlimit (presetMin - 20, presetMax, r.getWidth() - presetTools - middleTools - 2 * groupGap - 20);
-    d.prev.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
-    r.removeFromLeft (gap);
-    d.presetName.setBounds (r.removeFromLeft (presetW).withSizeKeepingCentre (presetW, 30));
-    r.removeFromLeft (gap);
-    d.next.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
-    r.removeFromLeft (gap + 2);
-    d.save.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
-    r.removeFromLeft (gap);
-    d.presetMenu.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
-    r.removeFromLeft (groupGap);
-    d.separators.push_back (r.getX());
-    r.removeFromLeft (groupGap);
+    if (hasPresets)
+    {
+        const int presetW = juce::jlimit (presetMin - 20, presetMax, r.getWidth() - presetTools - middleTools - 2 * groupGap - 20);
+        d.prev.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
+        r.removeFromLeft (gap);
+        d.presetName.setBounds (r.removeFromLeft (presetW).withSizeKeepingCentre (presetW, 30));
+        r.removeFromLeft (gap);
+        d.next.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
+        r.removeFromLeft (gap + 2);
+        d.save.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
+        r.removeFromLeft (gap);
+        d.presetMenu.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
+        r.removeFromLeft (groupGap);
+        d.separators.push_back (r.getX());
+        r.removeFromLeft (groupGap);
+    }
 
     d.undo.setBounds (r.removeFromLeft (icon).withSizeKeepingCentre (icon, icon));
     r.removeFromLeft (gap);

@@ -69,19 +69,39 @@ void writeReloadStableValues (juce::AudioProcessorValueTreeState& apvts, juce::V
         }
 }
 
-juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
+// The parameters a host sees. The suite: all of them. A single-module plugin: its module's and the I/O panel's, with
+// the suite's ids. Not its power switch (Bypass is the plugin's one on / off), and in the Dither plugin not the DC filter
+// (it sits before the Maximizer, which that plugin does not have). The rest stay at fixed values in private storage.
+bool isHostParameter (const ps::ParamSpec& s, const psplug::Product& product)
+{
+    if (product.isSuite())
+        return true;
+
+    const juce::String id (s.id);
+    if (id.startsWith ("io.") || id.startsWith ("in.") || id.startsWith ("out."))   // the I/O panel
+        return true;
+    if (product.isDither())
+        return id.startsWith ("dith.") && id != "dith.on" && id != "dith.dc";
+    return s.module == (int) product.module && id != psplug::moduleIdPrefix (product.module) + ".on";
+}
+
+juce::AudioProcessorValueTreeState::ParameterLayout createLayout (const psplug::Product& product)
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
+    const bool isEqPlugin = product.kind == psplug::ProductKind::module && product.module == ps::ModuleType::Equalizer1;
 
     const auto& specs = ps::paramSpecs();
     for (size_t index = 0; index < specs.size(); ++index)
     {
         const auto& s = specs[index];
+        if (! isHostParameter (s, product))
+            continue;
         // version hint 1: the 0.1.1 table; 2: the phase 2 appendix; 3: the vintage appendix; 4: the De-limiter (append-only, so the index
         // decides)
         const int version = index < (size_t) ps::kNumParams_0_1_1 ? 1 : (index < (size_t) ps::kNumParams_0_5_0 ? 2 : (index < (size_t) ps::kNumParams_0_6_0 ? 3 : 4));
         const juce::ParameterID pid { juce::String (s.id), version };
-        const juce::String name (s.name);
+        // PureSheen EQ has one equalizer, so its parameters are not "EQ 1 ...". (The id stays the suite's.)
+        const juce::String name = isEqPlugin ? juce::String (s.name).replace ("EQ 1 ", "EQ ") : juce::String (s.name);
 
         switch (s.kind)
         {
@@ -234,26 +254,49 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
                                         private juce::AudioProcessorParameter::Listener,
                                         public psplug::AssistantHost
 {
-    explicit Impl (PureSheenProcessor& p)
-        : owner (p), apvts (p, nullptr, "PARAMS", createLayout())
+    Impl (PureSheenProcessor& p, const psplug::Product& productToBe)
+        : owner (p), product (productToBe), apvts (p, nullptr, "PARAMS", createLayout (productToBe))
     {
         const auto& specs = ps::paramSpecs();
         params.reserve (specs.size());
         raw.reserve (specs.size());
-        for (const auto& s : specs)
+        if (product.isLocked())
+            fixedValues = std::make_unique<std::atomic<float>[]> (specs.size());
+        for (size_t i = 0; i < specs.size(); ++i)
         {
+            const auto& s = specs[i];
             const juce::String id (s.id);
-            params.push_back (apvts.getParameter (id));
-            raw.push_back (apvts.getRawParameterValue (id));
-            jassert (params.back() != nullptr && raw.back() != nullptr);
+            auto* prm = apvts.getParameter (id);
+            params.push_back (prm);
+            if (prm != nullptr)
+            {
+                raw.push_back (apvts.getRawParameterValue (id));
+            }
+            else
+            {
+                // The chain still reads every index: a parameter the host does not see stays at a fixed value here.
+                const bool thisPluginsPower = id == (product.isDither() ? juce::String ("dith.on")
+                                                                        : psplug::moduleIdPrefix (product.module) + ".on");
+                fixedValues[i].store (thisPluginsPower ? 1.0f : s.defaultValue);
+                raw.push_back (&fixedValues[i]);
+            }
+            jassert (raw.back() != nullptr);
         }
         values = psplug::defaultValues();
 
         for (auto* prm : params)
-            prm->addListener (this);
+            if (prm != nullptr)
+                prm->addListener (this);
 
         channelSolo.fill (-1);
         bypassIndex = ps::paramIndex ("io.bypass");
+        ditherOnIndex = ps::paramIndex ("dith.on");
+
+        if (product.isLocked())
+        {
+            chain.lockToModule (product.isDither() ? -1 : (int) product.module);
+            chain.setOrder (lockedOrder());
+        }
 
         history.reset (capture());
         presetBaseline = capture();
@@ -262,9 +305,12 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         matchEq = std::make_unique<psplug::MatchEqState> (chain);
         matchEq->historyReset (history);
         // ----
-        assistant = std::make_unique<psplug::Assistant> (*this);
-        referencing = std::make_unique<psplug::TrackReferencing> (owner);
-        connectReferencing();
+        if (product.isSuite())
+        {
+            assistant = std::make_unique<psplug::Assistant> (*this);
+            referencing = std::make_unique<psplug::TrackReferencing> (owner);
+            connectReferencing();
+        }
 
         startTimerHz (30);
     }
@@ -273,16 +319,44 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     {
         stopTimer();
         for (auto* prm : params)
-            prm->removeListener (this);
+            if (prm != nullptr)
+                prm->removeListener (this);
+    }
+
+    // "Modified" means something the preset holds has changed: every setting in the suite, the module's in a plugin
+    // (its presets leave the I/O panel alone).
+    bool differsFromPreset() const
+    {
+        const auto now = capture();
+        if (product.isSuite())
+            return ! psplug::sameState (now, presetBaseline);
+        for (int i = 0; i < (int) now.values.size(); ++i)
+            if (psplug::isInPresetScope (i, product.presetScope())
+                && ! psplug::sameValue (i, now.values[(size_t) i], presetBaseline.values[(size_t) i]))
+                return true;
+        return false;
+    }
+
+    std::vector<ps::ModuleType> lockedOrder() const
+    {
+        return product.isDither() ? std::vector<ps::ModuleType>() : std::vector<ps::ModuleType> { product.module };
+    }
+
+    // The preset scopes this plugin offers: every scope in the suite, one module in a single-module plugin.
+    bool presetScopeAllowed (int scope) const noexcept
+    {
+        return product.isSuite() || (product.hasPresetBar() && scope == product.presetScope());
     }
 
     PureSheenProcessor& owner;
+    const psplug::Product& product;
     juce::AudioProcessorValueTreeState apvts;
     ps::Chain chain;
-    std::vector<juce::RangedAudioParameter*> params;   // paramSpecs() order
+    std::vector<juce::RangedAudioParameter*> params;   // paramSpecs() order; nullptr where the host does not see it
     std::vector<std::atomic<float>*> raw;
+    std::unique_ptr<std::atomic<float>[]> fixedValues; // single-module plugins: the parameters the host does not see
     std::vector<float> values;                         // audio thread: plain values handed to the chain
-    int bypassIndex = -1;
+    int bypassIndex = -1, ditherOnIndex = -1;
 
     // Audio setup
     bool prepared = false;
@@ -499,6 +573,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     void setParam (int index, float plain, bool withGesture = true)
     {
         auto* p = params[(size_t) index];
+        if (p == nullptr)   // not a parameter of this plugin: it stays at its fixed value
+            return;
         const float target = psplug::sanitiseValue (index, plain);
         if (raw[(size_t) index]->load() == target)
             return;
@@ -529,7 +605,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
 
     void setOrder (const std::vector<ps::ModuleType>& order)
     {
-        chain.setOrder (order);
+        chain.setOrder (product.isLocked() ? lockedOrder() : order);
         // Removed while listening: at once, so a result already captured cannot set a later instance's threshold.
         if (delimLearnActive && ! chain.isInChain (ps::ModuleType::DeLimiter))
         {
@@ -558,7 +634,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         auto s = capture();
         if (psplug::sameState (s, history.current().state))
             return false;
-        history.record (description, s, singleParam, nowMs());
+        const bool isEqPlugin = product.kind == psplug::ProductKind::module && product.module == ps::ModuleType::Equalizer1;
+        history.record (isEqPlugin ? description.replace ("EQ 1", "EQ") : description, s, singleParam, nowMs());
         matchEq->historyRecorded (history);   // Match EQ: tag the step with the spectra
         {
             const juce::ScopedLock sl (extrasLock);
@@ -638,13 +715,15 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (scope < 0)
             setOrder (d.order);
 
-        const auto description = scope < 0 ? "Loaded preset " + d.name
+        // The header's preset bar names the whole state: global presets in the suite, the module's in a single-module plugin.
+        const bool namesState = scope == product.presetScope();
+        const auto description = namesState ? "Loaded preset " + d.name
                                             : "Loaded " + psplug::moduleName ((ps::ModuleType) scope) + " preset " + d.name;
         const bool spectraChanged = matchEq->applyPendingPreset();   // Match EQ: the preset's reference
         if (! record (description) && spectraChanged)
             recordMatchEq (description);
 
-        if (scope < 0)
+        if (namesState)
         {
             const juce::ScopedLock sl (extrasLock);
             presetName = d.name;
@@ -672,8 +751,9 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         }
         matchEqHousekeeping();   // Match EQ: finished file loads, capture stops, clears
         commitGesture (force);
-        assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
-        if (referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
+        if (assistant != nullptr)
+            assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
+        if (referencing != nullptr && referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
             owner.sendChangeMessage();
         updateLatency();
 
@@ -784,13 +864,15 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
 };
 
 //==============================================================================
-PureSheenProcessor::PureSheenProcessor()
+PureSheenProcessor::PureSheenProcessor (const psplug::Product& product)
     : juce::AudioProcessor (BusesProperties()
                                 .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                                 .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    impl = std::make_unique<Impl> (*this);
+    impl = std::make_unique<Impl> (*this, product);
 }
+
+const psplug::Product& PureSheenProcessor::getProduct() const noexcept { return impl->product; }
 
 PureSheenProcessor::~PureSheenProcessor() = default;
 
@@ -811,13 +893,16 @@ void PureSheenProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     d.prepared = true;
     setLatencySamples (d.chain.getLatencySamples());
-    d.assistant->prepare (sampleRate);
-    d.referencing->prepare (sampleRate, d.maxBlock);
+    if (d.assistant != nullptr)
+        d.assistant->prepare (sampleRate);
+    if (d.referencing != nullptr)
+        d.referencing->prepare (sampleRate, d.maxBlock);
 }
 
 void PureSheenProcessor::releaseResources()
 {
-    impl->referencing->release();
+    if (impl->referencing != nullptr)
+        impl->referencing->release();
 }
 
 bool PureSheenProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -842,6 +927,10 @@ void PureSheenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     for (size_t i = 0; i < n; ++i)
         d.values[i] = d.raw[i]->load (std::memory_order_relaxed);
 
+    // The chain dithers after its bypass. The Dither plugin has no other switch, so there Bypass turns the dither off.
+    if (d.product.isDither())
+        d.values[(size_t) d.ditherOnIndex] = d.values[(size_t) d.bypassIndex] > 0.5f ? 0.0f : 1.0f;
+
     ps::HostInfo host;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
@@ -855,7 +944,8 @@ void PureSheenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     // Hosts may exceed the announced block size: process in chunks the chain was prepared for.
     float* const* channels = buffer.getArrayOfWritePointers();
     const int total = buffer.getNumSamples();
-    d.assistant->pushAudio (channels[0], channels[1], total);   // the Assistant hears the unprocessed input
+    if (d.assistant != nullptr)
+        d.assistant->pushAudio (channels[0], channels[1], total);   // the Assistant hears the unprocessed input
     for (int start = 0; start < total; start += d.maxBlock)
     {
         float* chunk[2] { channels[0] + start, channels[1] + start };
@@ -863,8 +953,9 @@ void PureSheenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     }
     // Track Referencing: the reference (level matched, A/B crossfaded) replaces the master when listening; the master
     // feeds the comparison. Mono / Swap of the I/O panel apply to the reference too.
-    d.referencing->process (channels[0], channels[1], total, d.values[(size_t) d.monoIndex] > 0.5f,
-                            d.values[(size_t) d.swapIndex] > 0.5f);
+    if (d.referencing != nullptr)
+        d.referencing->process (channels[0], channels[1], total, d.values[(size_t) d.monoIndex] > 0.5f,
+                                d.values[(size_t) d.swapIndex] > 0.5f);
 }
 
 juce::AudioProcessorEditor* PureSheenProcessor::createEditor()
@@ -874,7 +965,7 @@ juce::AudioProcessorEditor* PureSheenProcessor::createEditor()
 
 const juce::String PureSheenProcessor::getName() const
 {
-    return "PureSheen Dynamics";
+    return impl->product.name;
 }
 
 juce::AudioProcessorParameter* PureSheenProcessor::getBypassParameter() const
@@ -924,15 +1015,16 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
             state.setProperty (kEditorH, d.editorH, nullptr);
         }
         state.setProperty (kPresetName, d.presetName, nullptr);
-        state.setProperty (kPresetModified, d.presetForcedModified
-                                                || ! psplug::sameState (d.capture(), d.presetBaseline), nullptr);
+        state.setProperty (kPresetModified, d.presetForcedModified || d.differsFromPreset(), nullptr);
         if (d.matchEq->isPresetModified())   // Match EQ: spectrum-only edits also modify the preset
             state.setProperty (kPresetModified, true, nullptr);
     }
 
     state.appendChild (d.matchEq->createStateTree(), nullptr);   // Match EQ: "MatchEq" child
-    state.appendChild (d.assistant->createStateTree(), nullptr); // Assistant: "Assistant" child
-    state.appendChild (d.referencing->createStateTree(), nullptr);   // Track Referencing: "TrackReferencing" child
+    if (d.assistant != nullptr)
+        state.appendChild (d.assistant->createStateTree(), nullptr); // Assistant: "Assistant" child
+    if (d.referencing != nullptr)
+        state.appendChild (d.referencing->createStateTree(), nullptr);   // Track Referencing: "TrackReferencing" child
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
@@ -991,10 +1083,12 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
     // Match EQ: the spectra (a state without the child, e.g. 0.1.x, clears them)
     d.matchEq->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("MatchEq") : juce::ValueTree());
     // Assistant: its cards and targets (a state without the child resets it)
-    d.assistant->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("Assistant") : juce::ValueTree());
+    if (d.assistant != nullptr)
+        d.assistant->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("Assistant") : juce::ValueTree());
     // Track Referencing: the reference list (reloaded from the files), loops and settings; Listen back to the master
-    d.referencing->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("TrackReferencing")
-                                                               : juce::ValueTree());
+    if (d.referencing != nullptr)
+        d.referencing->restoreStateTree (state.hasType (kStateTag) ? state.getChildWithName ("TrackReferencing")
+                                                                   : juce::ValueTree());
 
     {
         const juce::ScopedLock sl (d.extrasLock);
@@ -1052,6 +1146,9 @@ float PureSheenProcessor::getParameterValue (const juce::String& id) const
 {
     if (auto* v = impl->apvts.getRawParameterValue (id))
         return v->load();
+    if (impl->product.isLocked())   // a parameter the host does not see still has its fixed value
+        if (const int i = ps::paramIndex (id.toStdString()); i >= 0)
+            return impl->raw[(size_t) i]->load();
     return 0.0f;
 }
 
@@ -1109,6 +1206,8 @@ std::vector<ps::ModuleType> PureSheenProcessor::getChainOrder() const { return i
 void PureSheenProcessor::setChainOrder (const std::vector<ps::ModuleType>& requested)
 {
     auto& d = *impl;
+    if (d.product.isLocked())
+        return;
     const juce::ScopedLock editSl (d.editLock);
     d.matchEqHousekeeping();
     d.commitGesture (true);
@@ -1145,7 +1244,7 @@ void PureSheenProcessor::setChainOrder (const std::vector<ps::ModuleType>& reque
 void PureSheenProcessor::addModule (ps::ModuleType type, int insertIndex)
 {
     auto& d = *impl;
-    if (! validModule ((int) type) || isModuleInChain (type))
+    if (d.product.isLocked() || ! validModule ((int) type) || isModuleInChain (type))
         return;
 
     const juce::ScopedLock editSl (d.editLock);
@@ -1471,12 +1570,21 @@ std::vector<PureSheenProcessor::PresetInfo> PureSheenProcessor::getPresets (int 
     if (scope >= ps::kNumModuleTypes)
         return list;
     scope = scope < 0 ? -1 : scope;
+    if (! impl->presetScopeAllowed (scope))
+        return list;
 
     for (const auto* f : psplug::factoryPresetsFor (scope))
         list.push_back ({ f->name, f->category, true, {} });
 
     for (const auto& u : psplug::scanUserPresets (impl->presetRoot, scope))
         list.push_back ({ u.name, u.category, false, u.file });
+
+    // PureSheen EQ is the suite's EQ 1, and the suite's EQ presets load in either equalizer: it lists both folders. The
+    // header knows a preset by its name, so where both folders have a name, the EQ 1 one is the one listed.
+    if (impl->product.isLocked() && scope == (int) ps::ModuleType::Equalizer1)
+        for (const auto& u : psplug::scanUserPresets (impl->presetRoot, (int) ps::ModuleType::Equalizer2))
+            if (std::none_of (list.begin(), list.end(), [&u] (const PresetInfo& p) { return p.name == u.name; }))
+                list.push_back ({ u.name, u.category, false, u.file });
 
     return list;
 }
@@ -1486,6 +1594,8 @@ bool PureSheenProcessor::loadPreset (int scope, const PresetInfo& info)
     if (scope >= ps::kNumModuleTypes)
         return false;
     scope = scope < 0 ? -1 : scope;
+    if (! impl->presetScopeAllowed (scope))
+        return false;
 
     psplug::PresetData data;
     if (info.factory)
@@ -1538,6 +1648,8 @@ bool PureSheenProcessor::savePreset (int scope, const juce::String& name, const 
     if (scope >= ps::kNumModuleTypes)
         return false;
     scope = scope < 0 ? -1 : scope;
+    if (! impl->presetScopeAllowed (scope))
+        return false;
 
     const auto cleanName = juce::File::createLegalFileName (name.trim()).trim();
     if (cleanName.isEmpty())
@@ -1566,7 +1678,7 @@ bool PureSheenProcessor::savePreset (int scope, const juce::String& name, const 
     if (! d.matchEq->appendToPresetFile (presetFile, scope))   // Match EQ: report failure to save the references
         return false;
 
-    if (scope < 0)
+    if (scope == d.product.presetScope())
     {
         const juce::ScopedLock sl (d.extrasLock);
         d.presetName = cleanName;
@@ -1600,12 +1712,13 @@ bool PureSheenProcessor::isPresetModified() const
     const juce::ScopedLock sl (impl->extrasLock);
     if (impl->matchEq->isPresetModified())   // Match EQ: references are part of global presets
         return true;
-    return impl->presetForcedModified || ! psplug::sameState (impl->capture(), impl->presetBaseline);
+    return impl->presetForcedModified || impl->differsFromPreset();
 }
 
 void PureSheenProcessor::loadNextPreset (int direction)
 {
-    const auto list = getPresets (-1);
+    const int scope = impl->product.presetScope();
+    const auto list = getPresets (scope);
     if (list.empty() || direction == 0)
         return;
 
@@ -1620,7 +1733,7 @@ void PureSheenProcessor::loadNextPreset (int direction)
 
     const int n = (int) list.size();
     const int next = index < 0 ? (direction > 0 ? 0 : n - 1) : ((index + (direction > 0 ? 1 : -1)) % n + n) % n;
-    loadPreset (-1, list[(size_t) next]);
+    loadPreset (scope, list[(size_t) next]);
 }
 
 void PureSheenProcessor::setPresetRoot (const juce::File& root)
@@ -1666,12 +1779,6 @@ juce::Point<int> PureSheenProcessor::getEditorSize() const
 void PureSheenProcessor::flushPendingChanges (bool force) { impl->housekeeping (force); }
 
 //==============================================================================
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
-{
-    return new PureSheenProcessor();
-}
-
-//==============================================================================
 // (phase 2) Match EQ reference from a file: the loader thread lives in MatchEqState.cpp; housekeeping (30 Hz timer /
 // flushPendingChanges) applies the result and records the undo step.
 bool PureSheenProcessor::startMatchReferenceFile (const juce::File& file, int part)
@@ -1696,7 +1803,7 @@ bool PureSheenProcessor::applyImportedPreset (int scope, const std::vector<float
 
     auto& d = *impl;
     if (scope < -1 || scope >= ps::kNumModuleTypes || values.size() != d.params.size()
-        || d.stateBeforeImport != nullptr)
+        || d.stateBeforeImport != nullptr || ! d.presetScopeAllowed (scope))
         return false;
 
     // Validate the complete request before committing pending edits or changing any state. Plans normally arrive
@@ -1762,7 +1869,8 @@ bool PureSheenProcessor::applyImportedPreset (int scope, const std::vector<float
     if (order != d.chain.getOrder())
         d.setOrder (order);
 
-    const auto description = scope < 0 ? "Imported preset " + name
+    const bool namesState = scope == d.product.presetScope();
+    const auto description = namesState ? "Imported preset " + name
                                         : "Imported " + psplug::moduleName ((ps::ModuleType) scope) + " preset " + name;
 
     // Match EQ: the imported reference (both parts) belongs to the same step, like a preset's stored reference.
@@ -1775,7 +1883,7 @@ bool PureSheenProcessor::applyImportedPreset (int scope, const std::vector<float
     if (! d.record (description))
         d.recordMatchEq (description);
 
-    if (scope < 0)
+    if (namesState)
     {
         const juce::ScopedLock sl (d.extrasLock);
         d.presetName = name.trim().isNotEmpty() ? name.trim() : juce::String ("Imported preset");

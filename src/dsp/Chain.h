@@ -81,6 +81,11 @@ public:
     void prepare (double sampleRate, int maxBlockSize);
     void reset() noexcept;
 
+    // A single-module plugin, before prepare(): only this module, its twin and its slot get prepared and reset, so the
+    // others take no memory and start no worker threads. -1 = no module at all (the Dither plugin). The caller keeps
+    // the order to that module; a module of another type must not join the chain afterwards.
+    void lockToModule (int moduleTypeOrMinus1) noexcept;
+
     //==============================================================================
     // Message thread
     void setOrder (const std::vector<ModuleType>&);    // duplicates / unknown types dropped

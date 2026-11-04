@@ -437,7 +437,8 @@ struct ModulePanel::Impl
 
         tabs.onGear = [this] { showTsOptions(); };
 
-        owner.addAndMakeVisible (presetChip);
+        if (processor.getProduct().isSuite())   // a single-module plugin has its presets in the header
+            owner.addAndMakeVisible (presetChip);
         owner.addChildComponent (tabs);
         owner.addAndMakeVisible (delta);
         owner.addChildComponent (learn);
@@ -571,37 +572,43 @@ struct ModulePanel::Impl
 
         // Left side: name, presets, channel mode, A/B tabs, Link.
         const auto nameFont = font (14.5f, 700);
-        const juce::String fullName (ps::moduleInfo (type).name);
+        const auto& product = processor.getProduct();
+        const juce::String fullName (product.isSuite() ? ps::moduleInfo (type).name : product.title());
         const bool split = isSplitMode (currentMode (processor, type));
         const int numModes = modeSegments != nullptr ? modeSegments->numModes() : 0;
         const bool ts = currentMode (processor, type) == ps::ChannelMode::TransientSustain;
 
         int segW = numModes * 52;
-        int chipW = 128;
+        const bool hasChip = product.isSuite();
+        int chipW = hasChip ? 128 : 0;
         int tabsW = ts ? 200 : 172, linkW = 62;
 
         auto needed = [&] (const juce::String& name)
         {
-            return 18 + (int) textWidth (nameFont, name) + 14 + chipW + 10 + (segW > 0 ? segW + 10 : 0)
+            return 18 + (int) textWidth (nameFont, name) + (hasChip ? 14 + chipW : 0) + 10 + (segW > 0 ? segW + 10 : 0)
                    + (split ? tabsW + 8 + linkW + 10 : 0);
         };
 
         displayName = fullName;
 
         if (needed (displayName) > r.getWidth())
-            displayName = ps::moduleInfo (type).shortName;
+            displayName = product.isSuite() || type != ps::ModuleType::Equalizer1 ? juce::String (ps::moduleInfo (type).shortName)
+                                                                                  : juce::String (product.title());
 
         if (needed (displayName) > r.getWidth())
-            chipW = 104, segW = numModes * 44;
+            chipW = hasChip ? 104 : 0, segW = numModes * 44;
 
         if (needed (displayName) > r.getWidth())
-            chipW = 84, segW = numModes * 40, tabsW = ts ? 184 : 160, linkW = 50;
+            chipW = hasChip ? 84 : 0, segW = numModes * 40, tabsW = ts ? 184 : 160, linkW = 50;
 
         const int nameW = 18 + (int) std::ceil (textWidth (nameFont, displayName));
         nameArea = r.removeFromLeft (nameW);
-        r.removeFromLeft (14);
-        presetChip.setBounds (centred (r.removeFromLeft (chipW)));
-        r.removeFromLeft (10);
+        r.removeFromLeft (hasChip ? 14 : 10);
+        if (hasChip)
+        {
+            presetChip.setBounds (centred (r.removeFromLeft (chipW)));
+            r.removeFromLeft (10);
+        }
 
         if (modeSegments != nullptr)
         {

@@ -45,8 +45,9 @@ constexpr float kPad = 28.0f, kHeaderH = 84.0f;
 //==============================================================================
 struct HelpOverlay::Impl
 {
-    Impl()
+    explicit Impl (PureSheenProcessor& p)
     {
+        const auto& product = p.getProduct();
         steps = {
             { "Put it last on the Master",
               "Add PureSheen as the **last plugin on FL Studio's Master** track and play the loudest part of your song. "
@@ -108,6 +109,73 @@ struct HelpOverlay::Impl
 
         close.roundBackground = true;
         close.setTooltip ("Close");
+
+        if (product.isLocked())
+            useSingleModuleText (p);
+    }
+
+    // A single-module plugin: the same help, cut down to what the plugin has.
+    void useSingleModuleText (PureSheenProcessor& p)
+    {
+        const auto& product = p.getProduct();
+        const juce::String name (product.name);
+        title = "Getting started with " + name;
+
+        juce::String what;
+        juce::Colour colour = Colours::accent;
+        if (product.isDither())
+        {
+            subtitle = "Dither for the final export.";
+            what = "**Dither** - use it only when you export at a lower bit depth than you work in (16 bit for CD), and "
+                   "only once. Choose the bit depth of the file you will export. **Bypass** turns it off.";
+        }
+        else
+        {
+            const auto m = product.module;
+            colour = moduleColour (m);
+            subtitle = "One PureSheen module as its own plugin. Its presets are shared with PureSheen Dynamics.";
+            if (m == ps::ModuleType::Equalizer1)
+                what = "**EQ** - lifts or cuts frequencies to shape the tone. Small moves go a long way.";
+            else if (m == ps::ModuleType::Dynamics)
+                what = "**Multiband Dynamics** - compresses and limits separate frequency bands, for punch and control.";
+            else if (m == ps::ModuleType::Imager)
+                what = "**Imager** - sets the stereo width of separate frequency bands.";
+            else if (m == ps::ModuleType::Exciter)
+                what = "**Exciter** - adds harmonics to separate frequency bands, for warmth and air.";
+            else if (m == ps::ModuleType::Maximizer)
+                what = "**Maximizer** - raises the loudness and keeps the peaks below a ceiling. Put it last.";
+            else
+                for (const auto& more : moreModules)
+                    if (more.text.startsWith (juce::String ("**") + product.title() + "**"))
+                        what = more.text;
+        }
+
+        steps = {
+            { "Put it on a track",
+              "Add " + name + " to a mixer track, or to FL Studio's **Master** track to work on the whole song, and play "
+              "the loudest part.", Colours::accent },
+            { "What it does", what, colour },
+            { "Compare fairly",
+              product.isDither()
+                  ? juce::String ("Turn on **Gain Match**, then **Bypass**: you hear the difference at the same loudness, so "
+                                  "louder never fools you.")
+                  : juce::String ("Turn on **Gain Match**, then **Bypass**: you hear the difference at the same loudness, so "
+                                  "louder never fools you. The **triangle** (Delta) plays only what the plugin changes."),
+              moduleColour (ps::ModuleType::Imager) },
+        };
+
+        tips.clear();
+        tips.add ("**Undo and History** - every change is listed; click an entry to go back to that point.");
+        tips.add ("**A B C D** - store up to four versions of your settings and click between them to compare.");
+        tips.add ("**Knobs** - drag to change, **Ctrl**-drag for fine steps, double-click to type a value, right-click to reset.");
+        if (! product.isDither() && p.getParameter (juce::String (ps::moduleInfo (product.module).idPrefix) + ".chMode") != nullptr)
+            tips.add ("**Mid / Side** - Mid is the centre (vocal, kick, bass), Side is the edges (width, reverb, room).");
+        if (! product.isDither() && ps::supportsTransientSustain (product.module))
+            tips.add ("**T/S** - Transient / Sustain: the hits and what rings on after them get their own settings.");
+        tips.add ("**Integrated LUFS** - the loudness of the whole song. Streaming plays songs at about -14 LUFS.");
+        tips.add ("**True peak** - keep a finished master below **-1 dBTP** so it does not distort as MP3 or on streaming.");
+
+        moreModules.clear();
     }
 
     struct Block
@@ -157,6 +225,8 @@ struct HelpOverlay::Impl
 
         // More modules (click +): under the steps (the left column), or under the tips when that is clearly shorter
         moreBlocks.clear();
+        if (moreModules.empty())
+            return juce::jmax (leftBottom, y) + kPad - 10.0f;
         const bool left = leftBottom <= y + 40.0f;
         const float colX = left ? kPad : rightX, colW = left ? leftW : rightW;
         float my = (left ? leftBottom : y) + 8.0f;
@@ -181,6 +251,8 @@ struct HelpOverlay::Impl
         juce::Colour colour;
     };
 
+    juce::String title { "Getting started with PureSheen" };
+    juce::String subtitle { "A complete mastering chain: each module does one job. Add, reorder and shape them until the song sounds finished." };
     std::vector<Step> steps;
     juce::StringArray tips;
     std::vector<More> moreModules;
@@ -191,7 +263,7 @@ struct HelpOverlay::Impl
     IconButton close { "Close help", IconButton::Icon::close };
 };
 
-HelpOverlay::HelpOverlay() : impl (std::make_unique<Impl>())
+HelpOverlay::HelpOverlay (PureSheenProcessor& p) : impl (std::make_unique<Impl> (p))
 {
     setTitle ("Help");
     setWantsKeyboardFocus (false);
@@ -241,11 +313,11 @@ void HelpOverlay::paint (juce::Graphics& g)
     drawLogo (g, { kPad, 24.0f, 36.0f, 36.0f });
     g.setFont (font (21.0f, 700));
     g.setColour (Colours::text);
-    g.drawText ("Getting started with PureSheen", juce::Rectangle<float> (kPad + 50.0f, 20.0f, d.card.getWidth() - 140.0f, 26.0f),
+    g.drawText (d.title, juce::Rectangle<float> (kPad + 50.0f, 20.0f, d.card.getWidth() - 140.0f, 26.0f),
                 juce::Justification::centredLeft, false);
     g.setFont (font (13.0f));
     g.setColour (Colours::textDim);
-    g.drawText ("A complete mastering chain: each module does one job. Add, reorder and shape them until the song sounds finished.",
+    g.drawText (d.subtitle,
                 juce::Rectangle<float> (kPad + 50.0f, 46.0f, d.card.getWidth() - kPad * 2.0f - 50.0f, 18.0f),
                 juce::Justification::centredLeft, true);
 
@@ -274,8 +346,9 @@ void HelpOverlay::paint (juce::Graphics& g)
         b.layout.draw (g, b.area);
     }
 
-    drawSectionTitle (g, "More modules (click + in the strip)",
-                      juce::Rectangle<float> (d.moreTitleX, d.moreTitleY - 2.0f, 320.0f, 18.0f).toNearestInt());
+    if (! d.moreModules.empty())
+        drawSectionTitle (g, "More modules (click + in the strip)",
+                          juce::Rectangle<float> (d.moreTitleX, d.moreTitleY - 2.0f, 320.0f, 18.0f).toNearestInt());
 
     for (size_t i = 0; i < d.moreBlocks.size() && i < d.moreModules.size(); ++i)
     {

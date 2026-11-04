@@ -4009,6 +4009,8 @@ void testTrackReferencing()
     }
 }
 
+int runProductTests (const juce::StringArray& args);   // ProductTests.cpp
+
 int runSelfTest()
 {
     tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
@@ -4046,6 +4048,10 @@ int runSelfTest()
     std::cout << "\n-- Match EQ state, undo and file loader\n";
     const int matchFailures = psplug::runMatchEqStateTests();
     check (matchFailures == 0, "match eq: state, undo and file loader checks", str (matchFailures, " failed"));
+
+    std::cout << "\n-- Single-module plugins\n";
+    const int productFailures = runProductTests ({});
+    check (productFailures == 0, "products: every single-module plugin passes its checks", str (productFailures, " failed"));
 
     std::cout << "\n-- Summary checks\n";
     std::string unknown;

@@ -8,7 +8,7 @@ namespace ps::ui
 class HelpOverlay final : public juce::Component
 {
 public:
-    HelpOverlay();
+    explicit HelpOverlay (PureSheenProcessor&);
     ~HelpOverlay() override;
 
     std::function<void()> onClose;

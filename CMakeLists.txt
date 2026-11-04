@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(PureSheen VERSION 0.7.0 LANGUAGES C CXX)
+project(PureSheen VERSION 0.8.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,10 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 if(MSVC)
     add_compile_options(/MP /utf-8)
 endif()
+
+# Link-time-optimised links in parallel can crash the MSVC linker (C1001), and each one uses many threads by itself.
+set_property(GLOBAL PROPERTY JOB_POOLS ps_link=3)
+set(CMAKE_JOB_POOL_LINK ps_link)
 
 set(JUCE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE" CACHE PATH "Path to the JUCE checkout")
 add_subdirectory("${JUCE_PATH}" JUCE EXCLUDE_FROM_ALL)
@@ -19,6 +23,7 @@ add_subdirectory("${JUCE_PATH}" JUCE EXCLUDE_FROM_ALL)
 #   src/dsp   the DSP modules and the chain host                                 - pure C++17
 #   src/assist the Assistant (analysis features, suggestion engine, offline render) - pure C++17
 #   src/plugin, src/ui                                                            - JUCE
+#   src/entry the per-plugin entry point (compiled once per plugin, not in the shared library)
 # ---------------------------------------------------------------------------
 file(GLOB PS_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
@@ -66,38 +71,155 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon/logo_512.png")
 endif()
 
 # ---------------------------------------------------------------------------
-# The plugin (VST3 + Standalone)
+# The product list (installer/products.csv, also read by scripts/package-all.ps1): the suite and the single-module
+# plugins. Columns: id, name, code, module, vst3_categories, clap_features, installer_guid, description.
 # ---------------------------------------------------------------------------
-juce_add_plugin(PureSheen
-    COMPANY_NAME "Kujar3"
-    PRODUCT_NAME "PureSheen Dynamics"
-    BUNDLE_ID "com.kujar3.puresheen"
-    PLUGIN_MANUFACTURER_CODE Kuja
-    PLUGIN_CODE Pshd
-    FORMATS VST3 Standalone
-    IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT FALSE
-    NEEDS_MIDI_OUTPUT FALSE
-    IS_MIDI_EFFECT FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    VST3_CATEGORIES Fx Mastering Dynamics EQ
-    ${PS_ICON_ARGS}
-    COPY_PLUGIN_AFTER_BUILD FALSE)
+set(PS_PRODUCTS_FILE "${CMAKE_CURRENT_SOURCE_DIR}/installer/products.csv")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PS_PRODUCTS_FILE}")
+file(STRINGS "${PS_PRODUCTS_FILE}" PS_PRODUCT_LINES)
+list(POP_FRONT PS_PRODUCT_LINES)
 
-# JUCE regenerates the Windows version resource only when the icon changes, so a version bump would keep the old
-# file version in the binaries' properties. Make it depend on the info file that carries the version too.
-if(WIN32)
-    get_target_property(PS_JUCE_CODE_DIR PureSheen JUCE_GENERATED_SOURCES_DIRECTORY)
-    get_target_property(PS_JUCE_INFO_FILE PureSheen JUCE_INFO_FILE)
-    add_custom_command(OUTPUT "${PS_JUCE_CODE_DIR}/PureSheen_resources.rc" APPEND DEPENDS "${PS_JUCE_INFO_FILE}")
+set(PS_SEEN_IDS)
+set(PS_SEEN_NAMES)
+set(PS_SEEN_CODES)
+set(PS_SEEN_GUIDS)
+set(PS_PRODUCT_TABLE "")
+foreach(line IN LISTS PS_PRODUCT_LINES)
+    string(REPLACE "," ";" fields "${line}")
+    list(GET fields 0 id)
+    list(GET fields 1 name)
+    list(GET fields 2 code)
+    list(GET fields 3 module)
+    list(GET fields 6 guid)
+    if(id IN_LIST PS_SEEN_IDS OR name IN_LIST PS_SEEN_NAMES OR code IN_LIST PS_SEEN_CODES OR guid IN_LIST PS_SEEN_GUIDS)
+        message(FATAL_ERROR "installer/products.csv: '${id}' repeats an id, name, plugin code or installer id")
+    endif()
+    list(APPEND PS_SEEN_IDS "${id}")
+    list(APPEND PS_SEEN_NAMES "${name}")
+    list(APPEND PS_SEEN_CODES "${code}")
+    list(APPEND PS_SEEN_GUIDS "${guid}")
+    if(module STREQUAL "-")
+        string(APPEND PS_PRODUCT_TABLE "{ \"${id}\", \"${name}\", ProductKind::suite, ps::ModuleType::Equalizer1 },\n")
+    elseif(module STREQUAL "Dither")
+        string(APPEND PS_PRODUCT_TABLE "{ \"${id}\", \"${name}\", ProductKind::dither, ps::ModuleType::Equalizer1 },\n")
+    else()
+        string(APPEND PS_PRODUCT_TABLE "{ \"${id}\", \"${name}\", ProductKind::module, ps::ModuleType::${module} },\n")
+    endif()
+endforeach()
+
+set(PS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(CONFIGURE OUTPUT "${PS_GENERATED_DIR}/ProductTable.inc" CONTENT "${PS_PRODUCT_TABLE}" @ONLY)
+
+# ---------------------------------------------------------------------------
+# The shared library and the dev tool: see cmake/common/CMakeLists.txt. JUCE's module sources compile there, and only
+# there: in this directory they are headers, so a plugin compiles nothing but its entry point and its format wrappers.
+# ---------------------------------------------------------------------------
+add_subdirectory(cmake/common common)
+
+foreach(module IN ITEMS juce_core juce_data_structures juce_events juce_graphics juce_gui_basics juce_gui_extra
+                        juce_audio_basics juce_audio_devices juce_audio_formats juce_audio_processors
+                        juce_audio_processors_headless juce_audio_utils)
+    get_target_property(module_sources ${module} INTERFACE_JUCE_MODULE_SOURCES)
+    set_source_files_properties(${module_sources} PROPERTIES HEADER_FILE_ONLY TRUE)
+endforeach()
+
+# ---------------------------------------------------------------------------
+# Optional CLAP format (clap-juce-extensions, scripts\fetch_clap.bat)
+#   scripts\build.bat build-clap PureSheen_CLAP
+# ---------------------------------------------------------------------------
+option(PURESHEEN_CLAP "Build the CLAP format (needs third_party/clap-juce-extensions)" ON)
+set(PURESHEEN_CLAP_EXT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/clap-juce-extensions"
+    CACHE PATH "Path to the clap-juce-extensions checkout (with submodules)")
+set(PS_HAS_CLAP OFF)
+if(PURESHEEN_CLAP)
+    if(EXISTS "${PURESHEEN_CLAP_EXT_PATH}/CMakeLists.txt"
+       AND EXISTS "${PURESHEEN_CLAP_EXT_PATH}/clap-libs/clap/CMakeLists.txt"
+       AND EXISTS "${PURESHEEN_CLAP_EXT_PATH}/clap-libs/clap-helpers/CMakeLists.txt")
+        add_subdirectory("${PURESHEEN_CLAP_EXT_PATH}" clap-juce-extensions EXCLUDE_FROM_ALL)
+        set(PS_HAS_CLAP ON)
+        message(STATUS "PureSheen: CLAP enabled")
+    else()
+        message(STATUS "PureSheen: CLAP disabled, ${PURESHEEN_CLAP_EXT_PATH} not found")
+    endif()
 endif()
 
-target_sources(PureSheen PRIVATE ${PS_CORE_SOURCES} ${PS_PLUGIN_SOURCES} ${PS_UI_SOURCES})
-target_include_directories(PureSheen PRIVATE src)
-target_compile_definitions(PureSheen PUBLIC ${PS_JUCE_DEFINES})
-target_link_libraries(PureSheen
-    PRIVATE PureSheenData ${PS_JUCE_MODULES}
-    PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
+# ---------------------------------------------------------------------------
+# One plugin: juce_add_plugin + the entry point + the format wrappers, on top of PureSheenCommon.
+# ---------------------------------------------------------------------------
+function(ps_add_plugin target id name code formats vst3_categories clap_features)
+    separate_arguments(vst3_categories)
+    separate_arguments(clap_features)
+    if(id STREQUAL "suite")
+        set(bundle_id "com.kujar3.puresheen")
+    else()
+        set(bundle_id "com.kujar3.puresheen.${id}")
+    endif()
+
+    juce_add_plugin(${target}
+        COMPANY_NAME "Kujar3"
+        PRODUCT_NAME "${name}"
+        BUNDLE_ID "${bundle_id}"
+        PLUGIN_MANUFACTURER_CODE Kuja
+        PLUGIN_CODE ${code}
+        FORMATS ${formats}
+        IS_SYNTH FALSE
+        NEEDS_MIDI_INPUT FALSE
+        NEEDS_MIDI_OUTPUT FALSE
+        IS_MIDI_EFFECT FALSE
+        EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+        VST3_CATEGORIES ${vst3_categories}
+        ${PS_ICON_ARGS}
+        COPY_PLUGIN_AFTER_BUILD FALSE)
+
+    # JUCE regenerates the Windows version resource only when the icon changes, so a version bump would keep the old
+    # file version in the binaries' properties. Make it depend on the info file that carries the version too.
+    if(WIN32)
+        get_target_property(code_dir ${target} JUCE_GENERATED_SOURCES_DIRECTORY)
+        get_target_property(info_file ${target} JUCE_INFO_FILE)
+        add_custom_command(OUTPUT "${code_dir}/${target}_resources.rc" APPEND DEPENDS "${info_file}")
+    endif()
+
+    target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/entry/PluginEntry.cpp")
+    target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PS_GENERATED_DIR}")
+    target_compile_definitions(${target}
+        PUBLIC ${PS_JUCE_DEFINES}
+        PRIVATE PS_PRODUCT_ID="${id}")
+    target_link_libraries(${target}
+        PRIVATE PureSheenCommon ${PS_JUCE_MODULES}
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
+
+    if(PS_HAS_CLAP)
+        clap_juce_extensions_plugin(TARGET ${target}
+            CLAP_ID "${bundle_id}"
+            CLAP_FEATURES ${clap_features})
+    endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# The plugins: the suite (VST3, CLAP, Standalone) and the single-module plugins (VST3, CLAP). The single-module plugins
+# are not part of "all"; build them with the target PureSheenSingles (or PureSheen_<id>_VST3 / _CLAP, one at a time).
+# ---------------------------------------------------------------------------
+add_custom_target(PureSheenSingles)
+foreach(line IN LISTS PS_PRODUCT_LINES)
+    string(REPLACE "," ";" fields "${line}")
+    list(GET fields 0 id)
+    list(GET fields 1 name)
+    list(GET fields 2 code)
+    list(GET fields 4 vst3_categories)
+    list(GET fields 5 clap_features)
+    if(id STREQUAL "suite")
+        ps_add_plugin(PureSheen "${id}" "${name}" "${code}" "VST3;Standalone" "${vst3_categories}" "${clap_features}")
+    else()
+        set(target "PureSheen_${id}")
+        ps_add_plugin(${target} "${id}" "${name}" "${code}" "VST3" "${vst3_categories}" "${clap_features}")
+        set_target_properties(${target} ${target}_VST3 PROPERTIES EXCLUDE_FROM_ALL TRUE)
+        add_dependencies(PureSheenSingles ${target}_VST3)
+        if(PS_HAS_CLAP)
+            set_target_properties(${target}_CLAP PROPERTIES EXCLUDE_FROM_ALL TRUE)
+            add_dependencies(PureSheenSingles ${target}_CLAP)
+        endif()
+    endif()
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Pure C++ core + DSP unit tests (no JUCE, compiles in seconds)
@@ -107,44 +229,4 @@ add_executable(CoreTests ${PS_TEST_SOURCES} ${PS_CORE_SOURCES} ${PS_IMPORT_CORE_
 target_include_directories(CoreTests PRIVATE src tests)
 if(MSVC)
     target_compile_options(CoreTests PRIVATE /W4 /permissive-)
-endif()
-
-# ---------------------------------------------------------------------------
-# Dev tool: processor self-test, editor snapshots, offline rendering
-#   PureSheenDev selftest
-#   PureSheenDev snapshot <outDir>
-#   PureSheenDev render <in.wav> <out.wav>
-#   PureSheenDev icon <out.png> [size]
-# ---------------------------------------------------------------------------
-juce_add_console_app(PureSheenDev PRODUCT_NAME "PureSheenDev")
-file(GLOB PS_DEV_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/dev/*.cpp")
-target_sources(PureSheenDev PRIVATE ${PS_DEV_SOURCES} ${PS_CORE_SOURCES} ${PS_PLUGIN_SOURCES} ${PS_UI_SOURCES})
-target_include_directories(PureSheenDev PRIVATE src)
-target_compile_definitions(PureSheenDev PRIVATE
-    ${PS_JUCE_DEFINES}
-    JucePlugin_Name="PureSheen Dynamics"
-    PURESHEEN_DEV_TOOL=1)
-target_link_libraries(PureSheenDev
-    PRIVATE PureSheenData ${PS_JUCE_MODULES}
-    PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
-
-# ---------------------------------------------------------------------------
-# Optional CLAP format (clap-juce-extensions, scripts\fetch_clap.bat)
-#   scripts\build.bat build-clap PureSheen_CLAP
-# ---------------------------------------------------------------------------
-option(PURESHEEN_CLAP "Build the CLAP format (needs third_party/clap-juce-extensions)" ON)
-set(PURESHEEN_CLAP_EXT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/clap-juce-extensions"
-    CACHE PATH "Path to the clap-juce-extensions checkout (with submodules)")
-if(PURESHEEN_CLAP)
-    if(EXISTS "${PURESHEEN_CLAP_EXT_PATH}/CMakeLists.txt"
-       AND EXISTS "${PURESHEEN_CLAP_EXT_PATH}/clap-libs/clap/CMakeLists.txt"
-       AND EXISTS "${PURESHEEN_CLAP_EXT_PATH}/clap-libs/clap-helpers/CMakeLists.txt")
-        add_subdirectory("${PURESHEEN_CLAP_EXT_PATH}" clap-juce-extensions EXCLUDE_FROM_ALL)
-        clap_juce_extensions_plugin(TARGET PureSheen
-            CLAP_ID "com.kujar3.puresheen"
-            CLAP_FEATURES audio-effect mastering equalizer compressor limiter stereo)
-        message(STATUS "PureSheen: CLAP enabled (target PureSheen_CLAP)")
-    else()
-        message(STATUS "PureSheen: CLAP disabled, ${PURESHEEN_CLAP_EXT_PATH} not found")
-    endif()
 endif()

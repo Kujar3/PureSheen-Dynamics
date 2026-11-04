@@ -22,7 +22,7 @@ Later phases (enums are append-only, so they slot in):
 - Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (done, from RefMatch, see
   "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (done, fitted to the
   reference, see "Vintage-style modules (phase 3)" below), a de-limiter (done, see "De-limiter (phase 3)" below), and one plug-in per module
-  ("PureSheen EQ", ...)
+  (done, see "Single-module plugins" below)
 - Phase 4: MCP bridge
 
 Never built: stem-separation EQ / focus, mix rebalancing, codec preview.
@@ -34,11 +34,16 @@ strings the importer must recognise are matched by key, never written (see "Pres
 ## Repository layout
 
 ```
-CMakeLists.txt            targets: PureSheen (VST3, Standalone, + PureSheen_CLAP), CoreTests, PureSheenDev; sources
-                          globbed per folder (a new .cpp is picked up on the next configure)
+CMakeLists.txt            targets: PureSheen (VST3, Standalone, + PureSheen_CLAP), PureSheen_<id> (VST3, CLAP; one per
+                          single-module plugin, not in "all"; PureSheenSingles builds them), CoreTests; sources globbed
+                          per folder (a new .cpp is picked up on the next configure)
+cmake/common/             PureSheenCommon (everything the plugins share, compiled once) and PureSheenDev
+installer/products.csv    the one list of plugins: id, name, plugin code, module, categories, installer id, description
 scripts/build.bat         scripts\build.bat <buildDir> <targets...>   (Ninja + MSVC 2022 x64 Release)
 scripts/fetch_clap.bat, clap-juce-extensions-state-rescan.patch, install-plugin.ps1, build-installer.bat
                           (adapted from RefMatch at the end of Core)
+scripts/package-all.ps1   every plugin's installer and manual zip, from the static-runtime build
+src/entry/PluginEntry.cpp createPluginFilter, compiled per plugin with its product id
 src/core/                 measurement core copied from RefMatch (pure C++17): Common.h (dB helpers),
                           Loudness (BS.1770 M/S/I/LRA, realtime safe), TruePeak (4x), Fft (radix-2 forward)
                           (phase 3) TrackAnalysis: RefMatch's whole-track analyser (profile, 1/3-octave curve, bands);
@@ -980,3 +985,58 @@ Known limits:
 - The reference may have far more latency than ours (the threshold changed about 1.1 s after the window on FL's clock, not
   measurable from the renders, since FL compensates). Our output is unaffected.
 - Not done: listening tests in FL Studio.
+
+## Single-module plugins
+
+Each module also ships as a plugin of its own, for people who want one tool and not the suite. 19 plugins: one per
+module type except Equalizer 2 (the same module as Equalizer 1), plus Dither. The Assistant and Track Referencing are
+not plugins: the Assistant builds chains across modules, and RefMatch already is Track Referencing as a plugin.
+`installer/products.csv` is the one list; CMake reads it for the targets and for `ProductTable.inc` (the `psplug::Product`
+table), `scripts/package-all.ps1` for the packages. CMake stops on a repeated id, name, plugin code or installer id.
+
+**It is the suite's code, locked at runtime.** `PureSheenProcessor (product)`, `plugin/Product.h`:
+- Chain: fixed to the one module (`Chain::lockToModule`): only that module, its T/S twin and its slot are prepared, so
+  the others take no buffers and start no worker threads. Their objects still exist, because `Chain` hands them out by
+  type. The processor forces the order in `setOrder`, so a state, an undo step or a snapshot cannot change it.
+- Parameters: the host sees the module's and the I/O panel's (`io.*`, `in.*`, `out.*`), with the suite's ids (VST3 hashes the id). Not `<prefix>.on`: Bypass
+  is the plugin's one on / off. Everything else sits at a fixed value in `Impl::fixedValues`, so the index-based `raw`
+  array, `capture()` and the chain work unchanged. `params[i]` is null for those: `setParam` ignores them,
+  `getParameter` returns null, and `getParameterValue` still answers.
+- The Assistant and Track Referencing do not exist (null; suite only), and neither do their state children.
+- Presets: `Product::presetScope()` is where the header's preset bar works, -1 in the suite, the module in a plugin. The
+  preset name and "modified" follow that scope. The folders are the suite's (`Documents/PureSheen Dynamics/Presets/<prefix>`),
+  so a module preset saved in either shows in both with no export step; PureSheen EQ also lists `eq2` (EQ presets load in
+  either equalizer). Global suite presets do not load in a plugin. Host sessions do not move across: different plugin ids.
+- Editor: no chain strip (window 78 px lower), no Assistant / Chain / Reference switch, no REF, no Dither shortcut, no
+  reference overlay, no file drop, no preset chip on the panel (the header has the presets). Module power is gone from
+  the UI with the strip. Help is cut down to the plugin.
+- Dither plugin: no module and no presets. `dith.on` is fixed on, and because the chain dithers after its bypass,
+  `processBlock` turns it off while Bypass is on. `dith.dc` is hidden: that filter sits before the Maximizer.
+
+**Compiling once.** JUCE's module sources are INTERFACE sources: every target that links a module compiles them. Source
+file properties are per directory, so `PureSheenCommon` (our code and JUCE) and `PureSheenDev` live in `cmake/common`, and
+the top directory marks JUCE's module sources `HEADER_FILE_ONLY`. A plugin there compiles only `src/entry/PluginEntry.cpp`
+and JUCE's wrapper for its format. Common defines the few `JucePlugin_*` macros module code reads; the per-plugin ones
+matter only in the wrappers, which still compile per plugin. `juce_audio_plugin_client` is linked for its availability
+macro (`juce_gui_basics` checks it) and has no shared sources. The Ninja pool `ps_link` allows 3 links at once, because
+link-time-optimised links in parallel can crash the MSVC linker and each one uses many threads.
+
+**Packaging.** `scripts\package-all.ps1` builds everything with the static runtime in `build-release`, fails if a binary
+imports `MSVCP140` or `VCRUNTIME140`, and writes `dist\<Name>-Setup-<version>.exe` and `dist\<Name>-<version>-Manual.zip`
+per plugin. The suite keeps `installer/PureSheen.iss` and its AppId; the others share `installer/PureSheenSingle.iss`.
+
+**Checks.** `tools/dev/ProductTests.cpp`, part of `selftest` and on its own as `PureSheenDev producttest [id]`: the
+parameter set, the chain lock, state and snapshots, presets both ways, imports, realtime safety, the bypass null, the
+sound against the suite with only that module, the editor. `PureSheenDev productsnapshot <dir> [id]` renders each window at
+three sizes and its help. `PureSheenDev memory 48000 product=<id>` measures one plugin.
+
+Verification (0.8.0; build-single CoreTests / PureSheenDev, build-release for all 20 plugins, 0 warnings in our sources):
+CoreTests 703 test cases, 0 failed; `PureSheenDev selftest` 357 passed, 0 failed, including `producttest` (1147 checks over
+the 19 plugins, among them each one against the suite with only that module in the chain, under -90 dB difference);
+`importtest` all passed. pluginval strictness 10 with GUI tests: SUCCESS on all 20. clap-validator: 0 failed on all 20
+(the known `state-invalid-random` warning; `process-audio-denormals` warned on some plugins while six validators ran at
+once, and did not repeat alone). The suite: class ids equal to the 0.7.0 build, and `render` of three global presets
+bit-identical to the 0.7.0 tool. Memory after 2 s of audio at 48 kHz (`memory`): suite +157 MB, PureSheen EQ +30 MB,
+Match EQ +29 MB, Maximizer +12 MB, Dither +7 MB. A full build of all 20 links about 40 binaries, about 15 minutes after
+the one compile. One unpacked zip passes pluginval, and one test installer installs files identical to the build.
+Not tested: a clean PC without the VC++ runtime (imports checked with dumpbin instead), and FL Studio itself.

@@ -15,14 +15,15 @@
  #pragma comment (lib, "psapi.lib")
 #endif
 
-// PureSheenDev memory <sampleRate> [ts] [editor] [core] (owner: integration)
+// PureSheenDev memory <sampleRate> [ts] [editor] [core] [product=<id>] (owner: integration)
 //
 // Measures the process's private memory (commit charge) before and after building a processor with all 14 modules
 // in the chain, prepared at <sampleRate> with a 512-sample block, after 2 s of audio. "ts" switches every module that
 // offers the Transient/Sustain mode into it first; "editor" also opens the editor; "core" keeps the default chain.
 // Run one configuration per process so the numbers do not include the heap left over from a previous one.
 // The chain host prepares every module type (in the chain or not) and every T/S twin, so the chain contents and the
-// channel modes change the numbers very little; the sample rate scales them.
+// channel modes change the numbers very little; the sample rate scales them. product=<id>: a single-module plugin
+// (installer/products.csv), which prepares only its own module.
 namespace
 {
 double privateMegabytes()
@@ -43,11 +44,15 @@ int runMemory (const juce::StringArray& args)
     const bool ts = args.contains ("ts");
     const bool withEditor = args.contains ("editor");
     const bool coreOnly = args.contains ("core");   // keep the default chain (the chain host prepares every type anyway)
+    juce::String productId ("suite");
+    for (const auto& a : args)
+        if (a.startsWith ("product="))
+            productId = a.fromFirstOccurrenceOf ("=", false, false);
 
     const double base = privateMegabytes();
     double afterPrepare = 0.0, afterAudio = 0.0, afterEditor = 0.0;
     {
-        PureSheenProcessor proc;
+        PureSheenProcessor proc (psplug::productById (productId.toRawUTF8()));
         if (! coreOnly)
         {
             for (int t = ps::kNumCoreModuleTypes; t < ps::kNumModuleTypes; ++t)

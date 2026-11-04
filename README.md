@@ -6,6 +6,10 @@ delta listening, A-D snapshots, undo history and factory presets for common targ
 
 VST3 + CLAP + Standalone, Windows, built with JUCE 8. Made for FL Studio, works in any DAW.
 
+Every module also comes as a plugin of its own, in VST3 and CLAP: PureSheen EQ, Multiband Dynamics, Imager, Exciter,
+Maximizer, Dither, Dynamic EQ, Match EQ, Tone Balance, Definition, Smoother, Punch, Low Contrast, Bass Shaper, Classic
+Compressor, Passive EQ, Classic Limiter, Tape and De-limiter. They share their presets with the suite.
+
 ![PureSheen Dynamics](docs/screenshot.png)
 
 ## Install
@@ -16,6 +20,10 @@ VST3 + CLAP + Standalone, Windows, built with JUCE 8. Made for FL Studio, works 
 - optionally, the Standalone app
 
 If FL Studio has the plugin loaded, the installer offers to close it first.
+
+**By hand, without an installer:** unpack `<Name>-<version>-Manual.zip` and follow `How to install.txt` inside. It holds
+the `.vst3` folder and the `.clap` file. Copy the folder to `C:\Program Files\Common Files\VST3` (needs admin rights), or
+to any folder you add under FL's *Options > Manage plugins > Plugin search paths*.
 
 **From a build:**
 
@@ -125,6 +133,15 @@ scripts\build-installer.bat
 The setup lands in `dist\`. Its version is the `project()` version in `CMakeLists.txt`.
 `scripts\build-installer.bat /DTestRoot=C:\Temp\puresheen-test` builds a test variant instead. It installs per user,
 under that folder.
+
+Every plugin, the suite and the single-module ones (`installer\products.csv`), with an installer and a manual zip each:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\package-all.ps1
+```
+
+`-Only eq,tape` limits it to those plugins, `-SkipBuild` packages what is already built, and `-TestRoot <folder>` builds
+test installers as above. A single plugin builds with `scripts\build.bat build PureSheen_eq_VST3 PureSheen_eq_CLAP`.
 
 See `ARCHITECTURE.md` for how the code is organised.
 

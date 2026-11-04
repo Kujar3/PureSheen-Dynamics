@@ -567,6 +567,11 @@ struct Chain::Impl
     double sampleRate = 48000.0;
     int maxBlock = 0;
     bool prepared = false;
+    bool locked = false;
+    int lockedType = -1;
+
+    // The slots this chain can ever use: all of them, or the single-module plugin's one.
+    bool slotInUse (int t) const noexcept { return ! locked || t == lockedType; }
 
     Impl()
     {
@@ -1537,8 +1542,11 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
     // the same bound as global bypass, not a smaller estimate based on the Core chain.
     const int firFamily = d.sampleRate > 100000.0 ? 4 : (d.sampleRate > 50000.0 ? 2 : 1);
     const int chainCapacity = std::max (131072 * firFamily, (int) std::ceil (2.0 * d.sampleRate));
-    for (auto& s : d.slots)
+    for (int t = 0; t < kNumModuleTypes; ++t)
     {
+        if (! d.slotInUse (t))
+            continue;
+        auto& s = d.slots[t];
         s.dry.prepare (slotCapacity);
         s.deltaLine.prepare (chainCapacity);
         s.loudness.design (d.sampleRate);
@@ -1552,11 +1560,14 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
     d.bypassDelay.prepare (chainCapacity);
     d.dcFilter.design (d.sampleRate);
 
-    for (auto& m : d.modules)
-        m->prepare (d.sampleRate, d.maxBlock);
-    for (auto& m : d.twins)
-        if (m != nullptr)
-            m->prepare (d.sampleRate, d.maxBlock);
+    for (int t = 0; t < kNumModuleTypes; ++t)
+    {
+        if (! d.slotInUse (t))
+            continue;
+        d.modules[t]->prepare (d.sampleRate, d.maxBlock);
+        if (d.twins[t] != nullptr)
+            d.twins[t]->prepare (d.sampleRate, d.maxBlock);
+    }
     d.dither.prepare (d.sampleRate, d.maxBlock);
 
     for (auto* f : { &d.inputFifo, &d.outputFifo, &d.modulePreFifo, &d.modulePostFifo })
@@ -1594,9 +1605,12 @@ void Chain::reset() noexcept
 {
     auto& d = *impl;
     for (int t = 0; t < kNumModuleTypes; ++t)
+    {
+        if (! d.slotInUse (t))
+            continue;
         d.resetModule (t);
-    for (auto& s : d.slots)
-        d.clearSlot (s);
+        d.clearSlot (d.slots[t]);
+    }
     d.bypassDelay.clear();
     d.dcFilter.reset();
     d.dither.reset();
@@ -1607,6 +1621,12 @@ void Chain::reset() noexcept
     d.matchDb = d.matchTargetDb = 0.0;
     d.soloMatchDb = 0.0;
     d.firstBlock = true;
+}
+
+void Chain::lockToModule (int moduleTypeOrMinus1) noexcept
+{
+    impl->locked = true;
+    impl->lockedType = moduleTypeOrMinus1;
 }
 
 void Chain::setOrder (const std::vector<ModuleType>& newOrder)

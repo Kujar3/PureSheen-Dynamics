@@ -59,9 +59,13 @@ struct DitherPanel::Impl
 
         shape.setColour (Colours::accent);
 
-        for (juce::Component* comp : std::initializer_list<juce::Component*> { &power, &bits, &amount, &shape, &harm, &limit,
-                                                                            &blank, &dc, &reset })
+        for (juce::Component* comp : std::initializer_list<juce::Component*> { &bits, &amount, &shape, &harm, &limit, &blank, &reset })
             owner.addAndMakeVisible (comp);
+
+        // The Dither plugin: Bypass is its on / off, and it has no Maximizer for the DC filter to sit before.
+        if (proc.getProduct().isSuite())
+            for (juce::Component* comp : std::initializer_list<juce::Component*> { &power, &dc })
+                owner.addAndMakeVisible (comp);
     }
 
     void paintBitMeter (juce::Graphics& g, juce::Rectangle<float> area) const
@@ -69,7 +73,8 @@ struct DitherPanel::Impl
         const auto& m = proc.getChain().getDitherMeters();
         const int depthIndex = juce::jlimit (0, 4, juce::roundToInt (proc.getParameterValue ("dith.bits")));
         const int depth = ps::kDitherBitDepth[(size_t) depthIndex];
-        const bool on = proc.getParameterValue ("dith.on") >= 0.5f;
+        const bool on = proc.getParameterValue ("dith.on") >= 0.5f
+                        && (proc.getProduct().isSuite() || proc.getParameterValue ("io.bypass") < 0.5f);
 
         auto labels = area.removeFromLeft (18.0f);
         area.removeFromBottom (16.0f);
@@ -203,7 +208,7 @@ struct DitherPanel::Impl
         g.drawText ("Dither", juce::Rectangle<float> (30.0f, 1.0f, 200.0f, (float) kHeaderH), juce::Justification::centredLeft, false);
         g.setFont (font (11.5f, 600));
         g.setColour (Colours::textSubtle);
-        g.drawText ("Last stage of the output, after every module",
+        g.drawText (proc.getProduct().isSuite() ? "Last stage of the output, after every module" : "Put it last, after every other plugin",
                     juce::Rectangle<float> (30.0f + textWidth (font (14.5f, 700), "Dither") + 14.0f, 1.0f, 320.0f, (float) kHeaderH),
                     juce::Justification::centredLeft, false);
 
@@ -234,7 +239,8 @@ struct DitherPanel::Impl
         note.setWordWrap (juce::AttributedString::byWord);
         note.setLineSpacing (2.0f);
         note.append ("When to use it: ", font (12.0f, 700), Colours::text);
-        note.append ("turn dither on only when you export at a lower bit depth than you work in (for example a 16 bit "
+        note.append (juce::String (proc.getProduct().isSuite() ? "turn dither on" : "use this")
+                     + " only when you export at a lower bit depth than you work in (for example a 16 bit "
                      "WAV for CD). It adds a tiny noise so quiet parts and fade-outs stay smooth instead of turning "
                      "grainy. Use it once, as the very last step - never twice.", font (12.0f), Colours::textDim);
         juce::TextLayout layout;

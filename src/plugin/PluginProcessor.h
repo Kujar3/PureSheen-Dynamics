@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "dsp/Chain.h"
+#include "plugin/Product.h"
 
 namespace ps { struct MatchSpectrum; }
 namespace psplug { class Assistant; class TrackReferencing; }
@@ -32,13 +33,21 @@ namespace psplug { class Assistant; class TrackReferencing; }
 // module id prefix, so a 0.1.x state (six module types, 479 parameters) loads unchanged: every phase 2 parameter
 // takes its (neutral) default.
 //
+// Single-module plugins (plugin/Product.h, one per row of installer/products.csv) are this class locked to one module:
+// the chain is fixed to it, the host sees only its parameters and the I/O ones (same ids as the suite, no power switch),
+// the Assistant and Track Referencing do not exist (getAssistant / getTrackReferencing are suite only), and the header's
+// preset scope is the module (Product::presetScope: the global preset calls of the suite use that scope there). The
+// Dither plugin has no module and no presets; its Bypass also turns the dither off.
+//
 // Threading: everything here is message-thread only except processBlock and the getters marked "any thread".
 class PureSheenProcessor final : public juce::AudioProcessor,
                                  public juce::ChangeBroadcaster   // chain / history / preset / snapshot changes
 {
 public:
-    PureSheenProcessor();
+    explicit PureSheenProcessor (const psplug::Product& product = psplug::suiteProduct());
     ~PureSheenProcessor() override;
+
+    const psplug::Product& getProduct() const noexcept;
 
     //==============================================================================
     // juce::AudioProcessor
@@ -69,8 +78,8 @@ public:
     //==============================================================================
     // Parameters
     juce::AudioProcessorValueTreeState& getValueTreeState() noexcept;
-    juce::RangedAudioParameter* getParameter (const juce::String& id) const;   // nullptr if unknown
-    float getParameterValue (const juce::String& id) const;                     // plain value (any thread)
+    juce::RangedAudioParameter* getParameter (const juce::String& id) const;   // nullptr if unknown or not in this plugin
+    float getParameterValue (const juce::String& id) const;                     // plain value (any thread); also a fixed one
     // One complete host gesture (begin, set, end) -> one undo step. For clicks / menu items / programmatic edits.
     void setParameterValue (const juce::String& id, float plainValue);
     // Several parameters as ONE undo step (e.g. "Reset module", "Learn crossovers", linked A/B edits).

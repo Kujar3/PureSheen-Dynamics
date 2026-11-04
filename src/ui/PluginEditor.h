@@ -44,6 +44,10 @@ public:
     explicit PureSheenEditor (PureSheenProcessor&);
     ~PureSheenEditor() override;
 
+    // A single-module plugin has no chain strip, so its window is that much lower.
+    static int defaultHeightFor (const psplug::Product&) noexcept;
+    static int minHeightFor (const psplug::Product&) noexcept;
+
     void paint (juce::Graphics&) override;
     void resized() override;
 

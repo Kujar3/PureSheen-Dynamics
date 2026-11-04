@@ -38,6 +38,7 @@ constexpr int kScreenMarginW = 40, kScreenMarginH = 90;
 constexpr float kMaxZoom = 1.3f;
 constexpr juce::uint32 kNoticeMs = 3500;
 constexpr int kIoWidth = 176;
+constexpr int kStripHeight = 78;             // the chain strip and the gap below it
 constexpr double kMinFrameMs = 6.5;          // display-refresh pulls: at most ~150 per second (a 240 Hz screen gets 120)
 constexpr double kFrameFallbackMs = 100.0;   // no display refresh for this long (hidden, dev tool): the tick pulls
 
@@ -58,10 +59,10 @@ juce::Rectangle<int> primaryUserArea()
     return {};
 }
 
-float zoomFor (int w, int h)
+float zoomFor (int w, int h, int defaultHeight)
 {
     return juce::jlimit (1.0f, kMaxZoom, juce::jmin ((float) w / (float) PureSheenEditor::kDefaultWidth,
-                                                     (float) h / (float) PureSheenEditor::kDefaultHeight));
+                                                     (float) h / (float) defaultHeight));
 }
 
 bool isMultiband (PureSheenProcessor& p, int type)
@@ -84,8 +85,18 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     };
 
     Impl (PureSheenEditor& o, PureSheenProcessor& p)
-        : owner (o), processor (p), header (*this), strip (*this), io (*this), dither (*this), assistantPanel (*this), referencePanel (*this), history (p)
+        : owner (o), processor (p), header (*this), io (*this), help (p), history (p)
     {
+        const auto& product = p.getProduct();
+        if (product.isSuite())
+        {
+            strip = std::make_unique<ps::ui::ChainStrip> (*this);
+            assistantPanel = std::make_unique<ps::ui::AssistantPanel> (*this);
+            referencePanel = std::make_unique<ps::ui::ReferencePanel> (*this);
+        }
+        if (product.isSuite() || product.isDither())
+            dither = std::make_unique<ps::ui::DitherPanel> (*this);
+
         help.onClose = [this] { setHelpVisible (false); };
         history.onClose = [this] { setHistoryVisible (false); };
     }
@@ -144,8 +155,22 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             || selected >= ps::kNumModuleTypes)
             selected = (int) ps::ModuleType::Equalizer1;
 
+        if (processor.getProduct().isLocked())
+            selected = lockedSelection();
+
         return true;
     }
+
+    // A single-module plugin always shows its one panel.
+    int lockedSelection() const
+    {
+        const auto& product = processor.getProduct();
+        return product.isDither() ? -1 : (int) product.module;
+    }
+
+    bool ditherShown() const { return dither != nullptr && dither->isVisible(); }
+    bool assistantPageShown() const { return assistantPanel != nullptr && assistantPanel->isVisible(); }
+    bool referencePageShown() const { return referencePanel != nullptr && referencePanel->isVisible(); }
 
     void saveUiState()
     {
@@ -166,7 +191,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     juce::Point<int> initialSize() const
     {
         int w = savedSize.x > 0 ? savedSize.x : kDefaultWidth;
-        int h = savedSize.y > 0 ? savedSize.y : kDefaultHeight;
+        int h = savedSize.y > 0 ? savedSize.y : defaultHeightFor (processor.getProduct());
         const auto screen = primaryUserArea();
 
         if (! screen.isEmpty())
@@ -175,7 +200,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             h = juce::jmin (h, screen.getHeight() - kScreenMarginH);
         }
 
-        return { juce::jlimit (kMinWidth, kMaxWidth, w), juce::jlimit (kMinHeight, kMaxHeight, h) };
+        return { juce::jlimit (kMinWidth, kMaxWidth, w), juce::jlimit (minHeightFor (processor.getProduct()), kMaxHeight, h) };
     }
 
     //==========================================================================
@@ -215,24 +240,24 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         const bool assistantShown = selected == ps::ui::kAssistantSelection;
         const bool referenceShown = selected == ps::ui::kReferenceSelection;
 
-        if (assistantShown != assistantPanel.isVisible() || referenceShown != referencePanel.isVisible())
+        if (assistantShown != assistantPageShown() || referenceShown != referencePageShown())
         {
-            assistantPanel.setVisible (assistantShown);
-            referencePanel.setVisible (referenceShown);
+            assistantPanel->setVisible (assistantShown);
+            referencePanel->setVisible (referenceShown);
             if (assistantShown || referenceShown)
             {
                 panel.reset();
-                dither.setVisible (false);
+                dither->setVisible (false);
                 processor.setTapModule (-1);
                 if (assistantShown)
                 {
-                    assistantPanel.setBounds (moduleArea);
-                    assistantPanel.tick();
+                    assistantPanel->setBounds (moduleArea);
+                    assistantPanel->tick();
                 }
                 else
                 {
-                    referencePanel.setBounds (moduleArea);
-                    referencePanel.tick();
+                    referencePanel->setBounds (moduleArea);
+                    referencePanel->tick();
                 }
                 help.toFront (false);
                 history.toFront (false);
@@ -242,7 +267,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (assistantShown || referenceShown)
         {
             io.setDitherSelected (false);
-            strip.refresh();
+            strip->refresh();
             content.repaint (moduleArea.expanded (4));
             return;
         }
@@ -252,7 +277,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
 
         const bool inChain = selected >= 0 && std::find (order.begin(), order.end(), (ps::ModuleType) selected) != order.end();
         const int wanted = selected == -1 ? -1 : (inChain ? selected : -2);
-        const int current = panel != nullptr ? (int) panel->getModuleType() : (dither.isVisible() ? -1 : -2);
+        const int current = panel != nullptr ? (int) panel->getModuleType() : (ditherShown() ? -1 : -2);
 
         if (wanted != current || (wanted >= 0 && panel == nullptr))
         {
@@ -273,14 +298,16 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
                 }
             }
 
-            dither.setVisible (wanted == -1);
+            if (dither != nullptr)
+                dither->setVisible (wanted == -1);
             processor.setTapModule (wanted >= 0 ? wanted : -1);
             help.toFront (false);
             history.toFront (false);
         }
 
         io.setDitherSelected (selected == -1);
-        strip.refresh();
+        if (strip != nullptr)
+            strip->refresh();
         content.repaint (moduleArea.expanded (4));
     }
 
@@ -292,9 +319,12 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         auto r = content.getLocalBounds();
         header.setBounds (r.removeFromTop (46));
         r = r.withTrimmedTop (8).reduced (10, 0).withTrimmedBottom (10);
-        stripArea = r.removeFromTop (70);
-        strip.setBounds (stripArea);
-        r.removeFromTop (8);
+        if (strip != nullptr)
+        {
+            stripArea = r.removeFromTop (70);
+            strip->setBounds (stripArea);
+            r.removeFromTop (8);
+        }
 
         const int ioW = kIoWidth + juce::jlimit (0, 60, (r.getWidth() - 1100) / 6);
         ioArea = r.removeFromRight (ioW);
@@ -305,9 +335,12 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (panel != nullptr)
             panel->setBounds (moduleArea);
 
-        dither.setBounds (moduleArea);
-        assistantPanel.setBounds (moduleArea);
-        referencePanel.setBounds (moduleArea);
+        if (dither != nullptr)
+            dither->setBounds (moduleArea);
+        if (assistantPanel != nullptr)
+            assistantPanel->setBounds (moduleArea);
+        if (referencePanel != nullptr)
+            referencePanel->setBounds (moduleArea);
         help.setBounds (content.getLocalBounds());
 
         if (history.isVisible())
@@ -320,6 +353,8 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
     {
         for (const auto& area : { stripArea, ioArea, moduleArea })
         {
+            if (area.isEmpty())
+                continue;
             const auto r = area.toFloat().reduced (0.5f);
             g.setColour (juce::Colours::black.withAlpha (0.16f));
             g.fillRoundedRectangle (r.translated (0.0f, 2.0f).expanded (0.5f), ps::ui::kCornerRadius + 0.5f);
@@ -327,7 +362,7 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
             g.fillRoundedRectangle (r.translated (0.0f, 1.0f), ps::ui::kCornerRadius);
         }
 
-        if (panel == nullptr && ! dither.isVisible() && ! assistantPanel.isVisible() && ! referencePanel.isVisible())
+        if (panel == nullptr && ! ditherShown() && ! assistantPageShown() && ! referencePageShown())
         {
             ps::ui::drawPanel (g, moduleArea.toFloat());
             auto b = moduleArea.toFloat();
@@ -602,8 +637,8 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         if (panel != nullptr)
             panel->frameTick();
 
-        if (dither.isVisible())
-            dither.frameTick();
+        if (ditherShown())
+            dither->frameTick();
     }
 
     void tick()
@@ -620,22 +655,24 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
         }
 
         io.tick();
-        strip.tick();
+        if (strip != nullptr)
+            strip->tick();
         header.update();
 
         if (panel != nullptr)
             panel->tick();
 
-        if (dither.isVisible())
-            dither.tick();
+        if (ditherShown())
+            dither->tick();
 
-        if (assistantPanel.isVisible())
-            assistantPanel.tick();
+        if (assistantPageShown())
+            assistantPanel->tick();
 
-        if (referencePanel.isVisible())
-            referencePanel.tick();
+        if (referencePageShown())
+            referencePanel->tick();
 
-        updateReferenceOverlay();
+        if (processor.getProduct().isSuite())
+            updateReferenceOverlay();
 
         if (history.isVisible() && ++historyCountdown >= 10)
         {
@@ -672,11 +709,12 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
 
     Content content { *this };
     ps::ui::HeaderBar header;
-    ps::ui::ChainStrip strip;
     ps::ui::IoPanel io;
-    ps::ui::DitherPanel dither;
-    ps::ui::AssistantPanel assistantPanel;
-    ps::ui::ReferencePanel referencePanel;
+    // The suite's pages. A single-module plugin has none of them (the Dither plugin has only the Dither panel).
+    std::unique_ptr<ps::ui::ChainStrip> strip;
+    std::unique_ptr<ps::ui::DitherPanel> dither;
+    std::unique_ptr<ps::ui::AssistantPanel> assistantPanel;
+    std::unique_ptr<ps::ui::ReferencePanel> referencePanel;
     int chainSelection = (int) ps::ModuleType::Equalizer1;   // where "Chain" returns to from the Assistant / Reference page
     std::unique_ptr<ps::ui::ModulePanel> panel;
     ps::ui::HelpOverlay help;
@@ -704,6 +742,16 @@ struct PureSheenEditor::Impl final : public ps::ui::EditorContext
 };
 
 //==============================================================================
+int PureSheenEditor::defaultHeightFor (const psplug::Product& product) noexcept
+{
+    return kDefaultHeight - (product.isLocked() ? kStripHeight : 0);
+}
+
+int PureSheenEditor::minHeightFor (const psplug::Product& product) noexcept
+{
+    return kMinHeight - (product.isLocked() ? kStripHeight : 0);
+}
+
 PureSheenEditor::PureSheenEditor (PureSheenProcessor& p)
     : juce::AudioProcessorEditor (p), impl (std::make_unique<Impl> (*this, p))
 {
@@ -713,15 +761,17 @@ PureSheenEditor::PureSheenEditor (PureSheenProcessor& p)
     liveEditors().add (this);
 
     setOpaque (true);
-    setTitle ("PureSheen Dynamics");
+    setTitle (p.getProduct().name);
     addAndMakeVisible (d.content);
 
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &d.header, &d.strip, &d.io })
-        d.content.addAndMakeVisible (c);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &d.header, d.strip.get(), &d.io })
+        if (c != nullptr)
+            d.content.addAndMakeVisible (c);
 
-    d.content.addChildComponent (d.dither);
-    d.content.addChildComponent (d.assistantPanel);
-    d.content.addChildComponent (d.referencePanel);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { d.dither.get(), d.assistantPanel.get(), d.referencePanel.get() })
+        if (c != nullptr)
+            d.content.addChildComponent (c);
+
     d.content.addChildComponent (d.help);
     d.content.addChildComponent (d.history);
 
@@ -741,7 +791,7 @@ PureSheenEditor::PureSheenEditor (PureSheenProcessor& p)
     const auto size = d.initialSize();
     setSize (size.x, size.y);
     setResizable (true, true);
-    setResizeLimits (kMinWidth, kMinHeight, kMaxWidth, kMaxHeight);
+    setResizeLimits (kMinWidth, minHeightFor (p.getProduct()), kMaxWidth, kMaxHeight);
 
     d.showSelection();
     d.persist = true;
@@ -780,7 +830,7 @@ void PureSheenEditor::paint (juce::Graphics& g)
 void PureSheenEditor::resized()
 {
     auto& d = *impl;
-    const float zoom = zoomFor (getWidth(), getHeight());
+    const float zoom = zoomFor (getWidth(), getHeight(), defaultHeightFor (d.processor.getProduct()));
     d.content.setTransform (zoom > 1.0f ? juce::AffineTransform::scale (zoom) : juce::AffineTransform());
     d.content.setBounds (0, 0, (int) std::ceil ((float) getWidth() / zoom), (int) std::ceil ((float) getHeight() / zoom));
     d.saveUiState();
@@ -789,6 +839,8 @@ void PureSheenEditor::resized()
 void PureSheenEditor::selectModule (int moduleTypeOrMinus1)
 {
     auto& d = *impl;
+    if (d.processor.getProduct().isLocked())
+        moduleTypeOrMinus1 = d.lockedSelection();
     if (moduleTypeOrMinus1 == ps::ui::kChainSelection)
         moduleTypeOrMinus1 = d.chainSelection;
     if (moduleTypeOrMinus1 == ps::ui::kAssistantSelection || moduleTypeOrMinus1 == ps::ui::kReferenceSelection)
@@ -832,7 +884,7 @@ void PureSheenEditor::drawReferenceSpectrum (juce::Graphics& g, const ps::ui::Fr
 
 bool PureSheenEditor::isInterestedInFileDrag (const juce::StringArray& files)
 {
-    return ! files.isEmpty();
+    return ! files.isEmpty() && impl->processor.getProduct().isSuite();   // the drop goes to the Reference page
 }
 
 void PureSheenEditor::fileDragEnter (const juce::StringArray& files, int, int)
@@ -904,7 +956,8 @@ void PureSheenEditor::updateNow()
 void PureSheenEditor::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     auto& d = *impl;
-    d.strip.refresh();
+    if (d.strip != nullptr)
+        d.strip->refresh();
     d.header.update();
     d.showSelection();
 

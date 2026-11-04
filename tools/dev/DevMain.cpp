@@ -19,6 +19,9 @@
 //   PureSheenDev importkey "<name>" ...  -> the importer's template / key of a ParamID or section name
 //   PureSheenDev importtest              -> importer text-path and processor checks
 //   PureSheenDev assist ...              -> the Assistant from the command line (AssistTool.cpp)
+//   PureSheenDev producttest [id ...]     -> the single-module plugins (also part of selftest) (ProductTests.cpp)
+//   PureSheenDev productsnapshot <outDir> [id ...]
+//                                         -> each single-module plugin's window at three sizes, and its help
 //   PureSheenDev reference <master> <ref> [--chain default] [--loop s e] [--listen out.wav]
 //                                         -> Track Referencing on real files: profiles, comparison, hints, A/B level
 //                                            (RefTool.cpp)
@@ -35,6 +38,8 @@ int runImportTests();                                                 // ImportT
 int runAssist (const juce::StringArray& args);                        // AssistTool.cpp
 int runReference (const juce::StringArray& args);                     // RefTool.cpp
 int runDeLimiterLearn (const juce::StringArray& args);                // DeLimiterLearnTool.cpp
+int runProductTests (const juce::StringArray& args);                  // ProductTests.cpp
+int runProductSnapshots (const juce::File& outDir, const juce::StringArray& args);   // ProductTests.cpp
 
 int main (int argc, char** argv)
 {
@@ -95,6 +100,17 @@ int main (int argc, char** argv)
 
     if (command == "importtest")
         return runImportTests();
+
+    if (command == "producttest" || command == "productsnapshot")
+    {
+        const int first = command == "producttest" ? 2 : 3;
+        juce::StringArray args;
+        for (int i = first; i < argc; ++i)
+            args.add (juce::String::fromUTF8 (argv[i]));
+        if (command == "producttest")
+            return runProductTests (args) == 0 ? 0 : 1;
+        return runProductSnapshots (cwd.getChildFile (argc > 2 ? argv[2] : "out/products"), args);
+    }
 
     if (command == "reference")
     {

@@ -349,9 +349,12 @@ struct IoPanel::Impl
         swap.setTooltip ("Swap: swap the left and right channels");
         swap.setOnColour (Colours::info);
 
-        for (juce::Component* comp : std::initializer_list<juce::Component*> { &gainMatch, &bypass, &mono, &swap, &dither,
+        for (juce::Component* comp : std::initializer_list<juce::Component*> { &gainMatch, &bypass, &mono, &swap,
                                                                             &inLink, &outLink, &reset })
             owner.addAndMakeVisible (comp);
+
+        if (proc.getProduct().isSuite())   // the shortcut to the suite's Dither panel
+            owner.addAndMakeVisible (dither);
 
         matchValue.setInterceptsMouseClicks (false, false);
         matchValue.setJustificationType (juce::Justification::centredRight);
@@ -643,9 +646,16 @@ struct IoPanel::Impl
             mono.setBounds (row);
             toggles.removeFromTop (gap);
             row = toggles.removeFromTop (toggleH);
-            swap.setBounds (row.removeFromLeft ((row.getWidth() - gap) / 2));
-            row.removeFromLeft (gap);
-            dither.setBounds (row);
+            if (proc.getProduct().isSuite())
+            {
+                swap.setBounds (row.removeFromLeft ((row.getWidth() - gap) / 2));
+                row.removeFromLeft (gap);
+                dither.setBounds (row);
+            }
+            else
+            {
+                swap.setBounds (row);
+            }
         }
         monitorTitle = r.removeFromBottom (20).toFloat();
         r.removeFromBottom (small ? 4 : 8);
