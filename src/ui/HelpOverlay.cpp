@@ -102,6 +102,8 @@ struct HelpOverlay::Impl
               moduleColour (ps::ModuleType::ClassicLimiter) },
             { "**Tape** - the warmth, low-end bump and soft highs of recording to tape.",
               moduleColour (ps::ModuleType::Tape) },
+            { "**De-limiter** - brings back the peaks a limiter took from a finished master. Learn sets the threshold.",
+              moduleColour (ps::ModuleType::DeLimiter) },
         };
 
         close.roundBackground = true;

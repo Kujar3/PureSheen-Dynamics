@@ -101,6 +101,6 @@ std::vector<ModuleType> insertIntoChain (const std::vector<ModuleType>& order, M
 std::vector<const ModuleSpec*> allModuleSpecs();
 const ModuleSpec* findModuleSpec (Key tagOrElementKey);
 
-// A short line for the UI: "Imported 9 modules, 214 settings. Skipped: de-limiter."
+// A short line for the UI: "Imported 9 modules, 214 settings. Skipped: mix rebalancing."
 std::string summariseReport (const ImportPlan&);
 } // namespace ps::imp

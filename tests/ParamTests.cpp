@@ -108,6 +108,7 @@ std::vector<std::string> documentedIds()
     add ("peq", { "drive" });
     add ("clim", { "thr", "ceiling", "character", "mode", "truePeak", "link" });
     add ("tape", { "speed", "drive", "bias", "harmonics", "lowEmph", "highEmph" });
+    add ("dlim", { "amount", "input", "output", "thr" });
 
     for (const char* eq : { "eq1", "eq2" })
     {

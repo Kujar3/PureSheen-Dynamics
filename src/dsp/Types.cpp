@@ -25,6 +25,7 @@ const ModuleInfo& moduleInfo (ModuleType type)
         { "peq", "Passive EQ", "Passive EQ" },
         { "clim", "Classic Limiter", "Classic Limiter" },
         { "tape", "Tape", "Tape" },
+        { "dlim", "De-limiter", "De-limiter" },
     };
 
     static_assert (sizeof (infos) / sizeof (infos[0]) == (size_t) kNumModuleTypes, "one ModuleInfo per ModuleType");

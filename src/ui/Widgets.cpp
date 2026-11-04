@@ -1300,6 +1300,7 @@ juce::Colour moduleColour (ps::ModuleType type)
         case ps::ModuleType::PassiveEq:      return juce::Colour (0xffeb8fc9);   // pink
         case ps::ModuleType::ClassicLimiter: return juce::Colour (0xff93c97f);   // sage
         case ps::ModuleType::Tape:           return juce::Colour (0xffb7c3d0);   // silver
+        case ps::ModuleType::DeLimiter:      return juce::Colour (0xff4fc3e8);   // sky
         case ps::ModuleType::Count:
         default: break;
     }

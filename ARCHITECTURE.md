@@ -21,7 +21,7 @@ Later phases (enums are append-only, so they slot in):
 - Preset importer (done, see "Preset importer" below): .xml presets of the reference suite, labelled generically
 - Phase 3: the Assistant (done, see "Assistant (phase 3)" below), Track Referencing (done, from RefMatch, see
   "Track Referencing (phase 3)" below), the vintage-style compressor / EQ / limiter / tape modules (done, fitted to the
-  reference, see "Vintage-style modules (phase 3)" below), a de-limiter, and one plug-in per module
+  reference, see "Vintage-style modules (phase 3)" below), a de-limiter (done, see "De-limiter (phase 3)" below), and one plug-in per module
   ("PureSheen EQ", ...)
 - Phase 4: MCP bridge
 
@@ -378,7 +378,7 @@ menus, and the dev tool's `import` / `importkey` / `importtest` and `render --im
   module sections holding `<Param ElementID ParamID Value>` and `<ExtraBytes ElementID Data>`. Exactly one enabled
   module section = a single-module file; otherwise a whole chain in the order of the decoded chain blob (sections not
   in the chain hold stale settings and are never read). Modules we do not have are skipped and named in our words
-  (de-limiter, stem-separation EQ, mix rebalancing). A
+  (stem-separation EQ, mix rebalancing). A
   well-formed empty chain is refused as holding no modules (`ImportPlan::holdsNoModules`).
 - Module power (whole-chain files) comes from the section's own power switch (`kSectionBypassKey`, any module type,
   >= 0.5 = off, absent = on; counted as an imported setting), handled once in `ModuleImport::run`. The chain entries'
@@ -918,4 +918,65 @@ Known limitations (vintage):
 - Factory presets were chosen on the pre-fit models and passed an isolated level check only (worst Tape +1.41 dB RMS);
   they need a listening pass. Limiter Threshold / Ceiling ranges and Link default, tape drive's low end, and the
   compressor's bell / shelf default frequencies remain unconfirmed (TBC in the table above).
+- Not done: listening tests in FL Studio.
+
+## De-limiter (phase 3)
+
+The last module on the list: `ModuleType::DeLimiter`, prefix `dlim`, display name De-limiter, Stereo only, no T/S twin.
+Appended after the vintage appendix: 5 parameters (`dlim.on`, `amount`, `input`, `output`, `thr`), indices 920..924,
+APVTS version hint 4, `kNumParams_0_6_0` = 920 marks the start, `tests/ParamCompatTests.cpp` freezes count + fingerprint.
+Colour sky. Add inserts it first in the chain (it works on what a limiter left behind), the importer ranks it first too.
+
+The reference uses a neural network. Ours is a small DSP model of what that network was measured to do, fitted to black-box
+renders; `src/dsp/DeLimiter.h` is the contract, the constants are one block at the top of `DeLimiter.cpp`.
+
+| control (id) | range | default | unit |
+|---|---|---|---|
+| Amount (`amount`) | 0 .. 200 | 0 | % |
+| Input Gain (`input`) | -9 .. +9 | 0 | dB |
+| Output Gain (`output`) | -9 .. +9 | 0 | dB |
+| Threshold (`thr`) | -12 .. 0 | 0 | dB |
+
+Measured on the reference and matched exactly:
+- Output = input x (1 + Amount / 100 x (g - 1)), with one gain curve g >= 1 for both channels (L and R agree within
+  0.000001 dB), Output Gain a plain gain afterwards. Base and a fresh instance null exactly: it is deterministic.
+- Only the level against the threshold matters: Input Gain +6 scaled back nulls with Threshold -12 at Threshold -6 to -90 dB.
+- The detector follows the mid: hits in the side only get no lift. Below about 14 dB under the threshold, no lift.
+- Learn: waits without limit for the first audio, then a fixed clock of 6.00 s runs on through silence or a pause. The result
+  is the highest sample peak of the louder channel in that window, after Input Gain, clamped to -12 .. 0. Stored as a plain
+  value.
+
+Modelled, not matched: the curve itself. See `DeLimiter.h` for the model. Against the reference (Amount 100 %, Threshold
+at the ceiling, seven 8 s music blocks, all errors in dB of lift): rms 0.99, mean +0.09, 95th percentile -0.57, largest lift
+-1.23; with Amount 50 / 150 / 200 % rms 0.55 / 1.36 / 1.69; Threshold 0 / -3 / -12 rms 1.20 / 1.05 / 1.09. Trained
+without the song it is scored on, rms is about 1.1. Restoration against the audio before limiting is about as close as
+the reference's on all 11 blocks. Learned threshold: worst difference 0.0004 dB over 28 files. Latency 80 samples at
+44.1 kHz; the curves line up at lag 0. Tables: `out/delimit/fit-summary.md`.
+
+Importer (`ImportMapPhase3.cpp`): the section maps 1:1 (all four defaults confirmed), no longer in the skipped list.
+Tests: CoreTests `dlim.`, `import.vint.`, `params.`; selftest "-- De-limiter learn" (through the processor while a host
+plays: waits for audio, allocation free, progress, runs on through a pause, one undo step, redo, cancel, removal cancels) and
+the vintage group (latency, null, realtime, presets); snapshots `17_dlim_*`. `PureSheenDev delimitlearn <file>` runs Learn on a
+file. Factory presets: Gentle Restore, Full Restore, Hot Master, Punch Restore.
+
+Verification (build-dlim CoreTests / PureSheenDev, build PureSheen_VST3 / PureSheen_CLAP, 0 warnings in our sources): CoreTests
+703 test cases: every `dlim.`, `import.vint.` and `params.` case passes; 4 CPU speed checks of other modules (Bass Shaper, Dynamic EQ,
+Exciter, Low Contrast) fail with the machine under load, and the build from before this module fails the same ones in the same
+conditions; selftest 356 passed, 0 failed; importtest all passed; the user's saved presets import with 0 unmapped, 0 clamped;
+pluginval strictness 10 (VST3): SUCCESS; clap-validator: 31 passed, 0 failed, 12 skipped, 1 warning (`state-invalid-random`, as
+before); snapshots of the panel reviewed by eye, all 19 modules fit the strip at 980 x 600. An independent review found four defects, all fixed:
+the history FIFO's storage moved on a re-prepare, Learn's length was read across threads unprotected, a result captured before the
+module's removal could still apply, and a result arriving during an open edit joined that edit's undo step (it now waits).
+
+Known limits:
+- The sample-by-sample curve follows a network's choices that this model cannot predict: correlation with the reference's
+  curve is about 0.5 on music. Sizes and behaviour match; individual spikes do not. Largest lifts run about 1 dB short, and
+  about 3 dB short at Threshold -12.
+- At Threshold 0 on a -6 dB master the reference gives broad lift and ours 0.6 dB less on average (1.7 dB less on the worst
+  block). Steady tones are the weakest case: the reference's response to them is irregular and we did not chase it.
+- Only one clipped music block was rendered, so the flat-top boost rests on it and on the clipped hits.
+- Fitted at 44.1 kHz; other rates scale the times, no renders cover them. Delta is the slot's generic one (the reference's
+  was not measured). A host that stops calling the plug-in pauses Learn's clock until it resumes; the button cancels it.
+- The reference may have far more latency than ours (the threshold changed about 1.1 s after the window on FL's clock, not
+  measurable from the renders, since FL compensates). Our output is unaffected.
 - Not done: listening tests in FL Studio.

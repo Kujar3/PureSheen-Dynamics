@@ -20,7 +20,7 @@
 //         then exc.ts.on, exc.ts.sens/len
 //      b. each phase 2 module in ModuleType order: slot params (+ .ts.sens / .ts.len when it offers T/S), then its
 //         module params in struct order (per-set params set A then set B; bands band by band)
-//   5. vintage appendix (phase 3, after bass.autoGain): ccmp, peq, clim, tape in ModuleType order, built exactly like
+//   5. vintage appendix (phase 3, after bass.autoGain): ccmp, peq, clim, tape, then dlim, in ModuleType order, built exactly like
 //      4b (shared params first, then set A, then set B)
 // Bands of the multiband modules exist for all kMaxBands bands and both channel sets even when a module does not use
 // them (Imager width is per band only, it is Stereo-only).
@@ -210,6 +210,11 @@ struct TapeIdx
     int speed = -1, drive = -1, bias = -1, harmonics = -1, lowEmph = -1, highEmph = -1;
 };
 
+struct DlimIdx
+{
+    int amount = -1, input = -1, output = -1, thr = -1;
+};
+
 // Channel modes per module as a fixed table (the realtime side of supportedChannelModes).
 struct ChannelModeTable
 {
@@ -244,6 +249,7 @@ struct Table
     PeqIdx peq;
     ClimIdx clim;
     TapeIdx tape;
+    DlimIdx dlim;
 };
 
 //==============================================================================
@@ -311,6 +317,7 @@ ChannelModeTable channelModesFor (ModuleType type)
         case ModuleType::BassShaper:
         case ModuleType::ClassicLimiter:
         case ModuleType::Tape:
+        case ModuleType::DeLimiter:
         case ModuleType::Count:
         default:
             break;
@@ -1095,6 +1102,20 @@ void addTape (Builder& b, TapeIdx& x)
     x.highEmph  = b.addFloat (p + ".highEmph", n + " High Emphasis", 0.0f, 10.0f, d.highEmphasis, "", m);
 }
 
+void addDeLimiter (Builder& b, DlimIdx& x)
+{
+    const auto type = ModuleType::DeLimiter;
+    const std::string p = moduleInfo (type).idPrefix;
+    const std::string n = moduleInfo (type).shortName;
+    const int m = (int) type;
+    const DeLimiterParams d;
+
+    x.amount = b.addFloat (p + ".amount", n + " Amount", 0.0f, 200.0f, d.amountPercent, "%", m);
+    x.input  = b.addFloat (p + ".input", n + " Input Gain", -9.0f, 9.0f, d.inputGainDb, "dB", m);
+    x.output = b.addFloat (p + ".output", n + " Output Gain", -9.0f, 9.0f, d.outputGainDb, "dB", m);
+    x.thr    = b.addFloat (p + ".thr", n + " Threshold", -12.0f, 0.0f, d.thresholdDb, "dB", m);
+}
+
 Table buildTable()
 {
     Table t;
@@ -1150,6 +1171,7 @@ Table buildTable()
             case ModuleType::PassiveEq:      addPassiveEq (b, t.peq); break;
             case ModuleType::ClassicLimiter: addClassicLimiter (b, t.clim); break;
             case ModuleType::Tape:           addTape (b, t.tape); break;
+            case ModuleType::DeLimiter:      addDeLimiter (b, t.dlim); break;
             default: break;
         }
     }
@@ -1729,6 +1751,15 @@ void readTapeParams (ParamValues v, TapeParams& p) noexcept
     p.harmonics = readFloat (v, d.harmonics);
     p.lowEmphasis = readFloat (v, d.lowEmph);
     p.highEmphasis = readFloat (v, d.highEmph);
+}
+
+void readDeLimiterParams (ParamValues v, DeLimiterParams& p) noexcept
+{
+    const auto& d = table().dlim;
+    p.amountPercent = readFloat (v, d.amount);
+    p.inputGainDb = readFloat (v, d.input);
+    p.outputGainDb = readFloat (v, d.output);
+    p.thresholdDb = readFloat (v, d.thr);
 }
 
 } // namespace ps

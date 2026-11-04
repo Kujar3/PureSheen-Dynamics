@@ -6,6 +6,7 @@
 #include "dsp/BassShaper.h"
 #include "dsp/ClassicLimiter.h"
 #include "dsp/PassiveEq.h"
+#include "dsp/DeLimiter.h"
 #include "dsp/Tape.h"
 #include "plugin/Assistant.h"
 #include "plugin/FactoryPresets.h"
@@ -379,8 +380,8 @@ void testParameters()
     for (int i = 0; sameOrder && i < hostParams.size(); ++i)
     {
         auto* p = dynamic_cast<juce::RangedAudioParameter*> (hostParams[i]);
-        // 0.1.1 table: 1, phase 2 appendix: 2, vintage appendix: 3
-        const int version = i < ps::kNumParams_0_1_1 ? 1 : (i < ps::kNumParams_0_5_0 ? 2 : 3);
+        // 0.1.1 table: 1, phase 2 appendix: 2, vintage appendix: 3, De-limiter: 4
+        const int version = i < ps::kNumParams_0_1_1 ? 1 : (i < ps::kNumParams_0_5_0 ? 2 : (i < ps::kNumParams_0_6_0 ? 3 : 4));
         sameOrder = p != nullptr && p->getParameterID() == juce::String (specs[(size_t) i].id)
                     && p->getVersionHint() == version && p->getName (256) == juce::String (specs[(size_t) i].name);
         if (! sameOrder)
@@ -1209,6 +1210,8 @@ Config vintageNeutralConfig (ps::ModuleType type, bool& hasNull)
             return {};   // the defaults (every amount 0, drive 0)
         case ps::ModuleType::ClassicLimiter:
             return { { "clim.thr", 0.0f }, { "clim.ceiling", 0.0f }, { "clim.mode", 0.0f } };
+        case ps::ModuleType::DeLimiter:
+            return {};   // the defaults (Amount 0 %, both gains 0)
         default:
             break;
     }
@@ -1224,13 +1227,14 @@ int vintageLatency (ps::ModuleType type, double rate)
         case ps::ModuleType::PassiveEq:      return ps::kPassiveEqLatency;
         case ps::ModuleType::ClassicLimiter: return ps::ClassicLimiter::latencyFor (rate);
         case ps::ModuleType::Tape:           return ps::kTapeLatency;
+        case ps::ModuleType::DeLimiter:      return ps::DeLimiter::latencyFor (rate);
         default:                             return 0;
     }
 }
 
 void testVintage()
 {
-    std::cout << "\n-- Vintage-style modules (Classic Compressor, Passive EQ, Classic Limiter, Tape)\n";
+    std::cout << "\n-- Vintage-style modules and the De-limiter\n";
 
     // all four can be added (before the Maximizer, every one of them at its defaults) and survive busy settings in
     // every channel mode allocation-free
@@ -2078,6 +2082,112 @@ void testMaximizerLearn()
 }
 
 //==============================================================================
+// The De-limiter's Learn Threshold through the processor, while a host plays.
+void testDeLimiterLearn()
+{
+    std::cout << "\n-- De-limiter learn\n";
+    Host h;
+    h.prepare();
+    h.proc.setChainOrder ({ ps::ModuleType::DeLimiter });
+    h.stream (4800, {});
+
+    const auto tone = [] (float level)
+    {
+        return [level, phase = 0.0] (long long, float& l, float& r) mutable
+        {
+            phase += juce::MathConstants<double>::twoPi * 997.0 / kRate;
+            l = r = level * (float) std::sin (phase);
+        };
+    };
+
+    // Silence: waits, without limit, and any time of it changes nothing.
+    h.proc.startDeLimiterLearn();
+    const auto stepsBefore = h.proc.getHistory().size();
+    h.stream (48000 * 2, {});
+    h.proc.flushPendingChanges (true);
+    check (h.proc.isDeLimiterLearning() && h.proc.isDeLimiterWaitingForAudio() && h.proc.getHistory().size() == stepsBefore,
+           "de-limiter learn: waits for the first sound");
+
+    // Audio, allocation free, then the threshold as one undo step.
+    const auto before = psdev::getAllocationCounts();
+    h.stream (48000 * 3, tone (0.5f));
+    const auto after = psdev::getAllocationCounts();
+    check (after.allocations == before.allocations && after.frees == before.frees,
+           "realtime: de-limiter learn listening is allocation free",
+           str (after.allocations - before.allocations, " allocations, ", after.frees - before.frees, " frees"));
+    const float progress = h.proc.getDeLimiterLearnProgress();
+    check (std::abs (progress - 0.5f) < 0.01f && ! h.proc.isDeLimiterWaitingForAudio(), "de-limiter learn: progress follows the audio", str (progress));
+    h.stream (48000 * 2, {});        // a pause: the clock runs on
+    h.proc.flushPendingChanges (true);
+    check (h.proc.isDeLimiterLearning(), "de-limiter learn: still listening before the 6 s are over");
+    h.stream (48000 * 2, tone (0.9f));   // louder, but only the first second of it is inside the window
+    h.proc.flushPendingChanges (true);
+    const float expected = 20.0f * std::log10 (0.9f);
+    check (! h.proc.isDeLimiterLearning() && std::abs (h.get ("dlim.thr") - expected) < 0.05f,
+           "de-limiter learn: threshold written from the window's highest peak", str (h.get ("dlim.thr"), " expected ", expected));
+    check (h.proc.getHistory().size() == stepsBefore + 1 && h.proc.getHistory().back().description.startsWith ("Learned De-limiter threshold"),
+           "de-limiter learn: one undo step", str (h.proc.getHistory().size() - stepsBefore, " steps"));
+    h.proc.undo();
+    check (h.get ("dlim.thr") == 0.0f, "de-limiter learn: undo restores the threshold", str (h.get ("dlim.thr")));
+    h.proc.redo();
+    check (std::abs (h.get ("dlim.thr") - expected) < 0.05f, "de-limiter learn: redo sets it again");
+
+    // Cancel: nothing changes. Removing the module cancels too, so old audio cannot set a later threshold.
+    const float kept = h.get ("dlim.thr");
+    const auto steps = h.proc.getHistory().size();
+    h.proc.startDeLimiterLearn();
+    h.stream (24000, tone (0.2f));
+    h.proc.cancelDeLimiterLearn();
+    h.stream (48000 * 7, tone (0.2f));
+    h.proc.flushPendingChanges (true);
+    check (! h.proc.isDeLimiterLearning() && h.get ("dlim.thr") == kept && h.proc.getHistory().size() == steps,
+           "de-limiter learn: cancel keeps the threshold");
+    h.proc.startDeLimiterLearn();
+    h.proc.setChainOrder ({ ps::ModuleType::Maximizer });
+    h.proc.flushPendingChanges (true);
+    check (! h.proc.isDeLimiterLearning(), "de-limiter learn: removing the module cancels it");
+
+    // A result captured before the removal must not reach a later instance either.
+    {
+        Host r;
+        r.prepare();
+        r.proc.setChainOrder ({ ps::ModuleType::DeLimiter });
+        r.stream (4800, {});
+        r.proc.startDeLimiterLearn();
+        r.stream (48000 * 7, tone (0.5f));   // captured, not collected yet
+        r.proc.setChainOrder ({ ps::ModuleType::Maximizer });
+        r.proc.setChainOrder ({ ps::ModuleType::DeLimiter });
+        r.proc.flushPendingChanges (true);
+        check (! r.proc.isDeLimiterLearning() && r.get ("dlim.thr") == 0.0f,
+               "de-limiter learn: a captured result dies with the removed module", str (r.get ("dlim.thr")));
+    }
+
+    // Finishing during an open edit: the edit keeps its own undo step, the result follows it.
+    {
+        Host e;
+        e.prepare();
+        e.proc.setChainOrder ({ ps::ModuleType::DeLimiter });
+        e.stream (4800, {});
+        const auto start = e.proc.getHistory().size();
+        e.proc.startDeLimiterLearn();
+        auto* amount = e.proc.getParameter ("dlim.amount");
+        amount->beginChangeGesture();
+        amount->setValueNotifyingHost (amount->convertTo0to1 (60.0f));
+        e.stream (48000 * 7, tone (0.5f));
+        e.proc.flushPendingChanges (false);
+        check (e.proc.isDeLimiterLearning() && e.get ("dlim.thr") == 0.0f, "de-limiter learn: the result waits for an open edit");
+        amount->endChangeGesture();
+        e.proc.flushPendingChanges (true);
+        const float learned = 20.0f * std::log10 (0.5f);
+        check (! e.proc.isDeLimiterLearning() && std::abs (e.get ("dlim.thr") - learned) < 0.05f && e.proc.getHistory().size() == start + 2,
+               "de-limiter learn: then the edit and the result are two undo steps", str (e.proc.getHistory().size() - start, " steps"));
+        e.proc.undo();
+        check (e.get ("dlim.thr") == 0.0f && std::abs (e.get ("dlim.amount") - 60.0f) < 0.01f,
+               "de-limiter learn: undo takes back the result only");
+    }
+}
+
+//==============================================================================
 // The Maximizer's output contract through the whole default chain: pushed hard, the true peak of the processor
 // output stays at the Output Level (+0.05 dB), in every mode.
 void testMaximizerCeiling()
@@ -2283,12 +2393,14 @@ void testPresets()
                 const double peakDb = 20.0 * std::log10 (std::max (peak, 1.0e-10));
                 worstGain = std::max (worstGain, gainDb);
                 worstPeak = std::max (worstPeak, peakDb);
-                const bool ok = loaded && allFinite (out) && gainDb > -12.0 && gainDb < 6.0 && peakDb < 0.0;
+                // The De-limiter lifts peaks by design, so its output may pass full scale (the reference's does too).
+                const double peakLimit = t == ps::ModuleType::DeLimiter ? 3.0 : 0.0;
+                const bool ok = loaded && allFinite (out) && gainDb > -12.0 && gainDb < 6.0 && peakDb < peakLimit;
                 sane = sane && ok;
                 ++count;
                 std::cout << "    " << info.name << ": gain " << gainDb << " dB, peak " << peakDb << " dBFS\n";
             }
-        check (sane && count == 18, "presets: all 18 vintage presets have sensible isolated levels",
+        check (sane && count == 22, "presets: all 18 vintage and 4 De-limiter presets have sensible isolated levels",
                str ("worst gain ", worstGain, " dB, peak ", worstPeak, " dBFS"));
     }
 
@@ -3917,6 +4029,7 @@ int runSelfTest()
     testState();
     testUndo();
     testMaximizerLearn();
+    testDeLimiterLearn();
     testMaximizerCeiling();
     testPresets();
     testMonitoring();

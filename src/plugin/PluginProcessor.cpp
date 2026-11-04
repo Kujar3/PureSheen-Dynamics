@@ -1,5 +1,6 @@
 #include "plugin/PluginProcessor.h"
 
+#include "dsp/DeLimiter.h"
 #include "dsp/Maximizer.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/Assistant.h"      // (phase 3) the Assistant: capture, suggestions, macros, state child
@@ -76,9 +77,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     for (size_t index = 0; index < specs.size(); ++index)
     {
         const auto& s = specs[index];
-        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix; 3: the vintage appendix (append-only, so the index
+        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix; 3: the vintage appendix; 4: the De-limiter (append-only, so the index
         // decides)
-        const int version = index < (size_t) ps::kNumParams_0_1_1 ? 1 : (index < (size_t) ps::kNumParams_0_5_0 ? 2 : 3);
+        const int version = index < (size_t) ps::kNumParams_0_1_1 ? 1 : (index < (size_t) ps::kNumParams_0_5_0 ? 2 : (index < (size_t) ps::kNumParams_0_6_0 ? 3 : 4));
         const juce::ParameterID pid { juce::String (s.id), version };
         const juce::String name (s.name);
 
@@ -325,6 +326,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     };
     std::array<LearnSpectrum, ps::kNumModuleTypes> learnSpectra;
     bool maxLearnActive = false;
+    bool delimLearnActive = false;
 
     // ---- Match EQ (MatchEqState.cpp): spectra in the state / snapshots / presets, spectrum undo, file loader.
     // Declared after `chain`, so it (and its loader thread) is destroyed first.
@@ -476,6 +478,11 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         return static_cast<ps::Maximizer&> (chain.getModule (ps::ModuleType::Maximizer));
     }
 
+    ps::DeLimiter& deLimiter() noexcept
+    {
+        return static_cast<ps::DeLimiter&> (chain.getModule (ps::ModuleType::DeLimiter));
+    }
+
     //==============================================================================
     psplug::FullState capture() const
     {
@@ -523,6 +530,12 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     void setOrder (const std::vector<ps::ModuleType>& order)
     {
         chain.setOrder (order);
+        // Removed while listening: at once, so a result already captured cannot set a later instance's threshold.
+        if (delimLearnActive && ! chain.isInChain (ps::ModuleType::DeLimiter))
+        {
+            deLimiter().cancelLearn();
+            delimLearnActive = false;
+        }
         if (chain.getSolo() >= 0 && ! chain.isInChain ((ps::ModuleType) chain.getSolo()))
             chain.setSolo (-1);
         updateLatency();
@@ -663,6 +676,30 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
             owner.sendChangeMessage();
         updateLatency();
+
+        if (delimLearnActive)
+        {
+            // The result waits while an edit is still open: taken now it would join that edit's undo step (and a
+            // Threshold drag's gesture). A stuck gesture stops counting after the same time as in commitGesture.
+            const bool editOpen = activeGestures.load() > 0 && nowMs() - lastGestureEventMs.load() < kStuckGestureMs;
+            float thresholdDb = 0.0f;
+            if (! deLimiter().isLearning())
+            {
+                delimLearnActive = false;
+                owner.sendChangeMessage();
+            }
+            else if (! editOpen && deLimiter().takeLearnedThreshold (thresholdDb))
+            {
+                delimLearnActive = false;
+                const int i = ps::paramIndex ("dlim.thr");
+                commitGesture (true);
+                const bool was = applying.exchange (true);
+                setParam (i, thresholdDb);
+                applying.store (was);
+                record ("Learned De-limiter threshold: " + psplug::formatParamValue (i, raw[(size_t) i]->load()));
+                owner.sendChangeMessage();
+            }
+        }
 
         if (maxLearnActive)
         {
@@ -1117,8 +1154,9 @@ void PureSheenProcessor::addModule (ps::ModuleType type, int insertIndex)
     auto order = getChainOrder();
     if (insertIndex < 0 || insertIndex > (int) order.size())
     {
+        // The De-limiter works on what a limiter left behind, so it goes before anything else changes the audio.
         const auto maxIt = std::find (order.begin(), order.end(), ps::ModuleType::Maximizer);
-        insertIndex = (int) std::distance (order.begin(), maxIt);
+        insertIndex = type == ps::ModuleType::DeLimiter ? 0 : (int) std::distance (order.begin(), maxIt);
     }
     order.insert (order.begin() + insertIndex, type);
 
@@ -1239,6 +1277,35 @@ bool PureSheenProcessor::isMaximizerLearning() const
 float PureSheenProcessor::getMaximizerLearnProgress() const
 {
     return impl->maximizer().getLearnProgress();
+}
+
+void PureSheenProcessor::startDeLimiterLearn()
+{
+    impl->deLimiter().startLearn();
+    impl->delimLearnActive = true;
+    sendChangeMessage();
+}
+
+void PureSheenProcessor::cancelDeLimiterLearn()
+{
+    impl->deLimiter().cancelLearn();
+    impl->delimLearnActive = false;
+    sendChangeMessage();
+}
+
+bool PureSheenProcessor::isDeLimiterLearning() const
+{
+    return impl->delimLearnActive && impl->deLimiter().isLearning();
+}
+
+bool PureSheenProcessor::isDeLimiterWaitingForAudio() const
+{
+    return isDeLimiterLearning() && impl->deLimiter().isWaitingForAudio();
+}
+
+float PureSheenProcessor::getDeLimiterLearnProgress() const
+{
+    return impl->deLimiter().getLearnProgress();
 }
 
 void PureSheenProcessor::feedLearnSpectrum (ps::ModuleType t, const std::vector<float>& magnitudeDb, double binHz)

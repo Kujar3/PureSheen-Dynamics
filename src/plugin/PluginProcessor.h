@@ -109,6 +109,12 @@ public:
     void cancelMaximizerLearn();                                      // (added) stop listening, keep the gain
     bool isMaximizerLearning() const;
     float getMaximizerLearnProgress() const;
+    // De-limiter Learn Threshold: result written to "dlim.thr" (one undo step). Waits for audio until cancelled.
+    void startDeLimiterLearn();
+    void cancelDeLimiterLearn();
+    bool isDeLimiterLearning() const;
+    bool isDeLimiterWaitingForAudio() const;
+    float getDeLimiterLearnProgress() const;
     // Long-term average spectrum (dB per FFT bin, 4096-point, Hann) of the module pre-tap; empty if not enough data.
     // The editor feeds it via feedLearnSpectrum from its spectrum analyser (the processor does no FFT work itself).
     void feedLearnSpectrum (ps::ModuleType, const std::vector<float>& magnitudeDb, double binHz);
@@ -166,7 +172,7 @@ public:
     //
     // The housekeeping the internal 30 Hz timer does: commits a finished host / UI gesture to the undo history once
     // no gesture has ended for ~250 ms (force = now), reports a changed chain latency to the host (setLatencySamples)
-    // and collects a finished Maximizer learn. undo / redo / presets / snapshots flush first, so pending gestures
+    // and collects a finished Maximizer or De-limiter learn. undo / redo / presets / snapshots flush first, so pending gestures
     // are never lost. Call it directly where timers do not run (dev tool).
     void flushPendingChanges (bool force = false);
 

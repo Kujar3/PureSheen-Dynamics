@@ -100,7 +100,7 @@ const Aliases& aliases()
         m["ToneChain"] = specOf (ps::ModuleType::Equalizer1).elementKey;
         m["Common"] = kGlobalSectionKey;
         m["Order"] = kChainBlobKey;
-        m["Restorer"] = skippedModuleKey ("de-limiter");
+        m["Restorer"] = skippedModuleKey ("mix rebalancing");
         m["Width #"] = ruleKey (img, "band width");
         m["Present #"] = ruleKey (img, "band present");
         m["Count"] = ruleKey (img, "band count (older files)");
@@ -358,7 +358,7 @@ TEST_CASE ("import. whole-chain file: chain order, skipped and unknown modules, 
     CHECK_EQ (plan.order[0], ps::ModuleType::Imager);
     CHECK_EQ (plan.order[1], ps::ModuleType::Equalizer1);
     REQUIRE (plan.report.skipped.size() == 2);
-    CHECK_EQ (plan.report.skipped[0], std::string ("de-limiter"));
+    CHECK_EQ (plan.report.skipped[0], std::string ("mix rebalancing"));
     CHECK_EQ (plan.report.skipped[1], std::string ("unknown module"));
     CHECK (near (value (plan, "img.b1.width"), 25.0));
     CHECK (near (value (plan, "img.on"), 1.0));
@@ -367,7 +367,7 @@ TEST_CASE ("import. whole-chain file: chain order, skipped and unknown modules, 
     CHECK_EQ (plan.report.unmapped, 0);
 
     const auto line = summariseReport (plan);
-    CHECK_EQ (line, std::string ("Imported 2 modules, 1 setting. Skipped: de-limiter, unknown module."));
+    CHECK_EQ (line, std::string ("Imported 2 modules, 1 setting. Skipped: mix rebalancing, unknown module."));
 }
 
 TEST_CASE ("import. the section power switch turns a chain module off; the chain flag byte is not power")
@@ -628,7 +628,7 @@ TEST_CASE ("import. files that are not importable say so in plain words")
                                              el ("Common", { { "Enabled", "0" } }) }),
                                        opts());
     CHECK (! restorer.ok);
-    CHECK (restorer.error.find ("de-limiter") != std::string::npos);
+    CHECK (restorer.error.find ("mix rebalancing") != std::string::npos);
 }
 
 TEST_CASE ("import. hostile trees never crash and every value stays in range")

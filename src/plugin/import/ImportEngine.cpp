@@ -33,7 +33,6 @@ namespace
         const char* words;
     };
     constexpr Skipped kSkipped[] = {
-        { 0xe9ef2e15463fa562ull, 0xe9ef2e15463fa562ull, "de-limiter" },
         { 0xdb145da424cb2642ull, 0xa3c20be8958df8f2ull, "stem-separation EQ" },
         { 0x846e6a75db401626ull, 0x91d819139693b5f0ull, "mix rebalancing" },
     };
@@ -162,7 +161,7 @@ namespace
     int rankInOurOrder (ModuleType t) noexcept
     {
         constexpr ModuleType order[] = {
-            ModuleType::Equalizer1, ModuleType::DynamicEq, ModuleType::MatchEq, ModuleType::ToneBalance,
+            ModuleType::DeLimiter, ModuleType::Equalizer1, ModuleType::DynamicEq, ModuleType::MatchEq, ModuleType::ToneBalance,
             ModuleType::Definition, ModuleType::Smoother, ModuleType::LowContrast, ModuleType::BassShaper,
             ModuleType::Punch, ModuleType::Dynamics, ModuleType::ClassicComp, ModuleType::PassiveEq, ModuleType::Imager,
             ModuleType::Exciter, ModuleType::Tape, ModuleType::Equalizer2, ModuleType::ClassicLimiter, ModuleType::Maximizer

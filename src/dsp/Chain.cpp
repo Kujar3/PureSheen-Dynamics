@@ -4,6 +4,7 @@
 #include "dsp/BassShaper.h"
 #include "dsp/ClassicComp.h"
 #include "dsp/ClassicLimiter.h"
+#include "dsp/DeLimiter.h"
 #include "dsp/Definition.h"
 #include "dsp/DynamicEq.h"
 #include "dsp/Dynamics.h"
@@ -504,6 +505,7 @@ std::unique_ptr<Module> makeModule (ModuleType type)
         case ModuleType::PassiveEq:      return std::make_unique<PassiveEq>();
         case ModuleType::ClassicLimiter: return std::make_unique<ClassicLimiter>();
         case ModuleType::Tape:           return std::make_unique<Tape>();
+        case ModuleType::DeLimiter:      return std::make_unique<DeLimiter>();
         case ModuleType::Count:
         default: break;
     }

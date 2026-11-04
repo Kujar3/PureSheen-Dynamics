@@ -290,7 +290,6 @@ const ps::imp::Aliases& snapshotImportAliases()
         m["Common"] = ps::imp::kGlobalSectionKey;
         m["Order"] = ps::imp::kChainBlobKey;
         m["Tape"] = ps::imp::skippedModuleKey ("tape emulation");
-        m["Delimit"] = ps::imp::skippedModuleKey ("de-limiter");
         m["OldComp"] = ps::imp::skippedModuleKey ("analog-style compressor");
         m["OldLimit"] = ps::imp::skippedModuleKey ("analog-style limiter");
         m["Rebal"] = ps::imp::skippedModuleKey ("mix rebalancing");
@@ -463,7 +462,20 @@ int runSnapshot (const juce::File& outputDir)
             }
         }
 
+        // The De-limiter working, and while Learn waits for audio.
         editor->setSize (PureSheenEditor::kDefaultWidth, PureSheenEditor::kDefaultHeight);
+        editor->selectModule ((int) ps::ModuleType::DeLimiter);
+        set (proc, "dlim.amount", 100.0f);
+        set (proc, "dlim.thr", -12.0f);
+        rig.play (*editor, 90);
+        ok &= writePng (*editor, file ("17_dlim_active_1180x720"));
+        proc.startDeLimiterLearn();
+        rig.play (*editor, 30);
+        ok &= writePng (*editor, file ("17_dlim_learning_1180x720"));
+        proc.cancelDeLimiterLearn();
+        set (proc, "dlim.amount", 0.0f);
+        set (proc, "dlim.thr", 0.0f);
+
         editor->selectModule ((int) ps::ModuleType::PassiveEq);
         set (proc, "peq.chMode", 1.0f);
         set (proc, "peq.link", 0.0f);
@@ -861,7 +873,7 @@ int runSnapshot (const juce::File& outputDir)
             ok &= writePng (*editor, file ("51_import_note_" + size));
 
             const auto longText = snapshotChainFile ({ "Tape", "eq1Chain", "OldComp", "deqChain", "tbalChain", "dynChain",
-                                                       "Delimit", "Rebal", "imgChain", "excChain", "OldLimit", "maxChain" });
+                                                       "Rebal", "imgChain", "excChain", "OldLimit", "maxChain" });
             result = psplug::applyImportPlan (proc, psplug::planXmlPresetText (longText, importOptions),
                                               "Festival Club Master Extended Version 2");
             proc.flushPendingChanges (true);

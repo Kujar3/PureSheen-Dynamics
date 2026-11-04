@@ -261,6 +261,13 @@ struct Builder
         return *this;
     }
 
+    // De-limiter controls (Learn usually sets the threshold afterwards).
+    Builder& deLimiter (float amountPercent, float thresholdDb)
+    {
+        set ("dlim.amount", amountPercent);
+        return set ("dlim.thr", thresholdDb);
+    }
+
     // (phase 3) Tape controls.
     Builder& tape (ps::TapeSpeed speed, float driveDb, float bias, float harmonics, float lowEmph, float highEmph)
     {
@@ -868,6 +875,17 @@ std::vector<FactoryPreset> build()
     all.push_back (modulePreset ("Tape Glue", "Glue", ModuleType::Tape,
         Builder()
             .tape (TS::Ips30, 2.0f, 4.0f, 2.0f, 4.0f, 4.5f)));
+
+    //==============================================================================
+    // De-limiter presets. The thresholds suit a master peaking near full scale; Learn Threshold fits them to a song.
+    all.push_back (modulePreset ("Gentle Restore", "Restore", ModuleType::DeLimiter,
+        Builder().deLimiter (50.0f, -1.0f)));
+    all.push_back (modulePreset ("Full Restore", "Restore", ModuleType::DeLimiter,
+        Builder().deLimiter (100.0f, -1.0f)));
+    all.push_back (modulePreset ("Hot Master", "Restore", ModuleType::DeLimiter,
+        Builder().deLimiter (100.0f, -0.3f)));
+    all.push_back (modulePreset ("Punch Restore", "Enhance", ModuleType::DeLimiter,
+        Builder().deLimiter (150.0f, -1.0f)));
 
     return all;
 }

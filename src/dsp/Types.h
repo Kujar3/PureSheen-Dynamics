@@ -34,11 +34,12 @@ enum class ModuleType : int
     PassiveEq,      // "peq"  Passive EQ: passive LC program EQ + passive midrange EQ + tube make-up stage
     ClassicLimiter, // "clim" Classic Limiter: variable-mu feedback tube limiter followed by a brickwall stage
     Tape,           // "tape" Tape: two-head tape machine (record EQ, tape saturation, reproduce EQ, head bump)
+    DeLimiter,      // "dlim" De-limiter: brings back the peaks a limiter took (one upward gain curve, Learn Threshold)
     Count
 };
 
 inline constexpr int kNumCoreModuleTypes = (int) ModuleType::DynamicEq;   // the six types released in 0.1.x
-inline constexpr int kFirstVintageModuleType = (int) ModuleType::ClassicComp;   // (phase 3) the vintage-style four
+inline constexpr int kFirstVintageModuleType = (int) ModuleType::ClassicComp;   // (phase 3) the vintage-style modules and the De-limiter
 
 inline constexpr int kNumModuleTypes = (int) ModuleType::Count;
 

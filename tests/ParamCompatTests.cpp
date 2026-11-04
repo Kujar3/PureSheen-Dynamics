@@ -19,6 +19,8 @@ constexpr int kReleasedCount_0_1_1 = 479;             // number of entries in th
 constexpr std::uint64_t kReleasedHash_0_1_1 = 12387188370879499014ull;    // FNV-1a over the fields of those entries
 constexpr int kReleasedCount_0_5_0 = 841;             // entries of the 0.2 .. 0.5 table (phase 2 appendix included)
 constexpr std::uint64_t kReleasedHash_0_5_0 = 5899188831216511340ull;
+constexpr int kDeLimiterCount = 5;                    // the De-limiter appendix
+constexpr std::uint64_t kDeLimiterHash = 5882278622459508102ull;         // FNV-1a over the fields of its entries
 constexpr int kVintageCount = 79;                     // the vintage appendix: ccmp, peq, clim, tape
 constexpr std::uint64_t kVintageHash = 18134617468056649235ull;   // FNV-1a over the fields of the appendix entries only
                                                                    // (confirmed ranges and defaults, 2026-11-03)
@@ -106,22 +108,36 @@ TEST_CASE ("params. vintage appendix: count and fingerprint")
 {
     const auto& specs = paramSpecs();
     const int count = (int) specs.size();
-    const int appendix = count - kReleasedCount_0_5_0;
+    const int appendix = kNumParams_0_6_0 - kReleasedCount_0_5_0;
+    REQUIRE (count >= kNumParams_0_6_0);
     std::printf ("    vintage appendix: %d entries (%s .. %s), hash %llu\n", appendix,
-                 specs[(size_t) kReleasedCount_0_5_0].id.c_str(), specs.back().id.c_str(),
+                 specs[(size_t) kReleasedCount_0_5_0].id.c_str(), specs[(size_t) kNumParams_0_6_0 - 1].id.c_str(),
                  (unsigned long long) fingerprint (kReleasedCount_0_5_0, appendix));
     CHECK_EQ (appendix, kVintageCount);
     CHECK_EQ (fingerprint (kReleasedCount_0_5_0, kVintageCount), kVintageHash);
     CHECK_EQ (specs[(size_t) kReleasedCount_0_5_0].id, std::string ("ccmp.on"));
-    CHECK_EQ (specs.back().id, std::string ("tape.highEmph"));
+    CHECK_EQ (specs[(size_t) kNumParams_0_6_0 - 1].id, std::string ("tape.highEmph"));
 
     // every appendix entry belongs to one of the four modules, in ModuleType order
     int last = -1;
-    for (int i = kReleasedCount_0_5_0; i < count; ++i)
+    for (int i = kReleasedCount_0_5_0; i < kNumParams_0_6_0; ++i)
     {
         const int m = specs[(size_t) i].module;
         CHECK (m >= kFirstVintageModuleType && m < kNumModuleTypes);
         CHECK (m >= last);
         last = m;
     }
+}
+
+TEST_CASE ("params. de-limiter appendix: count and fingerprint")
+{
+    const auto& specs = paramSpecs();
+    const int count = (int) specs.size();
+    std::printf ("    de-limiter appendix: %d entries (%s .. %s), hash %llu\n", count - kNumParams_0_6_0,
+                 specs[(size_t) kNumParams_0_6_0].id.c_str(), specs.back().id.c_str(),
+                 (unsigned long long) fingerprint (kNumParams_0_6_0, count - kNumParams_0_6_0));
+    CHECK_EQ (count - kNumParams_0_6_0, kDeLimiterCount);
+    CHECK_EQ (fingerprint (kNumParams_0_6_0, kDeLimiterCount), kDeLimiterHash);
+    CHECK_EQ (specs[(size_t) kNumParams_0_6_0].id, std::string ("dlim.on"));
+    CHECK_EQ (specs.back().id, std::string ("dlim.thr"));
 }

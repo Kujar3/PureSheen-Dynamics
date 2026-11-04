@@ -34,6 +34,7 @@ int runImportKey (const juce::StringArray& args);                     // ImportT
 int runImportTests();                                                 // ImportTool.cpp
 int runAssist (const juce::StringArray& args);                        // AssistTool.cpp
 int runReference (const juce::StringArray& args);                     // RefTool.cpp
+int runDeLimiterLearn (const juce::StringArray& args);                // DeLimiterLearnTool.cpp
 
 int main (int argc, char** argv)
 {
@@ -82,6 +83,14 @@ int main (int argc, char** argv)
         for (int i = 2; i < argc; ++i)
             args.add (juce::String::fromUTF8 (argv[i]));
         return runAssist (args);
+    }
+
+    if (command == "delimitlearn")
+    {
+        juce::StringArray args;
+        for (int i = 2; i < argc; ++i)
+            args.add (juce::String::fromUTF8 (argv[i]));
+        return runDeLimiterLearn (args);
     }
 
     if (command == "importtest")

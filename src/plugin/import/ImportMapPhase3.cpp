@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-// Preset importer, vintage-style family (phase 3): Classic Compressor, Passive EQ, Classic Limiter, Tape.
+// Preset importer, vintage-style family (phase 3): Classic Compressor, Passive EQ, Classic Limiter, Tape, De-limiter.
 // Mapping conventions: out/importer/spec.md. Key comments are in our own words; the foreign strings are never written
 // here (`PureSheenDev importkey "<ParamID>"` prints the template and key of a stored name).
 //
@@ -83,6 +83,10 @@ namespace vdef
     constexpr Def tapeHarmonics  = known (0.0);      // (the 0 check save stores nothing)
     constexpr Def tapeLowEmph    = known (2.0);      // head bump (confirmed)
     constexpr Def tapeHighEmph   = known (4.0);      // flat highs (documented)
+    // De-limiter (confirmed: the fresh module's panel and a saved preset that stores nothing)
+    constexpr Def dlimAmount     = known (0.0);      // percent
+    constexpr Def dlimThreshold  = known (0.0);      // dB
+    constexpr Def dlimGain       = known (0.0);      // dB, input and output
 } // namespace vdef
 
 //==============================================================================
@@ -243,6 +247,27 @@ const std::vector<Rule>& tapeRules()
     };
     return rules;
 }
+
+//==============================================================================
+// De-limiter
+constexpr Key kDlimSectionTag = 0xe9ef2e15463fa562ull;   // de-limiter section (tag; the ElementID is the same string)
+constexpr Key kDlimAmount     = 0xba98a7152d80b949ull;   // amount in percent
+constexpr Key kDlimInputGain  = 0x134da582a142dd54ull;   // input gain in dB
+constexpr Key kDlimOutputGain = 0x26733dcf1ec8b7e7ull;   // output gain in dB
+
+//------------------------------------------------------------------------------------------------------------------
+// DE-LIMITER TABLE
+const std::vector<Rule>& deLimiterRules()
+{
+    static const std::vector<Rule> rules {
+        //  key              act               first count band        set A id          set B id          transform     foreign default      what
+        { kThreshold,       Act::Map,          0, 0, Band::Same, "~.thr",          nullptr,          nullptr,      vdef::dlimThreshold, "threshold" },
+        { kDlimAmount,      Act::Map,          0, 0, Band::Same, "~.amount",       nullptr,          nullptr,      vdef::dlimAmount,    "amount" },
+        { kDlimInputGain,   Act::Map,          0, 0, Band::Same, "~.input",        nullptr,          nullptr,      vdef::dlimGain,      "input gain" },
+        { kDlimOutputGain,  Act::Map,          0, 0, Band::Same, "~.output",       nullptr,          nullptr,      vdef::dlimGain,      "output gain" },
+    };
+    return rules;
+}
 } // namespace
 
 //==============================================================================
@@ -253,6 +278,7 @@ const std::vector<ModuleSpec>& vintageFamilySpecs()
         { ModuleType::PassiveEq,      kEqSectionTag,   kEqChainName,   &passiveEqRules(),      nullptr, nullptr },
         { ModuleType::ClassicLimiter, kLimSectionTag,  kLimChainName,  &classicLimiterRules(), nullptr, nullptr },
         { ModuleType::Tape,           kTapeSectionTag, kTapeChainName, &tapeRules(),           nullptr, nullptr },
+        { ModuleType::DeLimiter,      kDlimSectionTag, kDlimSectionTag, &deLimiterRules(),     nullptr, nullptr },
     };
     return specs;
 }

@@ -71,7 +71,8 @@ const ModuleSpec& specOf (ModuleType t)
     throw pstest::RequireFailed {};
 }
 
-const ModuleType kFamily[] { ModuleType::ClassicComp, ModuleType::PassiveEq, ModuleType::ClassicLimiter, ModuleType::Tape };
+const ModuleType kFamily[] { ModuleType::ClassicComp, ModuleType::PassiveEq, ModuleType::ClassicLimiter, ModuleType::Tape,
+                             ModuleType::DeLimiter };
 
 std::string prefixOf (ModuleType t) { return ps::moduleInfo (t).idPrefix; }
 
@@ -380,6 +381,31 @@ TEST_CASE ("import.vint. tape: the speed index runs the other way, values 1:1, d
     const auto hot = moduleFile (ModuleType::Tape, { { "drive", "36" } });
     REQUIRE (hot.ok);
     CHECK (near (value (hot, "tape.drive"), 30.0));         // clamped
+    CHECK_EQ (hot.report.clamped, 1);
+}
+
+TEST_CASE ("import.vint. de-limiter: the values read 1:1, the defaults from an empty section, out of range clamped")
+{
+    const auto empty = moduleFile (ModuleType::DeLimiter, {});
+    REQUIRE (empty.ok);
+    REQUIRE (empty.order.size() == 1);
+    CHECK_EQ (empty.order[0], ModuleType::DeLimiter);
+    for (const char* id : { "dlim.amount", "dlim.input", "dlim.output", "dlim.thr" })
+        CHECK (near (value (empty, id), 0.0));
+
+    const auto plan = moduleFile (ModuleType::DeLimiter, { { "amount", "150" }, { "threshold", "-6.08164692" },
+                                                           { "input gain", "6" }, { "output gain", "-6" } });
+    REQUIRE (plan.ok);
+    CHECK (near (value (plan, "dlim.amount"), 150.0));
+    CHECK (near (value (plan, "dlim.thr"), -6.08164692));
+    CHECK (near (value (plan, "dlim.input"), 6.0));
+    CHECK (near (value (plan, "dlim.output"), -6.0));
+    CHECK_EQ (plan.report.unmapped, 0);
+    CHECK_EQ (plan.report.clamped, 0);
+
+    const auto hot = moduleFile (ModuleType::DeLimiter, { { "threshold", "-20" } });
+    REQUIRE (hot.ok);
+    CHECK (near (value (hot, "dlim.thr"), -12.0));
     CHECK_EQ (hot.report.clamped, 1);
 }
 

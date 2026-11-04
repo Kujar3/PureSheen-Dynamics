@@ -22,9 +22,9 @@
 // Order: the 0.1.1 table (I/O, the six Core modules, Dither) is frozen; phase 2 appends after "dith.dc": first the
 // Core T/S additions (eq1 / eq2 ts params, the Imager channel slot and its set B, "exc.ts.on" and the exc ts params),
 // then each phase 2 module in ModuleType order (slot params, then its own params in struct order). The vintage-style
-// modules (phase 3) append after "bass.autoGain" the same way (ccmp, peq, clim, tape).
+// modules (phase 3) append after "bass.autoGain" the same way (ccmp, peq, clim, tape), then the De-limiter (dlim).
 // tests/ParamCompatTests.cpp guards the 0.1.1 part (index, id, name, range, default, choices of all 479 entries), the
-// 0.2 - 0.5 table (841 entries) and the vintage appendix (count + fingerprint).
+// 0.2 - 0.5 table (841 entries), the vintage appendix and the De-limiter appendix (count + fingerprint each).
 // Host-visible names: "<shortName> <Band n> <Name> [(A)|(B)]", e.g. "EQ 1 Band 3 Freq (A)". Set B is labelled "(B)";
 // the UI shows A/B as "Mid"/"Side", "Left"/"Right" or "Transient"/"Sustain" depending on the channel mode.
 namespace ps
@@ -47,6 +47,7 @@ struct ParamSpec
 const std::vector<ParamSpec>& paramSpecs();          // fixed order; append-only across versions
 inline constexpr int kNumParams_0_1_1 = 479;         // entries of the released 0.1.1 table (dith.dc is the last)
 inline constexpr int kNumParams_0_5_0 = 841;         // entries of the 0.2 .. 0.5 table: 0.1.1 + the phase 2 appendix
+inline constexpr int kNumParams_0_6_0 = 920;         // entries of the 0.6 table: 0.5 + the vintage appendix
                                                      //   (bass.autoGain is the last); the vintage appendix follows
 int paramIndex (const std::string& id) noexcept;     // -1 when unknown (not realtime: string lookup)
 
@@ -538,5 +539,16 @@ struct TapeParams
     float highEmphasis = 4.0f;        // "highEmph"   0..10 (4 = flat highs)
 };
 void readTapeParams (ParamValues, TapeParams&) noexcept;
+
+//==============================================================================
+// De-limiter ("dlim.", Stereo only: slot = "dlim.on")
+struct DeLimiterParams
+{
+    float amountPercent = 0.0f;       // "amount"  0..200 % (100 = what was lost, above that an enhanced effect)
+    float inputGainDb = 0.0f;         // "input"   -9..+9 dB before the module
+    float outputGainDb = 0.0f;        // "output"  -9..+9 dB after the module
+    float thresholdDb = 0.0f;         // "thr"     -12..0 dB, where limiting is assumed; Learn Threshold sets it
+};
+void readDeLimiterParams (ParamValues, DeLimiterParams&) noexcept;
 
 } // namespace ps

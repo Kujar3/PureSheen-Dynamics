@@ -3,6 +3,7 @@
 #include "ui/BassShaperPanel.h"
 #include "ui/ClassicCompPanel.h"
 #include "ui/ClassicLimiterPanel.h"
+#include "ui/DeLimiterPanel.h"
 #include "ui/DefinitionPanel.h"
 #include "ui/DynamicEqPanel.h"
 #include "ui/DynamicsPanel.h"
@@ -42,6 +43,7 @@ std::unique_ptr<ModulePanel> createModulePanel (PureSheenProcessor& p, EditorSer
         case ps::ModuleType::PassiveEq:      return std::make_unique<PassiveEqPanel> (p, s);
         case ps::ModuleType::ClassicLimiter: return std::make_unique<ClassicLimiterPanel> (p, s);
         case ps::ModuleType::Tape:           return std::make_unique<TapePanel> (p, s);
+        case ps::ModuleType::DeLimiter:      return std::make_unique<DeLimiterPanel> (p, s);
         case ps::ModuleType::Count:
         default: break;
     }
