@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(PureSheen VERSION 0.8.0 LANGUAGES C CXX)
+project(PureSheen VERSION 0.8.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -149,6 +149,12 @@ endif()
 function(ps_add_plugin target id name code formats vst3_categories clap_features)
     separate_arguments(vst3_categories)
     separate_arguments(clap_features)
+    # FL Studio names its plugin section after the whole category ("Fx EQ" = Fx-EQ), so a third word would make a new
+    # section of its own.
+    list(LENGTH vst3_categories category_count)
+    if(NOT category_count EQUAL 2)
+        message(FATAL_ERROR "installer/products.csv: '${id}' needs exactly two VST3 categories, like 'Fx EQ'")
+    endif()
     if(id STREQUAL "suite")
         set(bundle_id "com.kujar3.puresheen")
     else()
@@ -168,8 +174,15 @@ function(ps_add_plugin target id name code formats vst3_categories clap_features
         IS_MIDI_EFFECT FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
         VST3_CATEGORIES ${vst3_categories}
+        # No moduleinfo.json: FL Studio records no category for a bundle that has one, and leaves the plugin unsorted.
+        VST3_AUTO_MANIFEST FALSE
         ${PS_ICON_ARGS}
         COPY_PLUGIN_AFTER_BUILD FALSE)
+
+    # A build folder from before that change still has the file, and the bundle would carry it along.
+    add_custom_command(TARGET ${target}_VST3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_CURRENT_BINARY_DIR}/${target}_artefacts/$<CONFIG>/VST3/${name}.vst3/Contents/Resources"
+        VERBATIM)
 
     # JUCE regenerates the Windows version resource only when the icon changes, so a version bump would keep the old
     # file version in the binaries' properties. Make it depend on the info file that carries the version too.

@@ -1,21 +1,21 @@
 id,name,code,module,vst3_categories,clap_features,installer_guid,description
-suite,PureSheen Dynamics,Pshd,-,Fx Mastering Dynamics EQ,audio-effect mastering equalizer compressor limiter stereo,5F91530F-2554-42B2-968A-E638C0518C12,a complete mastering suite
-eq,PureSheen EQ,PsEq,Equalizer1,Fx EQ Mastering,audio-effect equalizer mastering stereo,BBBC72EE-1F2F-439F-A7F0-E87F79F7B758,a mastering equalizer
-multiband,PureSheen Multiband Dynamics,PsMb,Dynamics,Fx Dynamics Mastering,audio-effect compressor mastering stereo,3790E26D-35A1-4695-B0D2-81FC74D3C634,a multiband compressor and limiter
-imager,PureSheen Imager,PsIm,Imager,Fx Spatial Mastering,audio-effect utility mastering stereo,B0A91AC6-6F91-407E-8B05-3C2C775E7FB7,a multiband stereo imager
-exciter,PureSheen Exciter,PsEx,Exciter,Fx Distortion Mastering,audio-effect distortion mastering stereo,4F8BDA2B-ECC1-4A89-A267-CC175D2D6F98,a multiband harmonic exciter
-maximizer,PureSheen Maximizer,PsMx,Maximizer,Fx Dynamics Mastering,audio-effect limiter mastering stereo,494B8542-8CBE-41B4-8C55-26F49D364782,a mastering limiter for loudness
-dither,PureSheen Dither,PsDi,Dither,Fx Mastering Tools,audio-effect utility mastering stereo,B052F734-D18F-4C37-94D0-7E4318211553,dither for the final export
-dynamiceq,PureSheen Dynamic EQ,PsDe,DynamicEq,Fx EQ Dynamics,audio-effect equalizer compressor mastering stereo,5F024AA1-FC6E-4CA8-B839-FC70C50B0272,an equalizer that reacts to the level
-matcheq,PureSheen Match EQ,PsMe,MatchEq,Fx EQ Mastering,audio-effect equalizer mastering stereo,D98E2248-04AB-40F7-915C-AB6397BD505B,an equalizer that matches a reference
-tonebalance,PureSheen Tone Balance,PsTb,ToneBalance,Fx EQ Mastering,audio-effect equalizer mastering stereo,76D47897-C42D-4FC6-A1BE-51B24DAC8535,a tool that keeps the tone close to a target
-definition,PureSheen Definition,PsDf,Definition,Fx EQ Mastering,audio-effect equalizer mastering stereo,C43BCE06-B000-458D-9EFA-4E0E4A3F7EFD,a spectral clarity processor
-smoother,PureSheen Smoother,PsSm,Smoother,Fx Restoration Mastering,audio-effect restoration mastering stereo,126EADE2-EBB6-4886-87D0-48BA15A34164,a harshness and resonance smoother
-punch,PureSheen Punch,PsPu,Punch,Fx Dynamics Mastering,audio-effect transient-shaper mastering stereo,A99071F6-1960-4D4A-91C5-0ECE60BE2D4F,a multiband punch and transient shaper
-lowcontrast,PureSheen Low Contrast,PsLc,LowContrast,Fx Dynamics Mastering,audio-effect compressor mastering stereo,EC32A6CC-B874-4E0A-94D1-769A174BA2DE,a low-end dynamics contrast control
-bassshaper,PureSheen Bass Shaper,PsBs,BassShaper,Fx Dynamics Mastering,audio-effect compressor mastering stereo,308C1536-5DF5-42EE-B646-4F19F4BB8C78,a bass level and peak shaper
-classiccomp,PureSheen Classic Compressor,PsCc,ClassicComp,Fx Dynamics Mastering,audio-effect compressor mastering stereo,BB58C310-1797-44B8-AFA1-F84E0FBE4EFE,a vintage-style compressor
-passiveeq,PureSheen Passive EQ,PsPe,PassiveEq,Fx EQ Mastering,audio-effect equalizer mastering stereo,6E0AFB07-3018-4824-9E6B-2A7E0D732629,a vintage-style passive equalizer
-classiclimiter,PureSheen Classic Limiter,PsCl,ClassicLimiter,Fx Dynamics Mastering,audio-effect limiter mastering stereo,F1DED2C0-4CD8-4196-A4D2-8FACB9B7AB43,a vintage-style limiter
-tape,PureSheen Tape,PsTp,Tape,Fx Distortion Mastering,audio-effect distortion mastering stereo,AC93CF5F-E3EB-430A-9E64-DEBECE388EE9,a tape machine
-delimiter,PureSheen De-limiter,PsDl,DeLimiter,Fx Restoration Mastering,audio-effect restoration mastering stereo,B1568054-4C0C-49E2-A7D6-2880117CCE29,a tool that restores peaks a limiter flattened
+suite,PureSheen Dynamics,Pshd,-,Fx Mastering,audio-effect mastering equalizer compressor limiter stereo,5F91530F-2554-42B2-968A-E638C0518C12,a complete mastering suite
+eq,PureSheen EQ,PsEq,Equalizer1,Fx EQ,audio-effect equalizer mastering stereo,BBBC72EE-1F2F-439F-A7F0-E87F79F7B758,a mastering equalizer
+multiband,PureSheen Multiband Dynamics,PsMb,Dynamics,Fx Dynamics,audio-effect compressor mastering stereo,3790E26D-35A1-4695-B0D2-81FC74D3C634,a multiband compressor and limiter
+imager,PureSheen Imager,PsIm,Imager,Fx Spatial,audio-effect utility mastering stereo,B0A91AC6-6F91-407E-8B05-3C2C775E7FB7,a multiband stereo imager
+exciter,PureSheen Exciter,PsEx,Exciter,Fx Distortion,audio-effect distortion mastering stereo,4F8BDA2B-ECC1-4A89-A267-CC175D2D6F98,a multiband harmonic exciter
+maximizer,PureSheen Maximizer,PsMx,Maximizer,Fx Dynamics,audio-effect limiter mastering stereo,494B8542-8CBE-41B4-8C55-26F49D364782,a mastering limiter for loudness
+dither,PureSheen Dither,PsDi,Dither,Fx Mastering,audio-effect utility mastering stereo,B052F734-D18F-4C37-94D0-7E4318211553,dither for the final export
+dynamiceq,PureSheen Dynamic EQ,PsDe,DynamicEq,Fx EQ,audio-effect equalizer compressor mastering stereo,5F024AA1-FC6E-4CA8-B839-FC70C50B0272,an equalizer that reacts to the level
+matcheq,PureSheen Match EQ,PsMe,MatchEq,Fx EQ,audio-effect equalizer mastering stereo,D98E2248-04AB-40F7-915C-AB6397BD505B,an equalizer that matches a reference
+tonebalance,PureSheen Tone Balance,PsTb,ToneBalance,Fx EQ,audio-effect equalizer mastering stereo,76D47897-C42D-4FC6-A1BE-51B24DAC8535,a tool that keeps the tone close to a target
+definition,PureSheen Definition,PsDf,Definition,Fx EQ,audio-effect equalizer mastering stereo,C43BCE06-B000-458D-9EFA-4E0E4A3F7EFD,a spectral clarity processor
+smoother,PureSheen Smoother,PsSm,Smoother,Fx Dynamics,audio-effect restoration mastering stereo,126EADE2-EBB6-4886-87D0-48BA15A34164,a harshness and resonance smoother
+punch,PureSheen Punch,PsPu,Punch,Fx Dynamics,audio-effect transient-shaper mastering stereo,A99071F6-1960-4D4A-91C5-0ECE60BE2D4F,a multiband punch and transient shaper
+lowcontrast,PureSheen Low Contrast,PsLc,LowContrast,Fx Dynamics,audio-effect compressor mastering stereo,EC32A6CC-B874-4E0A-94D1-769A174BA2DE,a low-end dynamics contrast control
+bassshaper,PureSheen Bass Shaper,PsBs,BassShaper,Fx Dynamics,audio-effect compressor mastering stereo,308C1536-5DF5-42EE-B646-4F19F4BB8C78,a bass level and peak shaper
+classiccomp,PureSheen Classic Compressor,PsCc,ClassicComp,Fx Dynamics,audio-effect compressor mastering stereo,BB58C310-1797-44B8-AFA1-F84E0FBE4EFE,a vintage-style compressor
+passiveeq,PureSheen Passive EQ,PsPe,PassiveEq,Fx EQ,audio-effect equalizer mastering stereo,6E0AFB07-3018-4824-9E6B-2A7E0D732629,a vintage-style passive equalizer
+classiclimiter,PureSheen Classic Limiter,PsCl,ClassicLimiter,Fx Dynamics,audio-effect limiter mastering stereo,F1DED2C0-4CD8-4196-A4D2-8FACB9B7AB43,a vintage-style limiter
+tape,PureSheen Tape,PsTp,Tape,Fx Distortion,audio-effect distortion mastering stereo,AC93CF5F-E3EB-430A-9E64-DEBECE388EE9,a tape machine
+delimiter,PureSheen De-limiter,PsDl,DeLimiter,Fx Restoration,audio-effect restoration mastering stereo,B1568054-4C0C-49E2-A7D6-2880117CCE29,a tool that restores peaks a limiter flattened

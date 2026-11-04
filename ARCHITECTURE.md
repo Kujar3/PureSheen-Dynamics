@@ -994,6 +994,17 @@ not plugins: the Assistant builds chains across modules, and RefMatch already is
 `installer/products.csv` is the one list; CMake reads it for the targets and for `ProductTable.inc` (the `psplug::Product`
 table), `scripts/package-all.ps1` for the packages. CMake stops on a repeated id, name, plugin code or installer id.
 
+**The section in FL Studio's plugin list comes from the VST3 category, under two conditions found by testing:** the bundle
+has no `moduleinfo.json` (FL records no category for one that does), and the category has exactly two words, because FL
+names the section after all of it (`Fx EQ Mastering` makes `Fx-EQ-Mastering`). So the plugins set `VST3_AUTO_MANIFEST FALSE`,
+CMake stops on any other number of categories, and `package-all.ps1` stops on a bundle with the file. A host then reads
+the categories by loading the plugin instead of from that file.
+
+FL reads the category only the first time it sees a plugin. Its master list, `Installed\.Plugins.ini` (hidden) in the
+plugin database, keeps the entry through updates and rescans, so a PC that had a version before 0.8.1 stays unsorted until
+the plugin's entries are gone from that list. A fresh install sorts itself. When a category seems ignored, the Plugin
+Manager log in `Support\Logs` tells the two apart: `Skipped` means FL did not load the plugin, `Verify plugin` means it did.
+
 **It is the suite's code, locked at runtime.** `PureSheenProcessor (product)`, `plugin/Product.h`:
 - Chain: fixed to the one module (`Chain::lockToModule`): only that module, its T/S twin and its slot are prepared, so
   the others take no buffers and start no worker threads. Their objects still exist, because `Chain` hands them out by

@@ -93,6 +93,9 @@ if (-not $SkipBuild) {
 $failedRuntime = @()
 foreach ($p in $products) {
     $art = Join-Path $buildDir ((Target-Of $p) + "_artefacts\Release")
+    # FL Studio would leave the plugin out of its sections (see CMakeLists.txt).
+    $manifest = Join-Path $art ("VST3\" + $p.name + ".vst3\Contents\Resources\moduleinfo.json")
+    if (Test-Path -LiteralPath $manifest) { Fail "the bundle must not have a moduleinfo.json: $manifest" }
     $files = @(
         (Join-Path $art ("VST3\" + $p.name + ".vst3\Contents\x86_64-win\" + $p.name + ".vst3")),
         (Join-Path $art ("CLAP\" + $p.name + ".clap"))
@@ -159,6 +162,7 @@ CLAP (only if your DAW uses CLAP)
 Copy "$($p.name).clap" to C:\Program Files\Common Files\CLAP (administrator rights
 again), or to a folder your DAW scans.
 
+To update it, delete the old "$($p.name).vst3" folder first, then copy the new one.
 To remove it, delete what you copied.
 
 Licence
