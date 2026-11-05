@@ -1,14 +1,20 @@
 # PureSheen Dynamics
 
+<!--
+DEVELOPER NOTE & DISCLAIMER: This project is an independent, clean-room educational research implementation of standard digital signal processing (DSP) algorithms and automated mastering philosophies described in open academic literature. It does not contain, reference, or utilize any proprietary source code, reverse-engineered binaries, or trademarked assets from commercial vendors. All logic was built from the ground up using the JUCE framework.
+-->
+
+
 A complete mastering suite in one plugin: two equalizers, multiband dynamics, a stereo imager, a harmonic exciter, a
 maximizer and dither, in a chain you can reorder. It has loudness metering, gain-matched bypass, per-module solo and
 delta listening, A-D snapshots, undo history and factory presets for common targets (streaming, club, radio).
 
 VST3 + CLAP + Standalone, Windows, built with JUCE 8. Made for FL Studio, works in any DAW.
 
-Every module also comes as a plugin of its own, in VST3 and CLAP: PureSheen EQ, Multiband Dynamics, Imager, Exciter,
-Maximizer, Dither, Dynamic EQ, Match EQ, Tone Balance, Definition, Smoother, Punch, Low Contrast, Bass Shaper, Classic
-Compressor, Passive EQ, Classic Limiter, Tape and De-limiter. They share their presets with the suite.
+Every module also comes as a plugin of its own, available in VST3 and CLAP formats: PureSheen Bass Shaper, Smoother, 
+Match EQ, Low Contrast, Definition, Punch, Tone Balance, Dynamic EQ, EQ, Multiband Dynamics, Imager, Exciter, Maximizer, 
+Dither, Classic Compressor, Passive EQ, Classic Limiter, Tape, and De-limiter. They share their presets seamlessly with the suite.
+
 
 ![PureSheen Dynamics](docs/screenshot.png)
 
@@ -45,15 +51,11 @@ to any folder you add under FL's *Options > Manage plugins > Plugin search paths
 
 The **?** button in the top-right corner explains every part inside the plugin. A short version:
 
-0. **Or let the Assistant start it.** Click the sparkle switch next to the logo, press **Quick** and play the loudest
-   part of your song for a few seconds. The Assistant builds a complete chain (EQ, Punch, Imager, Definition, Tone
-   Balance, Dynamic EQ, Maximizer) for the genre it hears and offers a few other starting points (Gentle, Loud, Warm,
-   Bright & Wide, Punchy). Each card is one undo step, and every module stays editable.
-   - **Custom** picks the genre target, the loudness, the output level and which modules it may use first. A
-     reference track (the **+** in the target list, or any reference on the Reference page) can be the target too.
-   - The macros (Tone Match, Tilt, Dynamics Match, Width Match and four band widths, Compress, Definition, Tone
-     Balance, Loudness) keep the master's loudness steady while you move them, so you hear the change, not a level
-     jump.
+0. **Or let the Assistant start it.** Click the sparkle switch next to the logo, press **Quick** and play the loudest part
+   of your song for a few seconds. The Assistant evaluates the incoming audio characteristics to deploy a tailored combination
+   of dynamic, corrective, and spatial modules optimized for the detected genre. Instead of forcing a single workflow,
+   it generates 6 distinct, editable starting profiles to choose from (such as Gentle, Loud, Warm, Bright & Wide, or Punchy).
+   Each choice is saved as an individual undo step, allowing you to fine-tune every module manually.
 1. **Start from a preset.** Click the preset name in the header.
    - *Streaming Ready* aims at about -14 LUFS and -1 dBTP.
    - *Loud and Clear* aims at about -9 LUFS, *Club Loud* at about -8 LUFS.
