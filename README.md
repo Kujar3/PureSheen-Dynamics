@@ -1,10 +1,5 @@
 # PureSheen Dynamics
 
-<!--
-DEVELOPER NOTE & DISCLAIMER: This project is an independent, clean-room educational research implementation of standard digital signal processing (DSP) algorithms and automated mastering philosophies described in open academic literature. It does not contain, reference, or utilize any proprietary source code, reverse-engineered binaries, or trademarked assets from commercial vendors. All logic was built from the ground up using the JUCE framework.
--->
-
-
 A complete mastering suite in one plugin: two equalizers, multiband dynamics, a stereo imager, a harmonic exciter, a
 maximizer and dither, in a chain you can reorder. It has loudness metering, gain-matched bypass, per-module solo and
 delta listening, A-D snapshots, undo history and factory presets for common targets (streaming, club, radio).
@@ -15,6 +10,8 @@ Every module also comes as a plugin of its own, available in VST3 and CLAP forma
 Match EQ, Low Contrast, Definition, Punch, Tone Balance, Dynamic EQ, EQ, Multiband Dynamics, Imager, Exciter, Maximizer, 
 Dither, Classic Compressor, Passive EQ, Classic Limiter, Tape, and De-limiter. They share their presets seamlessly with the suite.
 
+PureSheen Dynamics is an independent project, not affiliated with or endorsed by any plugin maker. It contains no code
+or assets from commercial plugins. Some behaviour was tuned by measuring the audio output of commercial plugins.
 
 ![PureSheen Dynamics](docs/screenshot.png)
 
