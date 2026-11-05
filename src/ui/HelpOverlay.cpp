@@ -259,12 +259,12 @@ struct HelpOverlay::Impl
     }
 
     // The AGPL's notice in the program itself (its section 0, "Appropriate Legal Notices"). The source line says the same
-    // as $sourceNote in scripts/package-all.ps1: both get the repository's address once it is public.
+    // as $sourceNote in scripts/package-all.ps1.
     float layoutLicence (float cardW, float contentBottom)
     {
         const auto text = productName + " - Copyright (C) 2026 Kujar3. Free software: you can share and change it under the GNU "
                           "AGPL v3. It comes with no warranty.\n"
-                          "Licence: gnu.org/licenses/agpl-3.0.html  -  Source code: ask Kujar3, the author  -  "
+                          "Licence: gnu.org/licenses/agpl-3.0.html  -  Source code: github.com/Kujar3/PureSheen-Dynamics  -  "
                           "The installer adds LICENSE.txt and THIRD-PARTY-NOTICES.txt";
         licenceBlock.layout.createLayout (richText (text, 11.0f, Colours::textDim, Colours::text), cardW - 2.0f * kPad);
         licenceBlock.area = { kPad, contentBottom + 12.0f, cardW - 2.0f * kPad, licenceBlock.layout.getHeight() };

@@ -14,7 +14,9 @@ Compressor, Passive EQ, Classic Limiter, Tape and De-limiter. They share their p
 
 ## Install
 
-**Installer:** run `PureSheen-Dynamics-Setup-<version>.exe` (built with *Building > Installer* below). It installs:
+**Download:** every plugin's installer and manual zip are on the [Releases page](https://github.com/Kujar3/PureSheen-Dynamics/releases).
+
+**Installer:** run `PureSheen-Dynamics-Setup-<version>.exe` (or build it yourself with *Building > Installer* below). It installs:
 - the VST3 into `C:\Program Files\Common Files\VST3\`
 - the CLAP into `C:\Program Files\Common Files\CLAP\`
 - optionally, the Standalone app

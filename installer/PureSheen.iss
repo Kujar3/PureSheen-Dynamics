@@ -10,7 +10,7 @@
 
 #define AppName "PureSheen Dynamics"
 #ifndef AppVersion
-  #define AppVersion "0.9.1"
+  #define AppVersion "1.0.0"
 #endif
 #define AppPublisher "Kujar3"
 

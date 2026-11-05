@@ -110,8 +110,8 @@ struct ToneBalancePanel::Impl
                                 "balance, the bold line the correction being applied (right scale).");
 
         targetChip.onOpenMenu = [this] (MenuChip& chip) { showTargetMenu (chip); };
-        targetChip.setTooltip ("Target: the tonal balance the module steers the music toward (our own curves, by genre "
-                               "family). Flat follows pink noise.");
+        targetChip.setTooltip ("Target: the tonal balance the module steers the music toward, by genre "
+                               "family. Flat follows pink noise.");
         mode.setTooltip ("Shape: boosts and cuts toward the target. Cut: only cuts what rises above the corridor "
                          "(resonances). Boost: only lifts what falls below it.");
         tame.setTooltip ("Tame Transients: reacts at once to sudden hits instead of letting them through.");

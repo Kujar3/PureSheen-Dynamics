@@ -21,9 +21,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $root "build-release"
 $distDir = Join-Path $root "dist"
 $payloadRoot = Join-Path $root "installer\payload"
-# Goes in every zip's text. The AGPL gives whoever gets a build the right to its source: replace with the repository's
-# address once it is public.
-$sourceNote = "ask Kujar3, the author, and you will get it"
+# Goes in every zip's text. The AGPL gives whoever gets a build the right to its source.
+$sourceNote = "https://github.com/Kujar3/PureSheen-Dynamics"
 
 function Fail ([string] $message) {
     Write-Host "FAILED: $message" -ForegroundColor Red
