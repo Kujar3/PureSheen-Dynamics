@@ -178,8 +178,8 @@ In plain words:
 - You can change them, share them and even sell them. Whoever shares or sells a build must also give the people who get
   it the complete source code, including their changes, under this same licence. The same goes for a changed version
   that people use over a network.
-- A closed-source product built on this code is not allowed under this licence. It would need separate permission from
-  the copyright holder for this code, and a [JUCE licence](https://juce.com/get-juce/) for JUCE.
+- A closed-source product built on this code is not allowed under this licence. It would need separate commercial permission
+  from the copyright holder for this code, and a corresponding commercial [JUCE licence](https://juce.com/get-juce/) from JUCE.
 
 If this summary and the licence differ, the licence decides.
 
