@@ -56,5 +56,15 @@ target_compile_definitions(PureSheenDev PRIVATE
 target_link_libraries(PureSheenDev
     PRIVATE PureSheenData ${PS_JUCE_MODULES}
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+# JUCE regenerates the Windows version resource only when the icon changes: without this, a version bump would keep the
+# old file version in these two programs' properties (the plugin targets have the same line).
+if(WIN32)
+    foreach(app PureSheenBridge PureSheenDev)
+        get_target_property(code_dir ${app} JUCE_GENERATED_SOURCES_DIRECTORY)
+        get_target_property(info_file ${app} JUCE_INFO_FILE)
+        add_custom_command(OUTPUT "${code_dir}/${app}_resources.rc" APPEND DEPENDS "${info_file}")
+    endforeach()
+endif()
+
 set_target_properties(PureSheenDev PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/PureSheenDev_artefacts/$<CONFIG>")
