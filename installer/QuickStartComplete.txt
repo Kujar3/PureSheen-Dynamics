@@ -1,0 +1,27 @@
+PURESHEEN COMPLETE - QUICK START
+================================
+
+The plugins you ticked are installed. In FL Studio:
+
+1. Options > Manage plugins > "Find installed plugins" (or "Start scan").
+2. Add a plugin to a free effect slot in the Mixer. Pick the VST3 version.
+
+WHICH ONE GOES WHERE
+- PureSheen Dynamics is the complete suite, with all the modules in one
+  chain. Use it on the MASTER track, in the LAST effect slot, and keep FL's
+  Master fader at 0 dB.
+- The single plugins (PureSheen EQ, PureSheen Maximizer and so on) are the
+  same modules on their own, for any track. Presets you save for a module
+  show up in both.
+- Dither goes last, and only when you export at a lower bit depth.
+
+CHANGING WHAT'S INSTALLED
+Run this installer again and tick or untick plugins. To remove all of it, use
+"PureSheen Complete" in Windows' list of installed apps.
+
+CLAUDE (OPTIONAL)
+Claude Desktop or Claude Code can read the meters and adjust the suite. It
+stays off until you turn it on: Options (sliders button) > Claude > "Allow
+Claude to connect", then copy the setup for your Claude app from the same menu.
+
+The "?" button in the top-right corner of each plugin explains everything.

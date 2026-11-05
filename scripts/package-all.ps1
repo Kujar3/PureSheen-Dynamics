@@ -2,17 +2,21 @@
 #   dist\<Name>-Setup-<version>.exe      the installer
 #   dist\<Name>-<version>-Manual.zip     the .vst3 folder, the .clap file, "How to install.txt" and the licence files, for
 #                                        people who would rather copy plain files than run an exe
-# <Name> is the plugin's name with hyphens: PureSheen-EQ-Setup-0.8.0.exe. Both come from the static-runtime Release build
+# and, when it packages all of them:
+#   dist\PureSheen-Complete-Setup-<version>.exe   one installer with a checklist of all the plugins
+# <Name> is the plugin's name with hyphens: PureSheen-EQ-Setup-0.8.0.exe. All come from the static-runtime Release build
 # in build-release, never from scripts\build.bat: the people these go to need no Visual C++ redistributable. The script
 # fails if a packaged binary imports it.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\package-all.ps1
 #     -Only eq,tape    only these plugins (their ids in products.csv; "suite" is the suite)
 #     -SkipBuild       package what is already built
+#     -CompleteOnly    only the all-in-one installer, not the separate packages (it still needs every plugin built)
 #     -TestRoot <dir>  installers that install below <dir> without admin rights (files named ...-TEST.exe; no zip)
 param(
     [string[]] $Only,
     [switch] $SkipBuild,
+    [switch] $CompleteOnly,
     [string] $TestRoot
 )
 
@@ -64,6 +68,7 @@ $version = (Select-String -LiteralPath (Join-Path $root "CMakeLists.txt") -Patte
 if (-not $version) { Fail "no version in CMakeLists.txt" }
 
 $products = Import-Csv -LiteralPath (Join-Path $root "installer\products.csv")
+if ($Only -and $CompleteOnly) { Fail "-Only and -CompleteOnly exclude each other: the all-in-one installer has every plugin" }
 if ($Only) {
     $Only = $Only | ForEach-Object { $_ -split "," }
     foreach ($id in $Only) {
@@ -198,8 +203,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 $extraIscc = @()
 if ($TestRoot) { $extraIscc += "/DTestRoot=$TestRoot" }
+$separatePackages = if ($CompleteOnly) { @() } else { $products }
 
-foreach ($p in $products) {
+foreach ($p in $separatePackages) {
     $name = $p.name
     $fileName = $name -replace " ", "-"
     $art = Join-Path $buildDir ((Target-Of $p) + "_artefacts\Release")
@@ -260,14 +266,53 @@ foreach ($p in $products) {
     }
 }
 
+#------------------------------------------------------------------------------
+# The all-in-one installer: installer\PureSheenComplete.iss plus this list of what is in it.
+if (-not $Only) {
+    Write-Host "Packaging PureSheen Complete ..."
+    $root64 = '{#PluginRoot}'
+    $components = @(); $files = @(); $installDelete = @(); $uninstallDelete = @(); $takeOver = @()
+    foreach ($p in $products) {
+        $name = $p.name
+        $art = Join-Path $buildDir ((Target-Of $p) + "_artefacts\Release")
+        $component = if ($p.id -eq "suite") { "suite" } else { "modules\" + $p.id }
+        if ($p.id -ne "suite") {
+            $components += "Name: `"$component`"; Description: `"$name - $($p.description)`"; Types: full"
+        }
+        $files += "Source: `"$art\VST3\$name.vst3\*`"; DestDir: `"$root64\VST3\$name.vst3`"; Components: $component; Flags: ignoreversion recursesubdirs createallsubdirs"
+        $files += "Source: `"$art\CLAP\$name.clap`"; DestDir: `"$root64\CLAP`"; Components: $component and clap; Flags: ignoreversion"
+        $installDelete += "Type: filesandordirs; Name: `"$root64\VST3\$name.vst3`"; Check: CleanVst3('$component')"
+        $installDelete += "Type: files; Name: `"$root64\CLAP\$name.clap`"; Check: DropClap('$component')"
+        $uninstallDelete += "Type: dirifempty; Name: `"$root64\VST3\$name.vst3`""
+        $takeOver += "  TakeOver('$component', '$($p.installer_guid)');"
+    }
+    $suiteArt = Join-Path $buildDir "PureSheen_artefacts\Release"
+    $files += "Source: `"$suiteArt\Standalone\PureSheen Dynamics.exe`"; DestDir: `"{app}`"; Components: suite\standalone; Flags: ignoreversion"
+    $files += "Source: `"$bridgeExe`"; DestDir: `"{app}`"; Components: suite\claude; Flags: ignoreversion"
+    $installDelete += "Type: files; Name: `"{app}\PureSheen Dynamics.exe`"; Check: DropApp('suite\standalone')"
+    $installDelete += "Type: files; Name: `"{app}\PureSheenBridge.exe`"; Check: DropApp('suite\claude')"
+
+    $productsFile = Join-Path $payloadRoot "complete-products.iss"
+    New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
+    Write-Text $productsFile ((@("[Components]") + $components + "" + "[Files]" + $files + "" + "[InstallDelete]" + $installDelete + "" +
+        "[UninstallDelete]" + $uninstallDelete + "" + "[Code]" + "procedure TakeOverAll();" + "begin" + $takeOver + "end;") -join "`n")
+    Run "the all-in-one installer" {
+        & $iscc /Q "/DAppVersion=$version" "/DProductsFile=$productsFile" @extraIscc (Join-Path $root "installer\PureSheenComplete.iss")
+    }
+    if (-not $TestRoot -and -not (Test-Path -LiteralPath (Join-Path $distDir "PureSheen-Complete-Setup-$version.exe"))) { Fail "no all-in-one installer" }
+}
+
 if (-not $TestRoot) {
     Write-Host ""
     Write-Host "Ready in $distDir :"
-    foreach ($p in $products) {
+    $ready = @()
+    foreach ($p in $separatePackages) {
         $fileName = $p.name -replace " ", "-"
-        foreach ($f in "$fileName-Setup-$version.exe", "$fileName-$version-Manual.zip") {
-            $item = Get-Item -LiteralPath (Join-Path $distDir $f)
-            Write-Host ("  {0,-50} {1,6:N1} MB" -f $f, ($item.Length / 1MB))
-        }
+        $ready += "$fileName-Setup-$version.exe", "$fileName-$version-Manual.zip"
+    }
+    if (-not $Only) { $ready += "PureSheen-Complete-Setup-$version.exe" }
+    foreach ($f in $ready) {
+        $item = Get-Item -LiteralPath (Join-Path $distDir $f)
+        Write-Host ("  {0,-50} {1,6:N1} MB" -f $f, ($item.Length / 1MB))
     }
 }

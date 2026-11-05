@@ -19,6 +19,10 @@ or assets from commercial plugins. Some behaviour was tuned by measuring the aud
 
 **Download:** every plugin's installer and manual zip are on the [Releases page](https://github.com/Kujar3/PureSheen-Dynamics/releases).
 
+**Everything at once:** run `PureSheen-Complete-Setup-<version>.exe`. It has the suite and every single module, with a
+checklist of which ones to install. Run it again later to add or remove plugins. It replaces any separate installs of the
+plugins you tick, and your presets stay.
+
 **Installer:** run `PureSheen-Dynamics-Setup-<version>.exe` (or build it yourself with *Building > Installer* below). It installs:
 - the VST3 into `C:\Program Files\Common Files\VST3\`
 - the CLAP into `C:\Program Files\Common Files\CLAP\`
@@ -155,14 +159,15 @@ The setup lands in `dist\`. Its version is the `project()` version in `CMakeList
 `scripts\build-installer.bat /DTestRoot=C:\Temp\puresheen-test` builds a test variant instead. It installs per user,
 under that folder.
 
-Every plugin, the suite and the single-module ones (`installer\products.csv`), with an installer and a manual zip each:
+Every plugin, the suite and the single-module ones (`installer\products.csv`), with an installer and a manual zip each,
+plus the all-in-one installer:
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\package-all.ps1
 ```
 
-`-Only eq,tape` limits it to those plugins, `-SkipBuild` packages what is already built, and `-TestRoot <folder>` builds
-test installers as above. A single plugin builds with `scripts\build.bat build PureSheen_eq_VST3 PureSheen_eq_CLAP`.
+`-Only eq,tape` limits it to those plugins, `-CompleteOnly` makes only the all-in-one installer, `-SkipBuild` packages
+what is already built, and `-TestRoot <folder>` builds test installers as above. A single plugin builds with `scripts\build.bat build PureSheen_eq_VST3 PureSheen_eq_CLAP`.
 
 See `ARCHITECTURE.md` for how the code is organised.
 
