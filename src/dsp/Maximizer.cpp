@@ -86,6 +86,12 @@ constexpr double kCoreTpMargin = 0.99655206468;    // -0.03 dB (the core also de
 constexpr double kFadeMs = 10.0;
 constexpr double kLearnSeconds = 5.0;
 
+// Gain (0..20 dB) and Trim (-24..0 dB) are one gain before the limiter.
+double totalGainDb (const MaximizerParams& p) noexcept
+{
+    return std::clamp ((double) p.gainDb + (double) p.trimDb, -24.0, 20.0);
+}
+
 double lerpExp (double a, double b, double t) noexcept { return a * std::pow (b / a, t); }
 
 // A time over character 0..10 from its values at the fitted characters 0, 1.4, 4, 7, 10 (log-linear in between).
@@ -386,7 +392,7 @@ struct Maximizer::Impl
         if (! prepared)
             return;
         configure (targetMode);
-        gain.snap (std::pow (10.0, params.gainDb / 20.0));
+        gain.snap (std::pow (10.0, totalGainDb (params) / 20.0));
         ceiling.snap (std::pow (10.0, params.outputLevelDb / 20.0));
         std::fill (ceilRing.begin(), ceilRing.end(), ceiling.current);
         std::fill (tpRing.begin(), tpRing.end(), (std::uint8_t) (params.truePeak ? 1 : 0));
@@ -549,7 +555,7 @@ struct Maximizer::Impl
         if (! prepared)
             return;
 
-        gain.setTarget (std::pow (10.0, (double) std::clamp (p.gainDb, 0.0f, 20.0f) / 20.0));
+        gain.setTarget (std::pow (10.0, totalGainDb (p) / 20.0));
         ceiling.setTarget (std::pow (10.0, (double) std::clamp (p.outputLevelDb, -20.0f, 0.0f) / 20.0));
         upTargetDb = std::clamp ((double) p.upwardCompressDb, 0.0, 12.0);
         emTarget = p.transientEmphasisOn ? std::clamp ((double) p.transientEmphasis, 0.0, 100.0) * 0.01 : 0.0;
@@ -891,7 +897,9 @@ struct Maximizer::Impl
     // Message thread: integrated loudness of the simulated output at a gain.
     float simulateLufs (double gainDb, Impl& simulator)
     {
-        simulator.params.gainDb = (float) gainDb;
+        // Gain and Trim as one line: above 0 dB the gain, below it the trim.
+        simulator.params.gainDb = (float) std::max (gainDb, 0.0);
+        simulator.params.trimDb = (float) std::min (gainDb, 0.0);
         simulator.resetAll();
         simMeter.reset();
         float* io[2] { simBuf[0], simBuf[1] };
@@ -933,7 +941,29 @@ struct Maximizer::Impl
         if (! hasValue (atLo) || ! hasValue (atHi))
             result = 0.0;
         else if (atLo >= target)
+        {
+            // Louder than the target with no gain: the way down, by trim. A mix already on target stays put.
             result = 0.0;
+            if (atLo > target + 0.1)
+            {
+                lo = -24.0;
+                hi = 0.0;
+                if (simulateLufs (lo, simulator) >= target)
+                    result = lo;
+                else
+                {
+                    for (int it = 0; it < 10; ++it)
+                    {
+                        const double mid = 0.5 * (lo + hi);
+                        if (simulateLufs (mid, simulator) < target)
+                            lo = mid;
+                        else
+                            hi = mid;
+                    }
+                    result = 0.5 * (lo + hi);
+                }
+            }
+        }
         else if (atHi <= target)
             result = 20.0;
         else

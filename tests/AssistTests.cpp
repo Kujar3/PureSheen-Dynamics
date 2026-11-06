@@ -303,6 +303,49 @@ TEST_CASE ("assist. the offline render reaches the loudness target and fills mon
         CHECK (loudnessCompensation (card, m) * change < 0.0f);
 }
 
+TEST_CASE ("assist. a target below the track comes down through the trim")
+{
+    const auto s = track (6.0);
+    const auto c = contextFor (s);
+    auto card = buildSuggestions (c).front();
+    Excerpt ex;
+    ex.left = s.l;
+    ex.right = s.r;
+    ex.sampleRate = kRate;
+
+    // Well below the track, so no gain can reach it.
+    REQUIRE (card.loudnessLufs > kMinTargetLufs);
+    Excerpt before;
+    REQUIRE (renderSeries (card.order, card.values, ex, before, true));
+    card.loudnessLufs = kMinTargetLufs;
+    REQUIRE (integratedLufs (before) > kMinTargetLufs + 1.0f);
+    REQUIRE (refineLoudness (card, ex));
+    const float trim = card.values[(size_t) pid ("max.trim")];
+    CHECK (trim < 0.0f);
+    CHECK (card.values[(size_t) pid ("max.gain")] == 0.0f);
+    Excerpt out;
+    REQUIRE (renderSeries (card.order, card.values, ex, out, false));
+    CHECK_NEAR (integratedLufs (out), kMinTargetLufs, 0.25f);
+
+    // The Loudness macro: up from there the trim goes first, then the gain takes over.
+    const auto valueIn = [] (const MacroApplication& a, const char* id) {
+        for (const auto& [i, v] : a.values)
+            if (i == pid (id))
+                return v;
+        return -1000.0f;
+    };
+    auto m = card.macros;
+    m[(size_t) Macro::Loudness] = kMinTargetLufs;
+    auto same = applyMacros (card, m, 0.0f, card.order, c.analysis);
+    CHECK_NEAR (valueIn (same, "max.trim"), trim, 1.0e-3f);
+    CHECK (valueIn (same, "max.gain") == 0.0f);
+
+    m[(size_t) Macro::Loudness] = kMaxTargetLufs;
+    auto up = applyMacros (card, m, 0.0f, card.order, c.analysis);
+    CHECK (valueIn (up, "max.trim") == 0.0f);
+    CHECK (valueIn (up, "max.gain") > 0.0f);
+}
+
 TEST_CASE ("assist. cancelling the offline render stops it")
 {
     const auto s = track (4.0);

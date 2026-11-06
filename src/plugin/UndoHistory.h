@@ -24,6 +24,7 @@ public:
         FullState state;
         int singleParam = -1;     // the one parameter this step changed (-1 = several / chain); for coalescing
         double timeMs = 0.0;
+        int request = 0;          // the connector request behind this step (0 = none: the user, the host)
     };
 
     static constexpr int kDefaultDepth = 200, kMinDepth = 10, kMaxDepth = 1000;
@@ -34,7 +35,7 @@ public:
 
     // Records a new current state. A step that changes the same single parameter as the current (newest) step within
     // kCoalesceMs replaces it instead (mouse-wheel / repeated nudges = one step). Trims to the depth.
-    void record (const juce::String& description, const FullState&, int singleParam, double timeMs);
+    void record (const juce::String& description, const FullState&, int singleParam, double timeMs, int request = 0);
 
     int size() const noexcept { return (int) entries.size(); }
     int getPosition() const noexcept { return position; }

@@ -517,7 +517,7 @@ card's modules, built with `ps::createModule`, Stereo, set A). Intensity scales 
 edits keep them right): Tone Match = EQ 1 Amount, Tilt = two Baxandall shelves on EQ 1 bands 6 / 7, Dynamics Match =
 Punch Amount, Width Match = Imager Amount, band widths = offsets on the card's Imager widths, Compress = a one-band
 glue Dynamics inserted before Tone Balance on first use, the Definition / Tone Balance amounts, Loudness = the
-Maximizer target (gain along the measured slope). A drag writes only that macro's parameters (unrecorded while
+Maximizer target (Gain above 0 dB and Trim below it, along the measured slope). A drag writes only that macro's parameters (unrecorded while
 dragging) and is one undo step on release. Loudness matched (default on): the Maximizer gain also moves by minus the
 pre-Maximizer loudness change, interpolated from per-macro tables measured at five positions.
 
@@ -1009,6 +1009,20 @@ Known limits:
   measurable from the renders, since FL compensates). Our output is unaffected.
 - Not done: listening tests in FL Studio.
 
+## Maximizer Trim and film targets (1.1.0)
+
+Output Level (`max.ceiling`) is a ceiling, not an output gain: material below it passes untouched, so lowering it does not
+bring a track down to -23 LUFS. Gain's range (0 .. +20) cannot grow, because hosts store automation normalised. So the way
+down is a new parameter, `max.trim` (Maximizer Trim, -24 .. 0 dB, default 0), appended after `dlim.thr` at index 925, APVTS
+version hint 5, `kNumParams_1_0_0` = 925 marks the start, `tests/ParamCompatTests.cpp` checks it. `Maximizer::totalGainDb`
+(gain + trim, clamped to -24 .. +20) drives the gain ramp, and old sessions load with trim 0 and sound the same.
+
+Learn and the Assistant treat the two as one line: above 0 dB the amount goes on Gain, below it on Trim. `takeLearned` keeps
+its signature and returns a negative value for trim, and `applyMacros` and `OfflineChain::refineLoudness` split the same way.
+The Assistant's lowest target is `kMinTargetLufs` = -24. Going below the reference's range is deliberate. Factory presets
+"Film and TV -23 LUFS" and "US Broadcast -24 LUFS" (category Film and Broadcast) use only the Maximizer, because a film mix
+should stay as mixed, and trim sets their level; "Film Target -23" and "Broadcast Target -24" are the module presets.
+
 ## Connection to Claude (phase 4)
 
 Lets Claude Desktop or Claude Code control the suite over MCP. Suite only: a single-module plugin has no bridge. Three parts:
@@ -1019,7 +1033,8 @@ Lets Claude Desktop or Claude Code control the suite over MCP. Suite only: a sin
   with the token is closed, so a web page that reaches the port gets nothing. Threads only read, parse and write.
 - `src/plugin/BridgeCommands.cpp`: the commands, on the message thread (queued through an AsyncUpdater), through the
   processor's public calls. So nothing touches the audio thread, the editor follows, and a command is one undo step.
-  `setHistoryPrefix` labels those steps "Claude: ". Pending user edits are flushed first, so they keep their own name.
+  `beginClaudeRequest` / `endClaudeRequest` label those steps "Claude: " and number them. Pending user edits are flushed
+  first, so they keep their own name.
 - `tools/bridge/BridgeMain.cpp`, `PureSheenBridge.exe`: what Claude starts. It speaks MCP on stdin / stdout, holds the tool
   list (so Claude sees the tools while no plugin is open), reads the registration files, removes those of dead processes,
   and passes calls on. juce_core only. `BridgeProtocol.h` is what both sides share.
@@ -1029,9 +1044,21 @@ What it leaves out on purpose: deleting presets (no undo), monitoring (solo, del
 user hears), and editing another program's settings (the menu copies text the user pastes). A preset or snapshot in use is
 replaced only with `overwrite: true`. Claude cannot hear or start playback, which the server's `instructions` say.
 
-Results that arrive after the command (the Assistant's default card, Learn) are recorded by the housekeeping timer, after the
-prefix is cleared, so they keep their usual names in the history. The helper handles one call at a time and does not read
-stdin during a call, so MCP cancellation has no effect: a call ends within its timeout.
+Each command that changes state gets a request number, returned as `request` in its reply and shown on its steps in
+`get_history` (not in the plugin's UI). Results that arrive after the command (the Assistant's default card, Learn) are
+recorded later by the housekeeping timer, so a job started by Claude stores its number (`maxLearnRequest`, `delimLearnRequest`,
+`assistantRequest`) and `ScopedRequest` restores it when the result records. Those entries keep the "Claude: " label and the
+number of the request that started them, while a job the user started stays theirs. The helper handles one call at a time and
+does not read stdin during a call, so MCP cancellation has no effect: a call ends within its timeout.
+
+Replies are written to save a reader from guessing: `set_parameters` returns `previous`, `limited` when a value hit the end of
+its range and `channel_note` when a set has no effect (set B in Stereo, Channel Link, which only ties UI edits);
+`assistant_set_macro` returns the Gain and Trim it moved and `limited` when capped; `get_parameters` with `changed_only` keeps
+a band's `shape` and `on`, and lists a long choice list once per reply (`choices_as`); `get_meters` gives
+`host_position_seconds`, `peak_window_seconds` and `seconds_since_last_change`; `get_comparison` gives
+`settings_changed_during_analysis` and the host's position, and its profile gives `sample_peak_db` and `peak_to_loudness_db`,
+because PLR uses sample peak and three sessions read it against the true peak as a fault. `reset_comparison` starts that
+analysis again. The helper rounds its JSON to 4 decimals.
 
 Every line is checked for size and nesting before `juce::JSON::parse`, which recurses: otherwise anything that can reach the
 port could overflow the stack and take the host down, token or not.

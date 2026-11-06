@@ -64,7 +64,9 @@ public:
     void cancelLearn() noexcept;
     bool isLearning() const noexcept;
     float getLearnProgress() const noexcept;           // 0..1
-    bool takeLearnedGain (float& gainDb) noexcept;     // true once, when a result is ready
+    // True once, when a result is ready. Above 0 dB the result is the Gain, below 0 dB the Trim (a track louder than the
+    // target), and the other one is 0.
+    bool takeLearnedGain (float& gainDb) noexcept;
 
 private:
     struct Impl;

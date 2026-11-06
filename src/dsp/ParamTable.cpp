@@ -22,6 +22,7 @@
 //         module params in struct order (per-set params set A then set B; bands band by band)
 //   5. vintage appendix (phase 3, after bass.autoGain): ccmp, peq, clim, tape, then dlim, in ModuleType order, built exactly like
 //      4b (shared params first, then set A, then set B)
+//   6. after 1.0: max.trim
 // Bands of the multiband modules exist for all kMaxBands bands and both channel sets even when a module does not use
 // them (Imager width is per band only, it is Stereo-only).
 //
@@ -115,7 +116,7 @@ struct MaxIdx
 {
     int mode = -1, style3 = -1, style4 = -1, gain = -1, ceiling = -1, link = -1, truePeak = -1, character = -1,
         upward = -1, clipOn = -1, clipMode = -1, clipAmount = -1, transOn = -1, transAmount = -1, siTrans = -1,
-        siSus = -1, learnTarget = -1;
+        siSus = -1, learnTarget = -1, trim = -1;
 };
 
 struct DithIdx
@@ -1176,6 +1177,11 @@ Table buildTable()
         }
     }
 
+    // ---- after 1.0
+    t.max.trim = b.addFloat (std::string (moduleInfo (ModuleType::Maximizer).idPrefix) + ".trim",
+                             std::string (moduleInfo (ModuleType::Maximizer).shortName) + " Trim", -24.0f, 0.0f,
+                             MaximizerParams().trimDb, "dB", (int) ModuleType::Maximizer);
+
     for (int i = 0; i < kNumModuleTypes; ++i)
         t.channelModes[i] = channelModesFor ((ModuleType) i);
 
@@ -1501,6 +1507,7 @@ void readMaximizerParams (ParamValues v, MaximizerParams& p) noexcept
     p.stereoIndependenceTransient = readFloat (v, d.siTrans);
     p.stereoIndependenceSustain = readFloat (v, d.siSus);
     p.learnTargetLufs = readFloat (v, d.learnTarget);
+    p.trimDb = readFloat (v, d.trim);
 }
 
 void readDitherParams (ParamValues v, DitherParams& p) noexcept

@@ -100,9 +100,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout (const psplug::
         const auto& s = specs[index];
         if (! isHostParameter (s, product))
             continue;
-        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix; 3: the vintage appendix; 4: the De-limiter (append-only, so the index
-        // decides)
-        const int version = index < (size_t) ps::kNumParams_0_1_1 ? 1 : (index < (size_t) ps::kNumParams_0_5_0 ? 2 : (index < (size_t) ps::kNumParams_0_6_0 ? 3 : 4));
+        // version hint 1: the 0.1.1 table; 2: the phase 2 appendix; 3: the vintage appendix; 4: the De-limiter; 5: after 1.0
+        // (append-only, so the index decides)
+        const int version = index < (size_t) ps::kNumParams_0_1_1 ? 1 : (index < (size_t) ps::kNumParams_0_5_0 ? 2 : (index < (size_t) ps::kNumParams_0_6_0 ? 3 : (index < (size_t) ps::kNumParams_1_0_0 ? 4 : 5)));
         const juce::ParameterID pid { juce::String (s.id), version };
         // PureSheen EQ has one equalizer, so its parameters are not "EQ 1 ...". (The id stays the suite's.)
         const juce::String name = isEqPlugin ? juce::String (s.name).replace ("EQ 1 ", "EQ ") : juce::String (s.name);
@@ -382,6 +382,9 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     juce::ValueTree uiState { kOptionsTag };
     int editorW = 0, editorH = 0;
     std::array<std::optional<psplug::FullState>, kNumSnapshots> snapshots;
+    // What the preset bar said when each was stored (no name: unknown, a recall leaves the bar alone).
+    struct SnapshotPreset { juce::String name; bool modified = false; };
+    std::array<SnapshotPreset, kNumSnapshots> snapshotPresets;
     int activeSnapshot = -1;
     juce::String presetName { "Default" };
 
@@ -426,7 +429,25 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     std::unique_ptr<psplug::TrackReferencing> referencing;
     // (phase 4) The connection to Claude. Destroyed first: its threads are joined before anything it reaches goes.
     std::unique_ptr<psplug::Bridge> bridge;
-    juce::String historyPrefix;   // message thread
+    // Message thread. The connector request being carried out (0 = none) and the ones behind jobs still running.
+    int historyRequest = 0, lastRequest = 0;
+    int maxLearnRequest = 0, delimLearnRequest = 0, assistantRequest = 0;
+    juce::String historyPrefix() const { return historyRequest > 0 ? "Claude: " : ""; }
+
+    // Message thread. For the connector's meters and comparison: when the settings last changed, and how far the
+    // master's analysis had got by then.
+    double lastChangeMs = -1.0, lastMeterReadMs = -1.0, analysedAtChange = 0.0;
+    int analysisRunAtChange = -1;
+    void noteSettingsChanged();
+
+    // What is recorded in this scope belongs to `request`.
+    struct ScopedRequest
+    {
+        ScopedRequest (Impl& i, int request) : d (i), saved (i.historyRequest) { d.historyRequest = request; }
+        ~ScopedRequest() { d.historyRequest = saved; }
+        Impl& d;
+        const int saved;
+    };
     juce::String trackName;       // extrasLock
     int monoIndex = -1, swapIndex = -1;
 
@@ -493,6 +514,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     std::vector<float> currentValues() const override { return capture().values; }
     std::vector<ps::ModuleType> currentOrder() const override { return chain.getOrder(); }
     void assistantChanged() override { owner.sendChangeMessage(); }
+    void assistantJobStarted() override { assistantRequest = historyRequest; }
 
     bool applyAssistantChain (const std::vector<float>& target, const std::vector<ps::ModuleType>& order,
                               const juce::String& description) override
@@ -500,8 +522,12 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (target.size() != params.size() || stateBeforeImport != nullptr)
             return false;
         const juce::ScopedLock editSl (editLock);
-        matchEqHousekeeping();
-        commitGesture (true);
+        {
+            // A result that arrives late must not put the Assistant's request on the user's edit in progress.
+            const ScopedRequest usersOwn (*this, 0);
+            matchEqHousekeeping();
+            commitGesture (true);
+        }
 
         juce::MemoryBlock previousState;
         owner.getStateInformation (previousState);
@@ -544,7 +570,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // A spectrum change is an undo step even when no parameter changed.
     void recordMatchEq (const juce::String& description)
     {
-        history.record (historyPrefix + description, withoutAutomation (history.current().state), -1, nowMs());
+        history.record (historyPrefix() + description, withoutAutomation (history.current().state), -1, nowMs(), historyRequest);
+        noteSettingsChanged();
         matchEq->historyRecorded (history);
         {
             const juce::ScopedLock sl (extrasLock);
@@ -670,7 +697,8 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (psplug::sameState (s, history.current().state))
             return false;
         const bool isEqPlugin = product.kind == psplug::ProductKind::module && product.module == ps::ModuleType::Equalizer1;
-        history.record (historyPrefix + (isEqPlugin ? description.replace ("EQ 1", "EQ") : description), s, singleParam, nowMs());
+        history.record (historyPrefix() + (isEqPlugin ? description.replace ("EQ 1", "EQ") : description), s, singleParam, nowMs(), historyRequest);
+        noteSettingsChanged();
         matchEq->historyRecorded (history);   // Match EQ: tag the step with the spectra
         {
             const juce::ScopedLock sl (extrasLock);
@@ -731,6 +759,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         if (index < 0 || index == history.getPosition())
             return;
         history.setPosition (index);
+        noteSettingsChanged();
         applyState (history.current().state, true, -1, true);
         matchEq->applyHistory (history);   // Match EQ: the step's spectra
         history.updateCurrentState (withoutAutomation (history.current().state));
@@ -789,10 +818,13 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
         }
         matchEqHousekeeping();   // Match EQ: finished file loads, capture stops, clears
         commitGesture (force);
-        if (assistant != nullptr)
-            assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
-        if (referencing != nullptr && referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
-            owner.sendChangeMessage();
+        {
+            const ScopedRequest origin (*this, assistantRequest);
+            if (assistant != nullptr)
+                assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
+            if (referencing != nullptr && referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
+                owner.sendChangeMessage();
+        }
         updateLatency();
 
         if (delimLearnActive)
@@ -811,6 +843,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
                 delimLearnActive = false;
                 const int i = ps::paramIndex ("dlim.thr");
                 commitGesture (true);
+                const ScopedRequest origin (*this, delimLearnRequest);
                 const bool was = applying.exchange (true);
                 setParam (i, thresholdDb);
                 applying.store (was);
@@ -825,12 +858,15 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
             if (maximizer().takeLearnedGain (gainDb))
             {
                 maxLearnActive = false;
-                const int i = ps::paramIndex ("max.gain");
+                const int i = ps::paramIndex ("max.gain"), trim = ps::paramIndex ("max.trim");
                 commitGesture (true);
+                const ScopedRequest origin (*this, maxLearnRequest);
                 const bool was = applying.exchange (true);
-                setParam (i, gainDb);
+                setParam (i, juce::jmax (gainDb, 0.0f));
+                setParam (trim, juce::jmin (gainDb, 0.0f));
                 applying.store (was);
-                record ("Learned Maximizer gain: " + psplug::formatParamValue (i, raw[(size_t) i]->load()));
+                record (gainDb < 0.0f ? "Learned Maximizer trim: " + psplug::formatParamValue (trim, raw[(size_t) trim]->load())
+                                      : "Learned Maximizer gain: " + psplug::formatParamValue (i, raw[(size_t) i]->load()));
                 owner.sendChangeMessage();
             }
             else if (! maximizer().isLearning())
@@ -1056,6 +1092,11 @@ void PureSheenProcessor::getStateInformation (juce::MemoryBlock& dest)
             {
                 auto s = psplug::fullStateToTree (kSnapshotTag, *d.snapshots[(size_t) i]);
                 s.setProperty (kSlot, i, nullptr);
+                if (d.snapshotPresets[(size_t) i].name.isNotEmpty())
+                {
+                    s.setProperty (kPresetName, d.snapshotPresets[(size_t) i].name, nullptr);
+                    s.setProperty (kPresetModified, d.snapshotPresets[(size_t) i].modified, nullptr);
+                }
                 if (auto meq = d.matchEq->snapshotTree (i); meq.isValid())   // Match EQ spectra of the snapshot
                     s.appendChild (meq, nullptr);
                 snaps.appendChild (s, nullptr);
@@ -1153,6 +1194,7 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
 
         for (auto& s : d.snapshots)
             s.reset();
+        d.snapshotPresets = {};
         d.activeSnapshot = -1;
         if (snapsTree.isValid())
         {
@@ -1163,6 +1205,7 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
                 if (s.hasType (kSnapshotTag) && slot >= 0 && slot < kNumSnapshots && psplug::fullStateFromTree (s, fs))
                 {
                     d.snapshots[(size_t) slot] = std::move (fs);
+                    d.snapshotPresets[(size_t) slot] = { s.getProperty (kPresetName, {}).toString(), (bool) s.getProperty (kPresetModified, false) };
                     d.matchEq->restoreSnapshotTree (slot, s.getChildWithName ("MatchEq"));   // Match EQ
                 }
             }
@@ -1414,6 +1457,7 @@ void PureSheenProcessor::startMaximizerLearn()
 {
     impl->maximizer().startLearn();
     impl->maxLearnActive = true;
+    impl->maxLearnRequest = impl->historyRequest;
     sendChangeMessage();
 }
 
@@ -1438,6 +1482,7 @@ void PureSheenProcessor::startDeLimiterLearn()
 {
     impl->deLimiter().startLearn();
     impl->delimLearnActive = true;
+    impl->delimLearnRequest = impl->historyRequest;
     sendChangeMessage();
 }
 
@@ -1479,7 +1524,7 @@ std::vector<PureSheenProcessor::HistoryEntry> PureSheenProcessor::getHistory() c
     const auto& h = impl->history;
     list.reserve ((size_t) h.size());
     for (int i = 0; i < h.size(); ++i)
-        list.push_back ({ h[i].id, h[i].description });
+        list.push_back ({ h[i].id, h[i].description, h[i].request });
     return list;
 }
 
@@ -1534,9 +1579,11 @@ void PureSheenProcessor::storeSnapshot (int slot)
         return;
     impl->matchEqHousekeeping();
     impl->commitGesture (true);
+    const bool modified = isPresetModified();
     {
         const juce::ScopedLock sl (impl->extrasLock);
         impl->snapshots[(size_t) slot] = impl->capture();
+        impl->snapshotPresets[(size_t) slot] = { impl->presetName, modified };
         impl->activeSnapshot = slot;
         impl->matchEq->storeSnapshot (slot);   // Match EQ: keep spectra atomic with the snapshot parameters
     }
@@ -1553,6 +1600,7 @@ void PureSheenProcessor::storeSnapshotFromHistory (int slot, int historyIndex)
     {
         const juce::ScopedLock sl (impl->extrasLock);
         impl->snapshots[(size_t) slot] = impl->history[historyIndex].state;
+        impl->snapshotPresets[(size_t) slot] = {};
         impl->matchEq->storeSnapshotFromHistory (slot, impl->history, historyIndex);   // Match EQ
     }
     impl->matchEqHousekeeping();
@@ -1584,6 +1632,18 @@ void PureSheenProcessor::recallSnapshot (int slot)
     {
         const juce::ScopedLock sl (d.extrasLock);
         d.activeSnapshot = slot;
+        // The preset bar goes back with the settings. A snapshot of an unchanged preset reads as that preset, unchanged.
+        const auto& preset = d.snapshotPresets[(size_t) slot];
+        if (preset.name.isNotEmpty())
+        {
+            d.presetName = preset.name;
+            d.presetForcedModified = preset.modified;
+            if (! preset.modified)
+            {
+                d.presetBaseline = d.capture();
+                d.matchEq->setPresetBaseline();
+            }
+        }
     }
     sendChangeMessage();
 }
@@ -1604,6 +1664,7 @@ void PureSheenProcessor::clearSnapshot (int slot)
     {
         const juce::ScopedLock sl (impl->extrasLock);
         impl->snapshots[(size_t) slot].reset();
+        impl->snapshotPresets[(size_t) slot] = {};
         if (impl->activeSnapshot == slot)
             impl->activeSnapshot = -1;
         impl->matchEq->clearSnapshot (slot);   // Match EQ: clear parameters and spectra together
@@ -1970,7 +2031,39 @@ void PureSheenProcessor::finishUserEdits()
     d.housekeeping (true);
 }
 
-void PureSheenProcessor::setHistoryPrefix (const juce::String& prefix) { impl->historyPrefix = prefix; }
+void PureSheenProcessor::Impl::noteSettingsChanged()
+{
+    lastChangeMs = nowMs();
+    if (referencing != nullptr)
+    {
+        analysisRunAtChange = referencing->getMixAnalysisRun();
+        analysedAtChange = referencing->getMixProfile().analysedSeconds;
+    }
+}
+
+PureSheenProcessor::AnalysisFreshness PureSheenProcessor::getAnalysisFreshness() const
+{
+    const auto& d = *impl;
+    AnalysisFreshness f;
+    if (d.lastChangeMs < 0.0)
+        return f;
+    f.secondsSinceChange = (nowMs() - d.lastChangeMs) / 1000.0;
+    const double analysed = d.referencing != nullptr ? d.referencing->getMixProfile().analysedSeconds : 0.0;
+    const bool sameRun = d.referencing != nullptr && d.referencing->getMixAnalysisRun() == d.analysisRunAtChange;
+    f.analysedSecondsSinceChange = sameRun ? juce::jmax (0.0, analysed - d.analysedAtChange) : analysed;
+    f.blendsSettings = sameRun && d.analysedAtChange > 0.5;   // less than that is the analysis just starting
+    return f;
+}
+
+double PureSheenProcessor::takeSecondsSinceMeterRead()
+{
+    const double now = nowMs(), last = impl->lastMeterReadMs;
+    impl->lastMeterReadMs = now;
+    return last < 0.0 ? -1.0 : (now - last) / 1000.0;
+}
+
+int PureSheenProcessor::beginClaudeRequest() { return impl->historyRequest = ++impl->lastRequest; }
+void PureSheenProcessor::endClaudeRequest() { impl->historyRequest = 0; }
 
 juce::String PureSheenProcessor::getTrackName() const
 {

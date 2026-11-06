@@ -58,6 +58,8 @@ struct AssistantHost
     virtual void applyAssistantEdit (const std::vector<std::pair<int, float>>& values,
                                      const std::vector<ps::ModuleType>& order, const juce::String& recordDescription) = 0;
     virtual void assistantChanged() = 0;
+    // A job that may apply a suggestion later started: the host notes who asked for it, for the history.
+    virtual void assistantJobStarted() = 0;
 };
 
 class Assistant

@@ -13,7 +13,7 @@ void UndoHistory::reset (const FullState& state, const juce::String& description
     position = 0;
 }
 
-void UndoHistory::record (const juce::String& description, const FullState& state, int singleParam, double timeMs)
+void UndoHistory::record (const juce::String& description, const FullState& state, int singleParam, double timeMs, int request)
 {
     if (entries.empty())
     {
@@ -31,6 +31,7 @@ void UndoHistory::record (const juce::String& description, const FullState& stat
         top.description = description;
         top.state = state;
         top.timeMs = timeMs;
+        top.request = request;
         return;
     }
 
@@ -40,6 +41,7 @@ void UndoHistory::record (const juce::String& description, const FullState& stat
     e.state = state;
     e.singleParam = singleParam;
     e.timeMs = timeMs;
+    e.request = request;
     entries.push_back (std::move (e));
     position = (int) entries.size() - 1;
     trim();

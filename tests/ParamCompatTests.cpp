@@ -133,11 +133,23 @@ TEST_CASE ("params. de-limiter appendix: count and fingerprint")
 {
     const auto& specs = paramSpecs();
     const int count = (int) specs.size();
-    std::printf ("    de-limiter appendix: %d entries (%s .. %s), hash %llu\n", count - kNumParams_0_6_0,
-                 specs[(size_t) kNumParams_0_6_0].id.c_str(), specs.back().id.c_str(),
-                 (unsigned long long) fingerprint (kNumParams_0_6_0, count - kNumParams_0_6_0));
-    CHECK_EQ (count - kNumParams_0_6_0, kDeLimiterCount);
+    REQUIRE (count >= kNumParams_1_0_0);
+    std::printf ("    de-limiter appendix: %d entries (%s .. %s), hash %llu\n", kNumParams_1_0_0 - kNumParams_0_6_0,
+                 specs[(size_t) kNumParams_0_6_0].id.c_str(), specs[(size_t) kNumParams_1_0_0 - 1].id.c_str(),
+                 (unsigned long long) fingerprint (kNumParams_0_6_0, kNumParams_1_0_0 - kNumParams_0_6_0));
+    CHECK_EQ (kNumParams_1_0_0 - kNumParams_0_6_0, kDeLimiterCount);
     CHECK_EQ (fingerprint (kNumParams_0_6_0, kDeLimiterCount), kDeLimiterHash);
     CHECK_EQ (specs[(size_t) kNumParams_0_6_0].id, std::string ("dlim.on"));
-    CHECK_EQ (specs.back().id, std::string ("dlim.thr"));
+    CHECK_EQ (specs[(size_t) kNumParams_1_0_0 - 1].id, std::string ("dlim.thr"));
+}
+
+TEST_CASE ("params. after 1.0: the Maximizer trim is appended and neutral")
+{
+    const auto& specs = paramSpecs();
+    REQUIRE ((int) specs.size() == kNumParams_1_0_0 + 1);
+    const auto& trim = specs.back();
+    CHECK_EQ (trim.id, std::string ("max.trim"));
+    CHECK_EQ (trim.name, std::string ("Maximizer Trim"));
+    CHECK (trim.minValue == -24.0f && trim.maxValue == 0.0f && trim.defaultValue == 0.0f);
+    CHECK_EQ (trim.module, (int) ModuleType::Maximizer);
 }

@@ -343,6 +343,7 @@ struct TrackReferencing::Impl
 
         const auto host = readHostPosition();
         hostPlaying.store (host.playing, std::memory_order_relaxed);
+        hostSeconds.store (host.hasTime && sampleRate > 0.0 ? (double) host.sample / sampleRate : -1.0, std::memory_order_relaxed);
 
         // While a host transport that has played is stopped, the output is not part of the master: leave it out of the
         // analysis. Hosts that never report playing (the Standalone app) and offline renders feed everything.
@@ -1910,6 +1911,7 @@ struct TrackReferencing::Impl
             drainFifo (false);
             mixAnalyser.reset();
         }
+        ++mixAnalysisRuns;
         publishMix (analyserPrepared ? mixAnalyser.profile() : ps::TrackProfile(), true);
         analysisDirty = false;
         freshComparison = false;
@@ -1955,6 +1957,7 @@ struct TrackReferencing::Impl
             if (! analyserPrepared || analyserRate != rate)
             {
                 mixAnalyser.prepare (rate, (ps::Averaging) averagingSetting.load());
+                ++mixAnalysisRuns;
                 analyserPrepared = true;
                 analyserRate = rate;
                 analysisDirty = true;
@@ -2236,6 +2239,8 @@ struct TrackReferencing::Impl
     std::atomic<double> playheadSeconds { 0.0 };
     std::atomic<float> matchGainDb { 0.0f }, listenPosition { 0.0f };
     std::atomic<bool> hostPlaying { false }, referenceSounding { false };
+    std::atomic<double> hostSeconds { -1.0 };
+    std::atomic<int> mixAnalysisRuns { 0 };   // counts the restarts of the master's analysis
     std::atomic<float> refShortTermLufs { ps::kNoValue };
     std::atomic<int> referenceDropouts { 0 };
 
@@ -2414,6 +2419,8 @@ double TrackReferencing::getPlayheadSeconds() const noexcept { return impl->play
 float TrackReferencing::getMatchGainDb() const noexcept { return impl->matchGainDb.load(); }
 float TrackReferencing::getListenPosition() const noexcept { return impl->listenPosition.load(); }
 bool TrackReferencing::isHostPlaying() const noexcept { return impl->hostPlaying.load(); }
+double TrackReferencing::getHostSeconds() const noexcept { return impl->hostSeconds.load(); }
+int TrackReferencing::getMixAnalysisRun() const noexcept { return impl->mixAnalysisRuns.load(); }
 bool TrackReferencing::isReferenceSounding() const noexcept { return impl->referenceSounding.load(); }
 float TrackReferencing::getReferenceShortTermLufs() const noexcept { return impl->refShortTermLufs.load(); }
 

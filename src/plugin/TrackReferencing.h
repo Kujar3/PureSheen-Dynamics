@@ -170,6 +170,8 @@ public:
     float getMatchGainDb() const noexcept;               // the reference's level-match gain now (any thread)
     float getListenPosition() const noexcept;            // 0 = master .. 1 = reference (the A/B fade), any thread
     bool isHostPlaying() const noexcept;
+    double getHostSeconds() const noexcept;      // the host's playhead at the last audio block; < 0 when it has none
+    int getMixAnalysisRun() const noexcept;      // changes whenever the master's analysis starts over
     bool isReferenceSounding() const noexcept;           // the reference is playing and audible
     float getReferenceShortTermLufs() const noexcept;    // the reference as heard (unity gain), kNoValue until 3 s
 

@@ -258,8 +258,14 @@ juce::var cmdGetMeters (PureSheenProcessor& p, Args)
         modules.add (makeObject ({ { "module", moduleIdPrefix (type) },
                                    { "output_minus_input_db", number (meters.moduleDifferenceDb[(int) type].load(), 100.0) } }));
 
+    const double window = p.takeSecondsSinceMeterRead();
+    const auto freshness = p.getAnalysisFreshness();
+    const double position = p.getTrackReferencing().getHostSeconds();
     auto object = makeObject ({ { "input", input }, { "output", output }, { "modules", modules },
-                                { "host_playing", p.getTrackReferencing().isHostPlaying() } });
+                                { "host_playing", p.getTrackReferencing().isHostPlaying() },
+                                { "host_position_seconds", position >= 0.0 ? numberD (position) : juce::var() },
+                                { "peak_window_seconds", window >= 0.0 ? numberD (window) : juce::var() },
+                                { "seconds_since_last_change", freshness.secondsSinceChange >= 0.0 ? numberD (freshness.secondsSinceChange) : juce::var() } });
 
     if (p.isModuleInChain (ps::ModuleType::Maximizer))
     {
@@ -278,6 +284,12 @@ juce::var cmdGetMeters (PureSheenProcessor& p, Args)
 juce::var cmdResetLoudness (PureSheenProcessor& p, Args)
 {
     p.getChain().resetIntegratedLoudness();
+    return makeObject ({ { "reset", true } });
+}
+
+juce::var cmdResetComparison (PureSheenProcessor& p, Args)
+{
+    p.getTrackReferencing().resetMixAnalysis();
     return makeObject ({ { "reset", true } });
 }
 
@@ -321,6 +333,35 @@ juce::var cmdGetParameters (PureSheenProcessor& p, Args args)
     const int offset = juce::jmax (0, args.hasProperty ("offset") ? requireInt (args, "offset") : 0);
     const int limit = juce::jlimit (1, 1000, args.hasProperty ("limit") ? requireInt (args, "limit") : 200);
 
+    // A skewed parameter does not round trip to exactly its default, so "changed" needs a small tolerance.
+    const auto isChanged = [&p] (const ps::ParamSpec& spec)
+    {
+        return std::abs (p.getParameterValue (juce::String (spec.id)) - spec.defaultValue) > 1.0e-4f * juce::jmax (1.0f, spec.maxValue - spec.minValue);
+    };
+
+    // "eq1.a.b4." of "eq1.a.b4.gain"; empty when the parameter is not a band's.
+    const auto bandOf = [] (const juce::String& id)
+    {
+        for (int at = id.indexOf (".b"); at >= 0; at = id.indexOf (at + 1, ".b"))
+        {
+            int end = at + 2;
+            while (juce::CharacterFunctions::isDigit (id[end]))
+                ++end;
+            if (end > at + 2 && id[end] == '.')
+                return id.substring (0, end + 1);
+        }
+        return juce::String();
+    };
+
+    // A band's shape and power are what its other values mean, so they come along even at their defaults.
+    juce::StringArray changedBands;
+    if (changedOnly)
+        for (const auto& spec : specs)
+            if (isChanged (spec))
+                changedBands.addIfNotAlreadyThere (bandOf (juce::String (spec.id)));
+    changedBands.removeEmptyStrings();
+
+    std::map<juce::String, juce::String> firstWithChoices;
     juce::Array<juce::var> list;
     int matches = 0;
     for (int i = 0; i < (int) specs.size(); ++i)
@@ -333,14 +374,49 @@ juce::var cmdGetParameters (PureSheenProcessor& p, Args args)
             continue;
         if (query.isNotEmpty() && ! id.containsIgnoreCase (query) && ! juce::String (spec.name).containsIgnoreCase (query))
             continue;
-        // A skewed parameter does not round trip to exactly its default, so "changed" needs a small tolerance.
-        if (changedOnly && std::abs (p.getParameterValue (id) - spec.defaultValue) <= 1.0e-4f * juce::jmax (1.0f, spec.maxValue - spec.minValue))
+        const auto band = bandOf (id);
+        const bool bandContext = changedBands.contains (band) && (id == band + "shape" || id == band + "on");
+        if (changedOnly && ! bandContext && ! isChanged (spec))
             continue;
         if (matches >= offset && list.size() < limit)
-            list.add (parameterToVar (p, i));
+        {
+            auto entry = parameterToVar (p, i);
+            // A long list of choices once per reply: the eighteen filter shapes would repeat on every band.
+            if (spec.choices.size() >= 8)
+            {
+                juce::String key;
+                for (const auto& c : spec.choices)
+                    key << c << "\n";
+                const auto [first, isFirst] = firstWithChoices.try_emplace (key, id);
+                if (! isFirst)
+                {
+                    entry.getDynamicObject()->removeProperty ("choices");
+                    entry.getDynamicObject()->setProperty ("choices_as", first->second);
+                }
+            }
+            list.add (entry);
+        }
         ++matches;
     }
     return makeObject ({ { "total", matches }, { "offset", offset }, { "parameters", list } });
+}
+
+// What the reply should say about channel sets: the plugin's Channel Link ties A and B together only for edits in its
+// window, and set B does nothing in Stereo. Empty for a parameter of neither set.
+juce::String channelSetNote (const PureSheenProcessor& p, const ps::ParamSpec& spec)
+{
+    if (spec.module < 0)
+        return {};
+    const auto id = juce::String (spec.id);
+    const auto prefix = moduleIdPrefix ((ps::ModuleType) spec.module);
+    const bool setA = id.startsWith (prefix + ".a."), setB = id.startsWith (prefix + ".b.");
+    if ((! setA && ! setB) || ps::paramIndex ((prefix + ".chMode").toStdString()) < 0)
+        return {};
+
+    if (p.getParameterValue (prefix + ".chMode") < 0.5f)   // Stereo comes first in every module's list
+        return setB ? "This module is in Stereo, which uses set A only, so this has no effect until the module is in another channel mode."
+                    : juce::String();
+    return juce::String ("This changed set ") + (setA ? "A" : "B") + " alone. Channel Link only ties the sets together for edits in the plugin's window.";
 }
 
 juce::var cmdSetParameters (PureSheenProcessor& p, Args args)
@@ -356,6 +432,7 @@ juce::var cmdSetParameters (PureSheenProcessor& p, Args args)
     std::vector<std::pair<juce::String, float>> values;
     std::vector<double> asked;
     std::vector<int> indices;
+    std::vector<float> before;
     for (const auto& change : *changes)
     {
         const auto id = change["id"].toString();
@@ -370,6 +447,7 @@ juce::var cmdSetParameters (PureSheenProcessor& p, Args args)
         asked.push_back (parameterValueFrom (spec, change["value"]));
         values.emplace_back (id, (float) juce::jlimit ((double) spec.minValue, (double) spec.maxValue, asked.back()));
         indices.push_back (index);
+        before.push_back (p.getParameterValue (id));
     }
 
     auto description = args["description"].toString().replaceCharacters ("\r\n\t", "   ").trim().substring (0, 80);
@@ -385,6 +463,10 @@ juce::var cmdSetParameters (PureSheenProcessor& p, Args args)
         auto result = parameterToVar (p, indices[i]);
         auto* object = result.getDynamicObject();
         object->removeProperty ("default");
+        object->removeProperty ("choices");
+        object->setProperty ("previous", number (before[i]));
+        if (const auto channelNote = channelSetNote (p, spec); channelNote.isNotEmpty())
+            object->setProperty ("channel_note", channelNote);
         if (spec.kind == ps::ParamKind::Float && (asked[i] < spec.minValue || asked[i] > spec.maxValue))
             object->setProperty ("limited", "Asked for " + juce::String (asked[i]) + ", the range ends at " + juce::String (now));
         if (spec.module >= 0 && ! p.isModuleInChain ((ps::ModuleType) spec.module))
@@ -442,7 +524,12 @@ juce::var historyToVar (const PureSheenProcessor& p, int limit)
     const auto history = p.getHistory();
     juce::Array<juce::var> list;
     for (int i = juce::jmax (0, (int) history.size() - limit); i < (int) history.size(); ++i)
-        list.add (makeObject ({ { "index", i }, { "description", history[(size_t) i].description } }));
+    {
+        auto step = makeObject ({ { "index", i }, { "description", history[(size_t) i].description } });
+        if (history[(size_t) i].request > 0)
+            step.getDynamicObject()->setProperty ("request", history[(size_t) i].request);
+        list.add (step);
+    }
     return makeObject ({ { "position", p.getHistoryPosition() }, { "can_undo", p.canUndo() }, { "can_redo", p.canRedo() }, { "steps", list } });
 }
 
@@ -548,7 +635,8 @@ juce::var cmdLearn (PureSheenProcessor& p, Args args)
         if (start)  p.startMaximizerLearn();
         if (cancel) p.cancelMaximizerLearn();
         return makeObject ({ { "learning", p.isMaximizerLearning() }, { "progress", number (p.getMaximizerLearnProgress()) },
-                             { "gain_db", number (p.getParameterValue ("max.gain")) } });
+                             { "gain_db", number (p.getParameterValue ("max.gain")) },
+                             { "trim_db", number (p.getParameterValue ("max.trim")) } });
     }
     if (target == "de_limiter")
     {
@@ -672,15 +760,25 @@ juce::var cmdAssistantSetMacro (PureSheenProcessor& p, Args args)
         const auto& info = ps::assist::macroInfo (macro);
         if (id.equalsIgnoreCase (info.id) || id.equalsIgnoreCase (info.name))
         {
-            const float gainBefore = p.getParameterValue ("max.gain");
-            p.getAssistant().setMacro (macro, juce::jlimit (info.minValue, info.maxValue, requireNumber (args, "value")), true);
-            const float gainAfter = p.getParameterValue ("max.gain");
+            const float gainBefore = p.getParameterValue ("max.gain"), trimBefore = p.getParameterValue ("max.trim");
+            const double asked = requireNumber (args, "value");
+            p.getAssistant().setMacro (macro, (float) juce::jlimit ((double) info.minValue, (double) info.maxValue, asked), true);
+            const float gainAfter = p.getParameterValue ("max.gain"), trimAfter = p.getParameterValue ("max.trim");
 
             auto result = makeObject ({ { "macro", juce::String (info.id) }, { "value", number (p.getAssistant().getMacros()[(size_t) i], 100.0) },
-                                        { "maximizer_gain_db", number (gainAfter, 100.0) } });
+                                        { "maximizer_gain_db", number (gainAfter, 100.0) }, { "maximizer_trim_db", number (trimAfter, 100.0) } });
+            if (asked < info.minValue || asked > info.maxValue)
+                result.getDynamicObject()->setProperty ("limited", "Asked for " + juce::String (asked) + ", the range ends at "
+                                                                       + juce::String (asked < info.minValue ? info.minValue : info.maxValue));
+
+            juce::StringArray moved;
             if (std::abs (gainAfter - gainBefore) > 0.005f)
-                result.getDynamicObject()->setProperty ("note", "This also moved the Maximizer gain from " + juce::String (gainBefore, 2) + " to "
-                    + juce::String (gainAfter, 2) + " dB" + (macro == ps::assist::Macro::Loudness ? "." : ", to keep the loudness steady. loudness_matched in assistant_settings turns that off."));
+                moved.add ("the Maximizer Gain from " + juce::String (gainBefore, 2) + " to " + juce::String (gainAfter, 2) + " dB");
+            if (std::abs (trimAfter - trimBefore) > 0.005f)
+                moved.add ("the Maximizer Trim from " + juce::String (trimBefore, 2) + " to " + juce::String (trimAfter, 2) + " dB");
+            if (! moved.isEmpty())
+                result.getDynamicObject()->setProperty ("note", "This also moved " + moved.joinIntoString (" and ")
+                    + (macro == ps::assist::Macro::Loudness ? "." : ", to keep the loudness steady. loudness_matched in assistant_settings turns that off."));
             return result;
         }
     }
@@ -839,16 +937,19 @@ juce::var cmdSetReferenceLoop (PureSheenProcessor& p, Args args)
     return referencesToVar (refs);
 }
 
-juce::var profileToVar (const ps::TrackProfile& profile)
+juce::var profileToVar (const ps::TrackProfile& profile, bool isReference)
 {
     if (! profile.valid)   // its stereo fields hold placeholders until there is audio
         return makeObject ({ { "valid", false } });
 
     return makeObject ({ { "valid", profile.valid }, { "analysed_seconds", numberD (profile.analysedSeconds) },
                          { "integrated_lufs", number (profile.integratedLufs, 100.0) },
-                         { "short_term_lufs", number (profile.shortTermLufs, 100.0) },
+                         // Of a whole reference file this would be the file's last 3 seconds, so it says nothing.
+                         { "short_term_lufs", isReference ? juce::var() : number (profile.shortTermLufs, 100.0) },
                          { "loudness_range_lu", number (profile.loudnessRangeLu, 100.0) },
                          { "true_peak_dbtp", number (profile.truePeakDb, 100.0) },
+                         { "sample_peak_db", number (profile.samplePeakDb, 100.0) },
+                         { "peak_to_loudness_db", number (profile.plrDb, 100.0) },
                          { "crest_db", number (profile.crestDb, 100.0) }, { "correlation", number (profile.correlation, 1000.0) },
                          { "width_pct", number (profile.widthPct, 100.0) },
                          { "low_end_correlation", number (profile.lowEndCorrelation, 1000.0) } });
@@ -874,8 +975,15 @@ juce::var cmdGetComparison (PureSheenProcessor& p, Args)
     for (const auto& hint : comparison.hints)
         hints.add (makeObject ({ { "title", juce::String (hint.title) }, { "detail", juce::String (hint.detail) } }));
 
-    return makeObject ({ { "ready", comparison.valid() }, { "master", profileToVar (refs.getMixProfile()) },
-                         { "reference", profileToVar (refs.getReferenceProfile()) },
+    const auto freshness = p.getAnalysisFreshness();
+    const double position = refs.getHostSeconds();
+    return makeObject ({ { "ready", comparison.valid() }, { "master", profileToVar (refs.getMixProfile(), false) },
+                         { "reference", profileToVar (refs.getReferenceProfile(), true) },
+                         { "settings_changed_during_analysis", freshness.blendsSettings },
+                         { "seconds_since_last_change", freshness.secondsSinceChange >= 0.0 ? numberD (freshness.secondsSinceChange) : juce::var() },
+                         { "analysed_seconds_since_last_change", freshness.analysedSecondsSinceChange >= 0.0 ? numberD (freshness.analysedSecondsSinceChange) : juce::var() },
+                         { "host_playing", refs.isHostPlaying() },
+                         { "host_position_seconds", position >= 0.0 ? numberD (position) : juce::var() },
                          { "loudness_difference_lu", number (comparison.loudnessDiffLu, 100.0) },
                          { "true_peak_difference_db", number (comparison.truePeakDiffDb, 100.0) },
                          { "peak_to_loudness_difference_db", number (comparison.plrDiffDb, 100.0) },
@@ -925,6 +1033,7 @@ const std::map<juce::String, Command>& commands()
         { "get_status",               { cmdGetStatus, false } },
         { "get_meters",               { cmdGetMeters, false } },
         { "reset_loudness",           { cmdResetLoudness, false } },
+        { "reset_comparison",         { cmdResetComparison, false } },
         { "list_modules",             { cmdListModules, false } },
         { "get_parameters",           { cmdGetParameters, false } },
         { "set_parameters",           { cmdSetParameters, true } },

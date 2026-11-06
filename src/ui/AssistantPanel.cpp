@@ -1464,7 +1464,7 @@ struct AssistantPanel::Impl
     std::vector<ps::ModuleType> moduleTypes;
     std::array<PillButton, 3> intensity;
     PillButton useMax, autoLoud, truePeak, back, start, cancel, fromFile, relearn, setup, bypass, openChain, matched;
-    SettingSlider loudness { "Loudness target", -20.0, -5.0, 0.5, [] (double v) { return juce::String (v, 1) + " LUFS"; } };
+    SettingSlider loudness { "Loudness target", ps::assist::kMinTargetLufs, ps::assist::kMaxTargetLufs, 0.5, [] (double v) { return juce::String (v, 1) + " LUFS"; } };
     SettingSlider ceiling { "Output level", -3.0, 0.0, 0.1, [] (double v) { return juce::String (v, 1) + " dB"; } };
     SettingSlider seconds { "Analysis time", 5.0, 30.0, 1.0, [] (double v) { return juce::String (juce::roundToInt (v)) + " s"; } };
     std::vector<std::unique_ptr<CardButton>> cardButtons;

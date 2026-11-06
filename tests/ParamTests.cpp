@@ -129,7 +129,7 @@ std::vector<std::string> documentedIds()
     addBands ("exc", kMaxBands, true, { "on", "mode", "drive", "mix" });
 
     add ("max", { "mode", "style3", "style4", "gain", "ceiling", "link", "truePeak", "character", "upward", "clip.on",
-                  "clip.mode", "clip.amount", "trans.on", "trans.amount", "si.trans", "si.sus", "learnTarget" });
+                  "clip.mode", "clip.amount", "trans.on", "trans.amount", "si.trans", "si.sus", "learnTarget", "trim" });
     return ids;
 }
 
@@ -243,7 +243,7 @@ TEST_CASE ("params. order: global io first, Core modules in ModuleType order, di
     const int firstPhase2 = paramIndex ("deq.on");
     REQUIRE (firstPhase2 > appendixStart);
     lastModule = -1;
-    for (int i = appendixStart; i < (int) specs.size(); ++i)
+    for (int i = appendixStart; i < kNumParams_1_0_0; ++i)   // what follows was appended singly after 1.0
     {
         const auto& s = specs[(size_t) i];
         CHECK (s.module >= 0);
@@ -484,6 +484,7 @@ TEST_CASE ("params. read of default values reproduces the struct defaults")
         CHECK_EQ (r.stereoIndependenceTransient, d.stereoIndependenceTransient);
         CHECK_EQ (r.stereoIndependenceSustain, d.stereoIndependenceSustain);
         CHECK_EQ (r.learnTargetLufs, d.learnTargetLufs);
+        CHECK_EQ (r.trimDb, d.trimDb);
     }
 
     {

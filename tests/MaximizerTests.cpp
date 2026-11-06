@@ -879,6 +879,30 @@ TEST_CASE ("max. learn: listens to 5 s of playing audio, publishes the gain once
     std::cout << "    white noise at " << fmt (inputLufs) << " LUFS, target -12: learned " << fmt (gainDb, 1) << " dB\n";
     CHECK (std::abs (gainDb - (-12.0f - inputLufs)) < 1.0f);
 
+    // an input louder than the target: the result goes below 0 dB, and that trim really lands on the target
+    {
+        Rig film (sr);
+        film.set ("max.learnTarget", inputLufs - 6.0f);
+        film.restart();
+        film.mx.startLearn();
+        Stereo f1 = noise, f2 = noise, f3 = noise;
+        film.run (f1);
+        film.run (f2);
+        film.run (f3);
+        float learned = 0.0f;
+        REQUIRE (film.mx.takeLearnedGain (learned));
+        CHECK (std::abs (learned - (-6.0f)) < 0.5f);
+
+        Rig trimmed (sr);
+        trimmed.set ("max.trim", learned);
+        trimmed.restart();
+        Stereo out = noise;
+        trimmed.run (out);
+        const size_t skip = (size_t) trimmed.mx.getLatencySamples();
+        const float outLufs = measureIntegratedLufs (out.l.data() + skip, out.r.data() + skip, (long long) (out.size() - skip), sr);
+        CHECK (std::abs (outLufs - (inputLufs - 6.0f)) < 0.5f);
+    }
+
     // dense material that needs limiting: the learned gain must account for it and land near the target
     Rig loud (sr);
     loud.set ("max.learnTarget", -10.0f);

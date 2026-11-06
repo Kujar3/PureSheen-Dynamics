@@ -18,6 +18,12 @@ const juce::Identifier kTag ("Assistant"), kCard ("Card"), kP ("P"), kRef ("Refe
 
 using ps::assist::Macro;
 
+// The status line while this card is the one applied.
+juce::String cardStatus (const ps::assist::Suggestion& s)
+{
+    return juce::String (s.name) + ": " + ps::assist::targetName (s.target) + " target, " + juce::String (s.loudnessLufs, 1) + " LUFS";
+}
+
 bool macroOwns (Macro m, const std::string& id)
 {
     auto starts = [&] (const char* p) { return id.rfind (p, 0) == 0; };
@@ -34,7 +40,7 @@ bool macroOwns (Macro m, const std::string& id)
         case Macro::Compress:     return starts ("dyn.");
         case Macro::Definition:   return id == "defn.a.amount";
         case Macro::ToneBalance:  return id == "tbal.a.amount";
-        case Macro::Loudness:     return id == "max.learnTarget" || id == "max.gain";
+        case Macro::Loudness:     return id == "max.learnTarget" || id == "max.gain" || id == "max.trim";
         case Macro::Count:
         default: break;
     }
@@ -271,6 +277,7 @@ void Assistant::rebuild()
 {
     if (! hasAnalysis() || getPhase() == Phase::Listening)
         return;
+    host.assistantJobStarted();
     invalidateResults();
     phase.store ((int) Phase::Analysing);
     progress.store (0.0f);
@@ -287,6 +294,7 @@ void Assistant::rebuild()
 
 void Assistant::startListening()
 {
+    host.assistantJobStarted();
     cancelFlag.store (true);
     joinWorker();
     releaseCapture();
@@ -324,6 +332,7 @@ bool Assistant::analyseFile (const juce::File& file)
 {
     if (! file.existsAsFile())
         return false;
+    host.assistantJobStarted();
     cancelFlag.store (true);
     joinWorker();
     releaseCapture();
@@ -415,8 +424,7 @@ void Assistant::runAnalysis (int gen, std::vector<float> left, std::vector<float
         r->inputLufs = ctx.analysis.profile.integratedLufs;
         r->rmsDb = ctx.analysis.profile.rmsDb;
         r->trackCurve = ctx.analysis.octaveDb;
-        r->message = juce::String (cards.front().name) + ": " + ps::assist::targetName (cards.front().target)
-                     + " target, " + juce::String (cards.front().loudnessLufs, 1) + " LUFS";
+        r->message = cardStatus (cards.front());
         if (stage == 1)
         {
             r->keepLeft = ex.left;
@@ -551,6 +559,7 @@ bool Assistant::apply (int index)
     if (! host.applyAssistantChain (s.values, s.order, description))
         return false;
     applied = index;
+    status = cardStatus (s);
     changed();
     return true;
 }
@@ -609,7 +618,7 @@ void Assistant::setMacro (Macro k, float value, bool gestureEnd)
     for (const auto& [i, v] : app.values)
     {
         const auto& id = specs[(size_t) i].id;
-        if (macroOwns (k, id) || (gainToo && id == "max.gain"))
+        if (macroOwns (k, id) || (gainToo && (id == "max.gain" || id == "max.trim")))
             values.emplace_back (i, v);
     }
 
@@ -626,7 +635,10 @@ void Assistant::awaitReference (const juce::String& path, const juce::String& na
     pendingReferencePath = path;
     loadingReference.store (path.isNotEmpty());
     if (path.isNotEmpty())
+    {
+        host.assistantJobStarted();
         status = "Analysing the reference " + name + "...";
+    }
     changed();
 }
 

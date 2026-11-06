@@ -11,6 +11,7 @@ import math
 import os
 import pathlib
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -186,6 +187,46 @@ def main():
         check(abs(changed["changes"][0]["value"] - 3.0) < 0.01, "set_parameters")
         history = helper.tool_json("get_history", {"limit": 2})
         check(history["steps"][-1]["description"] == "Claude: from the test", "the history names Claude")
+        check(changed.get("request", 0) > 0 and history["steps"][-1].get("request") == changed["request"], "the step carries the request number")
+        check("request" not in history["steps"][0] or history["steps"][0]["index"] != 0, "a step Claude did not cause has none")
+        check(abs(changed["changes"][0]["previous"] - before) < 0.01, "the reply says what the value was")
+
+        # What the sessions that read these replies asked for.
+        error, raw = helper.tool("get_parameters", {"module": "eq1"})
+        check(not error and not re.search(r"\d\.\d{5,}", raw), "numbers are rounded")
+        shapes = [p for p in json.loads(raw)["parameters"] if p["id"].endswith(".shape")]
+        check(len(shapes) >= 2 and "choices" in shapes[0] and "choices" not in shapes[1] and shapes[1].get("choices_as") == shapes[0]["id"],
+              "a long list of choices comes once per reply")
+        helper.tool_json("set_parameters", {"changes": [{"id": "eq1.a.b4.gain", "value": 2.0}]})
+        ids = [p["id"] for p in helper.tool_json("get_parameters", {"module": "eq1", "changed_only": True})["parameters"]]
+        check("eq1.a.b4.gain" in ids and "eq1.a.b4.shape" in ids and "eq1.a.b4.on" in ids, f"changed_only keeps what a band's value means: {ids}")
+        check("eq1.a.b5.shape" not in ids, "and leaves other bands out")
+        noted = helper.tool_json("set_parameters", {"changes": [{"id": "eq1.b.b4.gain", "value": 1.0}]})
+        check("Stereo" in noted["changes"][0].get("channel_note", ""), "set B in Stereo says it does nothing")
+        helper.tool_json("undo")
+        helper.tool_json("undo")
+
+        meters = helper.tool_json("get_meters")
+        again = helper.tool_json("get_meters")
+        check(again["peak_window_seconds"] is not None and again["peak_window_seconds"] >= 0, "get_meters says what its peaks cover")
+        check("host_position_seconds" in meters and "seconds_since_last_change" in meters, "and where the playhead and the last change are")
+        comparison = helper.tool_json("get_comparison")
+        check("settings_changed_during_analysis" in comparison and "analysed_seconds_since_last_change" in comparison, "get_comparison says what it spans")
+        check(helper.tool_json("reset_comparison")["reset"] is True, "the comparison can be reset")
+        instances = helper.tool_json("list_instances")["instances"]
+        check(len(instances) != 1 or instances[0]["selected"] is True, "the only instance reads as selected")
+
+        # A snapshot brings the preset bar back with the settings.
+        status = helper.tool_json("get_status")
+        helper.tool_json("store_snapshot", {"slot": "D"})
+        helper.tool_json("load_preset", {"name": "Streaming Ready"})
+        check(helper.tool_json("get_status")["preset"] == "Streaming Ready", "the preset loaded")
+        helper.tool_json("recall_snapshot", {"slot": "D"})
+        recalled = helper.tool_json("get_status")
+        check(recalled["preset"] == status["preset"] and recalled["preset_modified"] == status["preset_modified"],
+              f"recalling a snapshot restores the preset name: {recalled['preset']} / {status['preset']}")
+        helper.tool_json("undo")
+        helper.tool_json("undo")
         helper.tool_json("undo")
         after = helper.tool_json("get_parameters", {"ids": ["max.gain"]})["parameters"][0]["value"]
         check(after == before, "undo restores it")
@@ -295,13 +336,27 @@ def main():
         assistant = wait_for(lambda: helper.tool_json("get_assistant"), lambda a: a["applied"] >= 0, 60)
         check(assistant is not None and len(assistant["suggestions"]) >= 2, "suggestions arrive")
         if assistant is not None:
-            check(helper.tool_json("get_history", {"limit": 1})["steps"][-1]["description"].startswith("Assistant:"),
-                  "the result that arrives later has its usual name")
+            late = helper.tool_json("get_history", {"limit": 1})["steps"][-1]
+            check(late["description"].startswith("Claude: Assistant:"), f"the result that arrives later stays Claude's: {late['description']}")
+            check(late.get("request") == started.get("request") and started.get("request", 0) > 0,
+                  f"and carries the number of the request that started it: {late.get('request')} / {started.get('request')}")
             check(assistant["settings"]["intensity"] == "gentle", "settings stick")
+            film = helper.tool_json("assistant_settings", {"auto_loudness": False, "loudness_lufs": -23})
+            check(abs(film["settings"]["loudness_lufs"] + 23) < 0.01, "a film target is accepted")
+            floor = helper.tool_json("assistant_settings", {"loudness_lufs": -30})
+            check(abs(floor["settings"]["loudness_lufs"] + 24) < 0.01, "the target stops at -24")
+            helper.tool_json("assistant_settings", {"auto_loudness": True})
             other = next(s["index"] for s in assistant["suggestions"] if s["index"] != assistant["applied"])
             applied = helper.tool_json("assistant_apply", {"index": other})
             check(applied["applied"] == other, "assistant_apply")
             check(helper.tool_json("get_history", {"limit": 1})["steps"][-1]["description"].startswith("Claude: "), "applying is labelled")
+            card = next(s for s in assistant["suggestions"] if s["index"] == other)
+            check(helper.tool_json("get_assistant")["status"].startswith(card["name"] + ":"), "the status follows the card applied")
+
+            capped = helper.tool_json("assistant_set_macro", {"macro": "Loudness", "value": -30})
+            check(abs(capped["value"] + 24) < 0.01 and "limited" in capped, f"a capped macro says so: {capped}")
+            check(capped["maximizer_gain_db"] == 0 and capped["maximizer_trim_db"] < 0 and "Trim" in capped.get("note", ""), f"and the note names the Trim: {capped}")
+            helper.tool_json("undo")
             error, _ = helper.tool("assistant_apply", {"index": 999})
             check(error, "a suggestion that does not exist is an error")
 

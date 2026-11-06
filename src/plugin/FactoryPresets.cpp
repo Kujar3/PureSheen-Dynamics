@@ -414,6 +414,22 @@ std::vector<FactoryPreset> build()
         Builder().maximizer (MM::Transparent, 3.0f, -1.0f, 4.0f),
         { ModuleType::Maximizer }));
 
+    // Film and broadcast: a level to deliver at rather than a sound. The limiter only catches peaks; the trim brings the
+    // -20 LUFS premaster to the level, and Learn Input Gain adapts it to other mixes.
+    all.push_back (global ("Film and TV -23 LUFS", "Film and Broadcast",
+        Builder().maximizer (MM::Transparent, 0.0f, -1.0f, 6.0f)
+            .set ("max.upward", 0.0f)
+            .set ("max.trim", -3.0f)
+            .set ("max.learnTarget", -23.0f),
+        { ModuleType::Maximizer }));
+
+    all.push_back (global ("US Broadcast -24 LUFS", "Film and Broadcast",
+        Builder().maximizer (MM::Transparent, 0.0f, -2.0f, 6.0f)
+            .set ("max.upward", 0.0f)
+            .set ("max.trim", -4.0f)
+            .set ("max.learnTarget", -24.0f),
+        { ModuleType::Maximizer }));
+
     all.push_back (global ("Radio Pop", "Pop and Rock",
         Builder()
             .eq1 ('a', 1, EqShape::HighPassFlat, 30.0f, 0.0f, 0.707f, kSlope24)
@@ -629,6 +645,10 @@ std::vector<FactoryPreset> build()
         Builder().maximizer (MM::Transparent, 3.0f, -1.0f, 4.0f)));
     all.push_back (modulePreset ("Low Latency Safety", "Safe", ModuleType::Maximizer,
         Builder().maximizer (MM::LowLatency, 0.0f, -0.3f, 3.0f)));
+    all.push_back (modulePreset ("Film Target -23", "Film and Broadcast", ModuleType::Maximizer,
+        Builder().maximizer (MM::Transparent, 0.0f, -1.0f, 6.0f).set ("max.upward", 0.0f).set ("max.trim", -3.0f).set ("max.learnTarget", -23.0f)));
+    all.push_back (modulePreset ("Broadcast Target -24", "Film and Broadcast", ModuleType::Maximizer,
+        Builder().maximizer (MM::Transparent, 0.0f, -2.0f, 6.0f).set ("max.upward", 0.0f).set ("max.trim", -4.0f).set ("max.learnTarget", -24.0f)));
     all.push_back (modulePreset ("Smooth Bass Heavy", "Warm", ModuleType::Maximizer,
         Builder().maximizer (MM::Smooth, 5.0f, -1.0f, 6.0f)));
     all.push_back (modulePreset ("Loud Modern", "Loud", ModuleType::Maximizer,

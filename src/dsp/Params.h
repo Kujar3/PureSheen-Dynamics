@@ -23,6 +23,7 @@
 // Core T/S additions (eq1 / eq2 ts params, the Imager channel slot and its set B, "exc.ts.on" and the exc ts params),
 // then each phase 2 module in ModuleType order (slot params, then its own params in struct order). The vintage-style
 // modules (phase 3) append after "bass.autoGain" the same way (ccmp, peq, clim, tape), then the De-limiter (dlim).
+// After 1.0, "max.trim" (the Maximizer's way down, which its released Gain range cannot give).
 // tests/ParamCompatTests.cpp guards the 0.1.1 part (index, id, name, range, default, choices of all 479 entries), the
 // 0.2 - 0.5 table (841 entries), the vintage appendix and the De-limiter appendix (count + fingerprint each).
 // Host-visible names: "<shortName> <Band n> <Name> [(A)|(B)]", e.g. "EQ 1 Band 3 Freq (A)". Set B is labelled "(B)";
@@ -48,7 +49,8 @@ const std::vector<ParamSpec>& paramSpecs();          // fixed order; append-only
 inline constexpr int kNumParams_0_1_1 = 479;         // entries of the released 0.1.1 table (dith.dc is the last)
 inline constexpr int kNumParams_0_5_0 = 841;         // entries of the 0.2 .. 0.5 table: 0.1.1 + the phase 2 appendix
 inline constexpr int kNumParams_0_6_0 = 920;         // entries of the 0.6 table: 0.5 + the vintage appendix
-                                                     //   (bass.autoGain is the last); the vintage appendix follows
+                                                     //   (bass.autoGain is the last); the De-limiter appendix follows
+inline constexpr int kNumParams_1_0_0 = 925;         // entries of the 1.0 table (dlim.thr is the last); max.trim follows
 int paramIndex (const std::string& id) noexcept;     // -1 when unknown (not realtime: string lookup)
 
 // Plain values, one per paramSpecs() entry (choices / bools as 0, 1, 2 ...).
@@ -261,6 +263,7 @@ struct MaximizerParams
     float stereoIndependenceTransient = 0.0f;   // "si.trans"  0..100 (0 = fully linked)
     float stereoIndependenceSustain = 0.0f;     // "si.sus"    0..100
     float learnTargetLufs = -10.0f;   // "learnTarget" -24..-5 LUFS (target of Learn Input Gain)
+    float trimDb = 0.0f;              // "trim" -24..0: added to the gain, for a track louder than the target
 };
 void readMaximizerParams (ParamValues, MaximizerParams&) noexcept;
 

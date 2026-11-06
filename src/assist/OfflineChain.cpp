@@ -151,6 +151,18 @@ float integratedLufs (const Excerpt& e)
     return meter.integratedLufs();
 }
 
+namespace
+{
+// The Maximizer's Gain and Trim as one line: above 0 dB the gain, below it the trim.
+constexpr float kMinGain = -24.0f, kMaxGain = 20.0f;
+
+void setGain (std::vector<float>& v, float gain)
+{
+    setParam (v, "max.gain", std::max (gain, 0.0f));
+    setParam (v, "max.trim", std::min (gain, 0.0f));
+}
+} // namespace
+
 bool refineLoudness (Suggestion& s, const Excerpt& in, const std::atomic<bool>* cancel)
 {
     if (! hasMaximizer (s.order) || in.size() == 0)
@@ -162,7 +174,7 @@ bool refineLoudness (Suggestion& s, const Excerpt& in, const std::atomic<bool>* 
 
     auto measure = [&] (float gain, float& lufs) {
         auto v = s.values;
-        setParam (v, "max.gain", gain);
+        setGain (v, gain);
         if (! renderSeries (maximizerOnly(), v, pre, post, false, cancel))
             return false;
         lufs = integratedLufs (post);
@@ -170,11 +182,11 @@ bool refineLoudness (Suggestion& s, const Excerpt& in, const std::atomic<bool>* 
     };
 
     const float target = s.loudnessLufs;
-    float g0 = paramValue (s.values, "max.gain"), l0 = 0.0f;
+    float g0 = paramValue (s.values, "max.gain") + paramValue (s.values, "max.trim"), l0 = 0.0f;
     if (! measure (g0, l0))
         return false;
 
-    float g1 = std::clamp (g0 + 1.3f * (target - l0), 0.0f, 20.0f), l1 = l0;
+    float g1 = std::clamp (g0 + 1.3f * (target - l0), kMinGain, kMaxGain), l1 = l0;
     if (std::abs (target - l0) > 0.1f && g1 != g0)
     {
         if (! measure (g1, l1))
@@ -183,7 +195,7 @@ bool refineLoudness (Suggestion& s, const Excerpt& in, const std::atomic<bool>* 
         for (int run = 0; run < 4 && std::abs (target - l1) > 0.1f; ++run)
         {
             const float slope = std::abs (l1 - l0) > 1.0e-3f ? (g1 - g0) / (l1 - l0) : 1.3f;
-            const float g2 = std::clamp (g1 + std::clamp (slope, 0.5f, 6.0f) * (target - l1), 0.0f, 20.0f);
+            const float g2 = std::clamp (g1 + std::clamp (slope, 0.5f, 6.0f) * (target - l1), kMinGain, kMaxGain);
             if (g2 == g1)
                 break;
             g0 = g1;
@@ -203,7 +215,7 @@ bool refineLoudness (Suggestion& s, const Excerpt& in, const std::atomic<bool>* 
     if (gs <= 20.0f && measure (gs, ls) && ls - l1 > 0.05f)
         s.gainPerLufs = std::clamp (1.0f / (ls - l1), 0.8f, 6.0f);
 
-    setParam (s.values, "max.gain", g1);
+    setGain (s.values, g1);
     s.loudnessMeasured = true;
     return ! cancelled (cancel);
 }

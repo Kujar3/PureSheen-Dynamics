@@ -435,15 +435,18 @@ void Bridge::handleAsyncUpdate()
         auto& processor = impl->processor;
         const juce::ScopedLock editLock (processor.getEditLock());   // a host may restore a state from its own thread
         const bool changes = bridgeCommandChangesState (request->command);
+        int number = 0;
         if (changes)
         {
             processor.finishUserEdits();   // the user's own edit in progress stays the user's undo step
-            processor.setHistoryPrefix ("Claude: ");
+            number = processor.beginClaudeRequest();
         }
 
         try
         {
             request->result = runBridgeCommand (processor, request->command, request->args);
+            if (auto* reply = request->result.getDynamicObject(); reply != nullptr && changes)
+                reply->setProperty ("request", number);   // get_history shows it on the step, even one that lands later
         }
         catch (const juce::String& message)
         {
@@ -462,7 +465,7 @@ void Bridge::handleAsyncUpdate()
         }
 
         if (changes)
-            processor.setHistoryPrefix ({});
+            processor.endClaudeRequest();
         request->done.signal();
     }
 

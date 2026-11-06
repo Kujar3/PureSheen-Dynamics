@@ -714,10 +714,14 @@ MacroApplication applyMacros (const Suggestion& base, const MacroValues& m, floa
         put ("dyn.autoGain", 1.0f);
     }
 
-    // Loudness: the target moves the gain along the measured slope; loudness matching adds its correction.
+    // Loudness: the target moves the gain along the measured slope; loudness matching adds its correction. Gain and
+    // Trim are one line: above 0 dB the gain, below it the trim.
     const float target = value (Macro::Loudness);
     put ("max.learnTarget", target);
-    put ("max.gain", get (base.values, "max.gain") + base.gainPerLufs * (target - base.loudnessLufs) + compensationDb);
+    const float gain = get (base.values, "max.gain") + get (base.values, "max.trim")
+                       + base.gainPerLufs * (target - base.loudnessLufs) + compensationDb;
+    put ("max.gain", std::max (gain, 0.0f));
+    put ("max.trim", std::min (gain, 0.0f));
     return out;
 }
 } // namespace ps::assist

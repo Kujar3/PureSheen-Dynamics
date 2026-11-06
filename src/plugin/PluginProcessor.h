@@ -134,6 +134,7 @@ public:
     {
         int id = 0;
         juce::String description;    // "EQ 1 Band 3 Gain (A): +2.5 dB", "Added Exciter", "Loaded preset Warm Glue"
+        int request = 0;             // the connector request behind this step (see beginClaudeRequest); 0 = none
     };
     std::vector<HistoryEntry> getHistory() const;                     // oldest first; entry 0 = "Initial state"
     int getHistoryPosition() const;                                   // index of the current state in getHistory()
@@ -253,9 +254,22 @@ public:
     // Closes the user's edit in progress as its own undo step, a macro drag of the Assistant included (which
     // flushPendingChanges leaves open), so a command that follows does not take it along. Message thread.
     void finishUserEdits();
-    // Put in front of what the undo history records until it is cleared ("Claude: "). Message thread; the caller calls
-    // finishUserEdits first, so the user's own edit keeps its name.
-    void setHistoryPrefix (const juce::String&);
+    // Until endClaudeRequest, what the undo history records starts with "Claude: " and carries the number returned here
+    // (counts up from 1 in this instance). A job started meanwhile that finishes later (Learn, the Assistant) keeps both.
+    // Message thread; the caller calls finishUserEdits first, so the user's own edit keeps its name.
+    int beginClaudeRequest();
+    void endClaudeRequest();
+    // How a measurement relates to the settings (message thread). The master's analysis is cumulative, so after a
+    // change it blends both until it is reset.
+    struct AnalysisFreshness
+    {
+        double secondsSinceChange = -1.0;         // since the last recorded change or undo (< 0: none yet)
+        double analysedSecondsSinceChange = -1.0; // audio the analysis took in since then (< 0: no change yet)
+        bool blendsSettings = false;              // the analysis holds audio from before that change
+    };
+    AnalysisFreshness getAnalysisFreshness() const;
+    // Seconds since the last call (< 0 on the first): what the peaks get_meters reads and clears cover.
+    double takeSecondsSinceMeterRead();
     // The track the host says this instance is on, when it says (any thread).
     juce::String getTrackName() const;
     void updateTrackProperties (const TrackProperties&) override;

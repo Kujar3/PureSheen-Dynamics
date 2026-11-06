@@ -70,14 +70,16 @@ const std::vector<Tool>& tools()
           R"({"id":{"type":"string","description":"An id from list_instances."}})", R"(["id"])", false, true },
         { "get_status", "The overview: version, host, track, sample rate, latency, preset, bypass, the module chain, undo state.",
           R"({})", "[]", true, true },
-        { "get_meters", "Loudness now (momentary, short-term, integrated LUFS, loudness range) at the input and output, the Maximizer's gain reduction, and each module's level change. True peak and the Maximizer's peak gain reduction are the highest since the last get_meters call, so call it once to clear old peaks and again after the audio you care about. The gain reduction 'now' values are one audio block, usually 0 between peaks: use the peak value to judge limiting. ceiling_applies_to says which peak the Maximizer's ceiling limits: with 'sample peak', the true peak can read above the ceiling and that is expected. Null until there is audio.",
+        { "get_meters", "Loudness now (momentary, short-term, integrated LUFS, loudness range) at the input and output, the Maximizer's gain reduction, and each module's level change. Integrated loudness and loudness range cover everything since reset_loudness, including across setting changes. True peak and the Maximizer's peak gain reduction are the highest since the last get_meters call by anyone (peak_window_seconds is how long ago that was), so call it once to clear old peaks and again after the audio you care about. host_position_seconds is the playhead. The gain reduction 'now' values are one audio block, usually 0 between peaks: use the peak value to judge limiting. ceiling_applies_to says which peak the Maximizer's ceiling limits: with 'sample peak', the true peak can read above the ceiling and that is expected. Null until there is audio.",
           R"({})", "[]", false, false },
-        { "reset_loudness", "Restarts the integrated loudness and loudness range measurements, for instance when the user plays the track from the top.",
+        { "reset_loudness", "Restarts the integrated loudness and loudness range that get_meters reports, for instance when the user plays the track from the top. get_comparison has its own: reset_comparison.",
+          R"({})", "[]", false, true },
+        { "reset_comparison", "Restarts the analysis of the master that get_comparison reports, like Reset analysis in the plugin. Use it after changing settings, then have the user play the part to compare, so the reading holds only audio from the new settings. Peaks and averages start over; the reference is not touched.",
           R"({})", "[]", false, true },
         { "list_modules", "Every module type: its id (the prefix of its parameter ids), name, whether it is in the chain and on, and how many parameters it has.",
           R"({})", "[]", true, true },
         { "get_parameters", "Reads parameters: value, text, default, range, unit or choices. Use a filter: there are over a thousand. A module's power switch is <module>.on.",
-          R"({"module":{"type":"string","description":"A module id, or 'global' for input, output and bypass."},"ids":{"type":"array","items":{"type":"string"}},"query":{"type":"string","description":"Text in the id or name."},"changed_only":{"type":"boolean","description":"Only those away from their default."},"offset":{"type":"integer"},"limit":{"type":"integer","description":"Default 200, at most 1000."}})",
+          R"({"module":{"type":"string","description":"A module id, or 'global' for input, output and bypass."},"ids":{"type":"array","items":{"type":"string"}},"query":{"type":"string","description":"Text in the id or name."},"changed_only":{"type":"boolean","description":"Only those away from their default, plus the shape and power of a band that has a changed value."},"offset":{"type":"integer"},"limit":{"type":"integer","description":"Default 200, at most 1000."}})",
           "[]", true, true },
         { "set_parameters", "Changes parameters as one undo step. Numbers are limited to the parameter's range, and the reply says when that happened. Switches take true or false, choices their label or index. Bypass and Gain Match are refused: they stay with the user. If any entry is invalid, nothing changes.",
           R"({"changes":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"value":{"type":["number","boolean","string"]}},"required":["id","value"]}},"description":{"type":"string","description":"What this does, for the history list, in a few words."}})",
@@ -90,7 +92,7 @@ const std::vector<Tool>& tools()
           R"({"order":{"type":"array","items":{"type":"string"}}})", R"(["order"])", false, true },
         { "reset_module", "Sets every parameter of a module back to its default.",
           R"({"module":{"type":"string"}})", R"(["module"])", false, true },
-        { "get_history", "The undo history, newest last.",
+        { "get_history", "The undo history, newest last. A step Claude caused has a 'request': the number in the reply of the command behind it, also when the step landed later (the Assistant, learn).",
           R"({"limit":{"type":"integer","description":"Default 30."}})", "[]", true, true },
         { "undo", "Undoes the last change, whoever made it.", R"({})", "[]", false, false },
         { "redo", "Redoes the last undone change.", R"({})", "[]", false, false },
@@ -104,7 +106,7 @@ const std::vector<Tool>& tools()
           R"({"name":{"type":"string"},"scope":{"type":"string"},"category":{"type":"string","description":"When two presets share a name."}})", R"(["name"])", false, true },
         { "save_preset", "Saves the current settings as a user preset. Refuses to replace an existing preset unless overwrite is true.",
           R"({"name":{"type":"string"},"scope":{"type":"string"},"category":{"type":"string"},"overwrite":{"type":"boolean","description":"Only when the user agreed."}})", R"(["name"])", false, false },
-        { "learn", "Starts, cancels or checks a learn function while the user plays the loudest part: 'maximizer' sets the Maximizer gain, 'de_limiter' sets the De-limiter threshold.",
+        { "learn", "Starts, cancels or checks a learn function while the user plays the loudest part: 'maximizer' sets the Maximizer gain to reach its learn target (a track already louder than the target is turned down with max.trim instead), 'de_limiter' sets the De-limiter threshold. The result lands as its own undo step under this reply's 'request' number.",
           R"({"target":{"type":"string","enum":["maximizer","de_limiter"]},"action":{"type":"string","enum":["start","cancel","status"]}})", R"(["target"])", false, false },
         { "get_assistant", "The Assistant: phase, progress, suggestions, the applied one, macros, settings. Suggestions are ready to use once they are listed. 'working' can stay true for a minute or two while it refines their loudness in the background: no need to wait for it. 'applied' is the suggestion applied last: undo restores the settings but does not change it. Suggestions start with True Peak off and a -0.1 dB ceiling on purpose, so their true peak can read above the ceiling. That is not a fault to fix unprompted.",
           R"({})", "[]", true, true },
@@ -117,7 +119,7 @@ const std::vector<Tool>& tools()
         { "assistant_set_macro", "Moves one of the Assistant's macros, as one undo step. With loudness matching on (the default) a macro also moves the Maximizer gain to keep the loudness steady, replacing a gain set by hand. The reply says when it did.",
           R"({"macro":{"type":"string"},"value":{"type":"number"}})", R"(["macro","value"])", false, true },
         { "assistant_settings", "Changes what the Assistant aims for. Give only what changes. These apply to the next suggestions, not to the current settings. Pass rebuild: true to build suggestions from the audio it has: that applies a new suggestion and replaces changes made since, though undo brings them back. loudness_matched applies straight away.",
-          R"({"profile":{"type":"string","description":"'detect' or a genre name such as Rock, Hip-Hop, EDM."},"auto_loudness":{"type":"boolean"},"loudness_lufs":{"type":"number","description":"-20 to -5."},"intensity":{"type":"string","enum":["gentle","balanced","strong"]},"use_maximizer":{"type":"boolean"},"ceiling_db":{"type":"number","description":"-3 to 0."},"true_peak":{"type":"boolean"},"analysis_seconds":{"type":"number","description":"5 to 30."},"loudness_matched":{"type":"boolean"},"rebuild":{"type":"boolean","description":"Default false."}})", "[]", false, true },
+          R"({"profile":{"type":"string","description":"'detect' or a genre name such as Rock, Hip-Hop, EDM."},"auto_loudness":{"type":"boolean"},"loudness_lufs":{"type":"number","description":"-24 to -5."},"intensity":{"type":"string","enum":["gentle","balanced","strong"]},"use_maximizer":{"type":"boolean"},"ceiling_db":{"type":"number","description":"-3 to 0."},"true_peak":{"type":"boolean"},"analysis_seconds":{"type":"number","description":"5 to 30."},"loudness_matched":{"type":"boolean"},"rebuild":{"type":"boolean","description":"Default false."}})", "[]", false, true },
         { "assistant_use_reference", "Makes a reference from get_references the Assistant's target, or returns to its own target with id 0. Setting a reference rebuilds the suggestions, which applies a new one over the current settings. Undo brings them back.",
           R"({"id":{"type":"integer"}})", R"(["id"])", false, true },
         { "get_references", "The reference track list: id, file, state, loudness, true peak, loops.",
@@ -130,7 +132,7 @@ const std::vector<Tool>& tools()
           R"({"id":{"type":"integer"}})", R"(["id"])", false, true },
         { "set_reference_loop", "Chooses the part of a reference to compare with. With start and end: sets that loop letter and makes it active. Letter alone: makes it active. With clear: clears it. No letter: the whole track.",
           R"({"id":{"type":"integer"},"letter":{"type":"string","enum":["A","B","C","D","E"]},"start_seconds":{"type":"number"},"end_seconds":{"type":"number"},"clear":{"type":"boolean"}})", R"(["id"])", false, true },
-        { "get_comparison", "The master against the selected reference: loudness, true peak, dynamics, tonal balance and width per band, and plain-language hints. The master is only analysed while a reference is in the list, so its width and mono compatibility need one too, and they fill in while the user's master plays.",
+        { "get_comparison", "The master against the selected reference: loudness, true peak, dynamics, tonal balance and width per band, and plain-language hints. The master is only analysed while a reference is in the list, so its width and mono compatibility need one too, and they fill in while the user's master plays. The analysis is its own measurement: it adds up everything played since reset_comparison, so it differs from get_meters, whose window starts elsewhere. When settings_changed_during_analysis is true the reading blends audio from before and after the change: reset_comparison before judging it. Peaks are the highest so far, so one spike stays in them and in what follows from them. peak_to_loudness_db uses the sample peak (sample_peak_db minus integrated_lufs), not the true peak, on purpose: inter-sample overshoot would make a clipped master look more dynamic. The bands are fixed analysis bands, and the Imager's crossovers are its own.",
           R"({})", "[]", true, true },
     };
     return list;
@@ -411,7 +413,9 @@ private:
             else
                 result = forward (name, args);
 
-            reply (id, makeObject ({ { "content", juce::Array<var> { textContent (juce::JSON::toString (result, true)) } } }));
+            // Four decimals: more is float noise that only costs the reader.
+            const auto text = juce::JSON::toString (result, juce::JSON::FormatOptions{}.withSpacing (juce::JSON::Spacing::singleLine).withMaxDecimalPlaces (4));
+            reply (id, makeObject ({ { "content", juce::Array<var> { textContent (text) } } }));
         }
         catch (const juce::String& error)
         {
@@ -439,12 +443,15 @@ private:
     var listInstances()
     {
         juce::Array<var> list;
-        for (const auto& instance : readInstances())
+        const auto instances = readInstances();
+        for (const auto& instance : instances)
         {
             try
             {
                 const auto status = connectionTo (instance).call ("get_status", makeObject ({}), 5000);
-                list.add (makeObject ({ { "id", instance.id }, { "selected", instance.id == selected }, { "version", instance.version },
+                // With one instance, calls go to it without selecting anything.
+                const bool isSelected = instance.id == selected || (selected.isEmpty() && instances.size() == 1);
+                list.add (makeObject ({ { "id", instance.id }, { "selected", isSelected }, { "version", instance.version },
                                         { "host", status["host"] }, { "track", status["track"] }, { "preset", status["preset"] }, { "chain", status["chain"] } }));
             }
             catch (const juce::String&)

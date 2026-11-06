@@ -380,8 +380,8 @@ void testParameters()
     for (int i = 0; sameOrder && i < hostParams.size(); ++i)
     {
         auto* p = dynamic_cast<juce::RangedAudioParameter*> (hostParams[i]);
-        // 0.1.1 table: 1, phase 2 appendix: 2, vintage appendix: 3, De-limiter: 4
-        const int version = i < ps::kNumParams_0_1_1 ? 1 : (i < ps::kNumParams_0_5_0 ? 2 : (i < ps::kNumParams_0_6_0 ? 3 : 4));
+        // 0.1.1 table: 1, phase 2 appendix: 2, vintage appendix: 3, De-limiter: 4, after 1.0: 5
+        const int version = i < ps::kNumParams_0_1_1 ? 1 : (i < ps::kNumParams_0_5_0 ? 2 : (i < ps::kNumParams_0_6_0 ? 3 : (i < ps::kNumParams_1_0_0 ? 4 : 5)));
         sameOrder = p != nullptr && p->getParameterID() == juce::String (specs[(size_t) i].id)
                     && p->getVersionHint() == version && p->getName (256) == juce::String (specs[(size_t) i].name);
         if (! sameOrder)
@@ -2079,6 +2079,52 @@ void testMaximizerLearn()
     h.proc.flushPendingChanges (true);
     check (! h.proc.isMaximizerLearning() && h.get ("max.gain") == gain && h.proc.getHistory().size() == steps,
            "max learn: cancel stops listening and keeps the gain");
+
+    // A target below the input: the gain has nothing to take off, so the trim turns it down, in one step.
+    const auto learnOnce = [&] {
+        h.proc.startMaximizerLearn();
+        for (int s = 0; s < 8 && h.proc.isMaximizerLearning(); ++s)
+        {
+            h.stream (48000, input);
+            h.proc.flushPendingChanges (true);
+        }
+    };
+    h.proc.setParameterValues ({ { "max.learnTarget", -24.0f }, { "max.gain", 0.0f }, { "max.trim", 0.0f } }, "film target");
+    const auto stepsBefore = h.proc.getHistory().size();
+    learnOnce();
+    const float loudGain = h.get ("max.gain"), loudTrim = h.get ("max.trim");
+    check (loudGain == 0.0f && h.proc.getHistory().size() == stepsBefore + 1
+               && h.proc.getHistory().back().description.startsWith ("Learned Maximizer trim"),
+           "max learn: a target below the input trims as one step",
+           str ("gain ", loudGain, ", last step ", h.proc.getHistory().back().description));
+    check (std::abs (loudTrim - (-24.0f - inputLoudness)) < 1.0f,
+           "[dsp] max learn: the trim is the distance to the target",
+           str ("trim ", loudTrim, ", input ", inputLoudness, " LUFS"));
+
+    // Back to a louder target: the trim returns to 0 and the gain takes over.
+    h.proc.setParameterValues ({ { "max.learnTarget", -12.0f } }, "louder target");
+    learnOnce();
+    check (h.get ("max.trim") == 0.0f && h.get ("max.gain") > 0.0f, "max learn: a louder target takes the trim back off",
+           str ("trim ", h.get ("max.trim"), ", gain ", h.get ("max.gain")));
+
+    // Who asked stays on the step that lands later; a learn started by hand afterwards is the user's.
+    h.proc.setParameterValues ({ { "max.gain", 0.0f } }, "reset gain");
+    const int claude = h.proc.beginClaudeRequest();
+    h.proc.startMaximizerLearn();
+    h.proc.endClaudeRequest();
+    for (int s = 0; s < 8 && h.proc.isMaximizerLearning(); ++s)
+    {
+        h.stream (48000, input);
+        h.proc.flushPendingChanges (true);
+    }
+    check (h.proc.getHistory().back().description.startsWith ("Claude: Learned Maximizer gain")
+               && h.proc.getHistory().back().request == claude,
+           "max learn: a learn Claude started keeps the label and the request number",
+           str ("last step ", h.proc.getHistory().back().description));
+    h.proc.setParameterValues ({ { "max.gain", 0.0f } }, "reset gain");
+    learnOnce();
+    check (h.proc.getHistory().back().description.startsWith ("Learned Maximizer gain") && h.proc.getHistory().back().request == 0,
+           "max learn: a learn started by hand is the user's", str ("last step ", h.proc.getHistory().back().description));
 }
 
 //==============================================================================

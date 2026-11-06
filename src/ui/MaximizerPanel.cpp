@@ -94,7 +94,7 @@ struct MaximizerPanel::Impl
           clipMode (p, "max.clip.mode", { "Light", "Moderate", "Heavy" }, 1, MaxChoiceGrid::Style::chips, colour),
           clipAmount (p, "max.clip.amount", "Amount"),
           transOn (p, "max.trans.on", colour), transAmount (p, "max.trans.amount", "Amount"),
-          learn (colour), learnTarget (p, "max.learnTarget", "Target")
+          learn (colour), learnTarget (p, "max.learnTarget", "Target"), trim (p, "max.trim", "Trim")
     {
         levels.onChange = [this] { pollLevels(); };
 
@@ -113,7 +113,7 @@ struct MaximizerPanel::Impl
                                     "Moderate: drives it +3 dB, softens from 2.5 dB below full scale, warmer.",
                                     "Heavy: drives it +6 dB, softens from 4 dB below full scale, strongly saturated." });
 
-        for (auto* k : { &character, &upward, &siTransient, &siSustain, &clipAmount, &transAmount, &learnTarget })
+        for (auto* k : { &character, &upward, &siTransient, &siSustain, &clipAmount, &transAmount, &learnTarget, &trim })
             k->setColour (colour);
 
         link.setOnColour (colour);
@@ -137,6 +137,9 @@ struct MaximizerPanel::Impl
         transAmount.setTooltip ("Transient Emphasis amount: how much the attacks are brought forward.");
         learnTarget.setTooltip ("Learn target: the loudness (LUFS) that Learn Input Gain aims for.\nDrag to change "
                                 "(Ctrl: fine), double-click to type a value, right-click to reset.");
+        trim.setTooltip ("Trim: turns the signal down before the limiter. Learn uses it for a track louder than its "
+                         "target, such as a film mix going to -23 LUFS.\nDrag to change (Ctrl: fine), double-click to "
+                         "type a value, right-click to reset.");
 
         learn.onClick = [this]
         {
@@ -155,7 +158,7 @@ struct MaximizerPanel::Impl
         for (juce::Component* c : std::initializer_list<juce::Component*> {
                  &display, &gainCol, &outCol, &grCol, &modes, &aggressive, &spectral, &link, &truePeak, &character,
                  &upward, &siTransient, &siSustain, &clipOn, &clipMode, &clipAmount, &transOn, &transAmount, &learn,
-                 &learnTarget })
+                 &learnTarget, &trim })
         {
             owner.addAndMakeVisible (c);
             c->setWantsKeyboardFocus (false);
@@ -442,7 +445,7 @@ struct MaximizerPanel::Impl
         auto computeIdeal = [&]
         {
             ideal = { 2 * kw + 6 + 2 * pad, 2 * kw + 6 + 2 * pad, chipsW + 8 + kw + 2 * pad, juce::jmax (kw + 2 * pad, 136),
-                      ringW + 8 + kw + 2 * pad };
+                      ringW + 8 + 2 * kw + 6 + 2 * pad };
             int sum = 0;
             for (int w : ideal) sum += w;
             return sum;
@@ -492,10 +495,10 @@ struct MaximizerPanel::Impl
 
         {
             auto b = body (4);
-            const int cw = (b.getWidth() - 8) / 2;
+            const int cw = juce::jmin (ringW, (b.getWidth() - 16) / 3);
             learn.setBounds (b.removeFromLeft (cw).withSizeKeepingCentre (juce::jmin (cw, 90), b.getHeight()));
             b.removeFromLeft (8);
-            learnTarget.setBounds (knobIn (b));
+            twoKnobs (b, learnTarget, trim);
         }
 
         auto switchArea = [&] (size_t i) { return juce::Rectangle<int> (cards[i].getRight() - pad - 32, cards[i].getY() + 6, 32, 18); };
@@ -592,7 +595,7 @@ struct MaximizerPanel::Impl
     MaxSwitch transOn;
     ParamKnob transAmount;
     MaxLearnButton learn;
-    ParamKnob learnTarget;
+    ParamKnob learnTarget, trim;
 
     juce::Rectangle<int> modeCard, styleTitleArea, descriptionArea, statsArea;
     float shownLatencyMs = 0.0f, shownUpward = 0.0f;

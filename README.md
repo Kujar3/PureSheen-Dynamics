@@ -60,11 +60,14 @@ The **?** button in the top-right corner explains every part inside the plugin. 
 1. **Start from a preset.** Click the preset name in the header.
    - *Streaming Ready* aims at about -14 LUFS and -1 dBTP.
    - *Loud and Clear* aims at about -9 LUFS, *Club Loud* at about -8 LUFS.
+   - *Film and TV -23 LUFS* (-1 dBTP) and *US Broadcast -24 LUFS* (-2 dBTP) only catch peaks. Click **Learn** on the
+     Maximizer to bring your mix to the level.
    - Other presets: *Soft Sheen*, *Wide Supersaw Master*, *Deep Bass Anchor*, *Acoustic Air*, *Warm Glue*,
      *Limit Only*, *Radio Pop*, *Rock Drive*, *Hip-Hop Knock*, *Mid-Side Detail*.
    - Every module also has its own presets.
 2. **Set the loudness.** Play the loudest part of the song and click **Learn** on the Maximizer. It sets the input gain
-   so the song lands on the target next to the button.
+   so the song lands on the target next to the button. A song already louder than the target is turned down with
+   **Trim** instead.
 3. **Compare honestly.** Turn on **Gain Match**, then toggle **Bypass**. Both play at the same loudness, so you judge
    the sound, not the volume. **S** on a module solos it. The **triangle (Delta)** plays only what that module
    changes.
@@ -116,8 +119,8 @@ plugins don't have this.
 3. Play your track and ask Claude something like "How loud is this master, and how does it compare with my reference?"
 
 Claude can change settings and the module chain, load and save presets, run the Assistant, and compare with reference tracks.
-Each change to settings or the chain is one undo step in the History, labelled "Claude:". Results that arrive later, from the
-Assistant or Learn, keep their usual names. Bypass and Gain Match stay with you. Claude can't hear your music or start playback,
+Each change to settings or the chain is one undo step in the History, labelled "Claude:", and that includes results that arrive
+later, from the Assistant or Learn. Bypass and Gain Match stay with you. Claude can't hear your music or start playback,
 so you press play and you judge the result.
 
 The connection only accepts programs on your own PC that hold this instance's token. The installer's connector is the small

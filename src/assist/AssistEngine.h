@@ -33,8 +33,9 @@ enum class Intensity : int { Gentle = 0, Balanced, Strong };
 // What the Assistant may use (Custom page). Bit = 1 << (int) ModuleType.
 inline constexpr unsigned kAllModules = 0xffffffffu;
 
-// The loudness targets cards, settings and the Loudness macro use (one range everywhere).
-inline constexpr float kMinTargetLufs = -20.0f, kMaxTargetLufs = -5.0f;
+// The loudness targets cards, settings and the Loudness macro use (one range everywhere). The low end matches the
+// Maximizer's Learn target and reaches the film and broadcast levels (-23, -24).
+inline constexpr float kMinTargetLufs = -24.0f, kMaxTargetLufs = -5.0f;
 
 struct Settings
 {
@@ -98,7 +99,7 @@ enum class Macro : int
     Compress,        // 0..100: glue Dynamics (inserted before Tone Balance when it leaves 0)
     Definition,      // Definition Amount, 0..100 %
     ToneBalance,     // Tone Balance Amount, 0..100 %
-    Loudness,        // target LUFS, -20..-5
+    Loudness,        // target LUFS, kMinTargetLufs..kMaxTargetLufs
     Count
 };
 inline constexpr int kNumMacros = (int) Macro::Count;
