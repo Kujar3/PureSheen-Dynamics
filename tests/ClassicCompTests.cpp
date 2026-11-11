@@ -1129,7 +1129,7 @@ TEST_CASE ("ccmp. cpu benchmark (48 kHz stereo)")
     ms.setBoth ("mode", 2.0f);
     bench (defaults, ChannelMode::Stereo, "defaults, Stereo");
     const double w = bench (ms, ChannelMode::MidSide, "Smooth, compressing, M/S");
-    CHECK (w > 30.0);
+    CHECK_SPEED (w > 30.0);
 }
 
 TEST_CASE ("ccmp. corrupt samples are replaced without poisoning audio histories")

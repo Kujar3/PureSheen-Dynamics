@@ -490,7 +490,13 @@ void testEditor (const psplug::Product& product)
         check (panel != nullptr && panel->getModuleType() == product.module, tag + ": the module panel is there");
     }
 
-    check (editor->getHeight() == PureSheenEditor::defaultHeightFor (product), tag + ": the window starts at its default size");
+    // The default size, made smaller on a screen too small for it (the CI runners have a small virtual display).
+    int wantHeight = PureSheenEditor::defaultHeightFor (product);
+    if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+        wantHeight = juce::jmin (wantHeight, display->userBounds.getLargestIntegerWithin().getHeight() - PureSheenEditor::kScreenMarginH);
+    wantHeight = juce::jlimit (PureSheenEditor::minHeightFor (product), PureSheenEditor::kMaxHeight, wantHeight);
+    check (editor->getHeight() == wantHeight, tag + ": the window starts at its default size",
+           juce::String (editor->getHeight()) + " vs " + juce::String (wantHeight));
     editor->setHelpVisible (true);
     editor->updateNow();
     editor->setHelpVisible (false);

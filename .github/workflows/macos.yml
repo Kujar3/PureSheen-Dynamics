@@ -20,6 +20,8 @@ jobs:
       JUCE_TAG: 8.0.16-security
       # clap-juce-extensions main @ 2026-10-06, clap 1.2.7 (the commit scripts/fetch_clap.bat pins)
       CJE_COMMIT: 7adee3a1bd4684d4caa5601100e364abccff4b4d
+      # Shared 3-core virtual machines: speed checks print their numbers but do not fail (tests/TestFramework.h).
+      PURESHEEN_SLOW_MACHINE: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -85,16 +87,27 @@ jobs:
           retention-days: 30
 
       - name: CoreTests
+        if: always()
         run: build-mac/CoreTests
 
-      - name: Processor self-test, connector and import tests
+      # One step per tool, each run whatever the others did, so one failure does not hide the rest.
+      - name: Processor self-test (and the single-module plugins)
+        if: always()
+        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev selftest
+
+      - name: Connector test in the processor
+        if: always()
+        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev bridgetest
+
+      - name: Import test
+        if: always()
+        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev importtest
+
+      - name: Connector helper end to end
         if: always()
         run: |
-          dev="$GITHUB_WORKSPACE/build-mac/PureSheenDev_artefacts/Release/PureSheenDev"
-          "$dev" selftest
-          "$dev" bridgetest
-          "$dev" importtest
-          python3 tools/bridge/test_bridge.py "$GITHUB_WORKSPACE/build-mac/PureSheenBridge_artefacts/Release/PureSheenBridge" "$dev"
+          python3 tools/bridge/test_bridge.py "$GITHUB_WORKSPACE/build-mac/PureSheenBridge_artefacts/Release/PureSheenBridge" \
+            "$GITHUB_WORKSPACE/build-mac/PureSheenDev_artefacts/Release/PureSheenDev"
 
       - name: auval (every Audio Unit)
         if: always()

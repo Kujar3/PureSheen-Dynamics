@@ -34,7 +34,6 @@ namespace
 namespace Col = ps::ui::Colours;
 
 constexpr int kScratch = 32768;
-constexpr int kScreenMarginW = 40, kScreenMarginH = 90;
 constexpr float kMaxZoom = 1.3f;
 constexpr juce::uint32 kNoticeMs = 3500;
 constexpr int kIoWidth = 176;

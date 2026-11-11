@@ -43,12 +43,10 @@ int indexOf (double value, int count) noexcept
 // Keep compound gain arithmetic finite until set() clamps it to the destination range.
 double addFinite (double a, double b) noexcept
 {
-    constexpr double limit = std::numeric_limits<double>::max();
-    if (b > 0.0 && a > limit - b)
-        return limit;
-    if (b < 0.0 && a < -limit - b)
-        return -limit;
-    return a + b;
+    // Added at half scale, so no step can overflow (halving and doubling are exact for normal numbers). A branch around
+    // a + b is not enough: clang on Apple Silicon computes both sides and selects one, which still raises the overflow.
+    constexpr double half = std::numeric_limits<double>::max() * 0.5;
+    return 2.0 * std::clamp (0.5 * a + 0.5 * b, -half, half);
 }
 
 //==============================================================================

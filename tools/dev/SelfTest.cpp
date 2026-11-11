@@ -326,9 +326,15 @@ void testAllocationCounter()
 {
     std::cout << "\n-- Allocation counter\n";
 
+    // The heap hooks patch the Windows CRT imports. Elsewhere only operator new / delete are counted: the code under
+    // test is the same on every platform, and the Windows run sees its malloc / free.
+   #ifdef _WIN32
     const auto hooked = psdev::installHeapHooks();
     check (hooked.find ("malloc") != std::string::npos && hooked.find ("free") != std::string::npos,
            "realtime: CRT heap functions hooked (" + hooked + ")", "no import of malloc / free found (static CRT?)");
+   #else
+    std::cout << "NOTE realtime: malloc / free are counted on Windows only; operator new / delete are counted here\n";
+   #endif
 
     const auto saved = psdev::getAllocationCounts();
     volatile float sink = 0.0f;
@@ -353,10 +359,13 @@ void testAllocationCounter()
     psdev::setAllocationTracking (false);
     const auto all = psdev::getAllocationCounts();
 
+   #ifdef _WIN32
     check (heap.allocations - saved.allocations >= 2 && heap.frees - saved.frees >= 2,
            "realtime: allocation counter sees JUCE HeapBlock malloc / free",
            str (heap.allocations - saved.allocations, " allocations, ", heap.frees - saved.frees, " frees"));
-    check (all.allocations - heap.allocations >= 2 && all.frees - heap.frees >= 2,
+   #endif
+    // At least one: a compiler may leave out a new / delete pair it can see whole (clang does here).
+    check (all.allocations - heap.allocations >= 1 && all.frees - heap.frees >= 1,
            "realtime: allocation counter sees operator new / delete",
            str (all.allocations - heap.allocations, " allocations, ", all.frees - heap.frees, " frees"));
 
@@ -2691,11 +2700,15 @@ void testTsPanelBindings()
     // A band's double-click asks for a value: answer the prompt.
     const auto answerPrompt = [] (const char* text)
     {
-        if (auto* prompt = dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0)))
+        auto& modal = *juce::ModalComponentManager::getInstance();
+        ps::dev::pumpUntil ([&] { return modal.getNumModalComponents() > 0; }, 2000);
+        if (auto* prompt = dynamic_cast<juce::AlertWindow*> (modal.getModalComponent (0)))
         {
             prompt->getTextEditor ("text")->setText (text, false);
             prompt->exitModalState (1);
         }
+        // the answer arrives through an async callback once the prompt has closed
+        ps::dev::pumpUntil ([&] { return modal.getNumModalComponents() == 0; }, 2000);
         ps::dev::pumpMessages (50);
     };
     p.setParameterValue ("img.b1.width", 45.0f);
@@ -3741,6 +3754,10 @@ void testTrackReferencing()
         refs.setListening (false);
         const auto masterIn = noiseInput (0.08f, 5);
         h.stream ((long long) (6.0 * kRate), masterIn);
+        refs.runAnalysisNow();
+        // The match gain is the one the audio thread applies: it glides to the new target over 250 ms. (On a fast
+        // machine the background analysis has usually set it already; on a slow one not.)
+        h.stream ((long long) (0.5 * kRate), masterIn);
         refs.runAnalysisNow();
         const float mixLufs = refs.getMixProfile().integratedLufs;
         const float refLufs = refs.getReferenceProfile().integratedLufs;

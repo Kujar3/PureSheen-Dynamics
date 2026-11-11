@@ -1331,7 +1331,7 @@ TEST_CASE ("eq. benchmarks (8 bands x 2 sets analog, digital FIR sizes, automati
         const double t = sw.seconds();
         say ("benchmark analog 16 bands (8 x 2 sets, 48 dB HP + elliptic LP), static: " + std::to_string (seconds / t)
                       + " x real time");
-        CHECK (seconds / t > 50.0);
+        CHECK_SPEED (seconds / t > 50.0);
     }
     {
         Rig rig (sr, block);
@@ -1345,7 +1345,7 @@ TEST_CASE ("eq. benchmarks (8 bands x 2 sets analog, digital FIR sizes, automati
         }
         const double t = sw.seconds();
         say ("benchmark analog 16 bands all automated every block: " + std::to_string (seconds / t) + " x real time");
-        CHECK (seconds / t > 5.0);
+        CHECK_SPEED (seconds / t > 5.0);
     }
     for (int fir = 0; fir < 4; ++fir)
     {
@@ -1367,7 +1367,7 @@ TEST_CASE ("eq. benchmarks (8 bands x 2 sets analog, digital FIR sizes, automati
         say ("benchmark digital FIR " + std::to_string (eqdesign::firLength (fir, sr)) + " (M/S, 2 kernels): "
                       + std::to_string (seconds / t) + " x real time; design + install of a new curve "
                       + std::to_string (1000.0 * dw.seconds()) + " ms (incl. settle)");
-        CHECK (seconds / t > 20.0);
+        CHECK_SPEED (seconds / t > 20.0);
     }
     {
         pstest::Stopwatch sw;

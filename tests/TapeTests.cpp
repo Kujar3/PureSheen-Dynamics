@@ -980,7 +980,7 @@ TEST_CASE ("tape. cpu benchmark (48 kHz stereo)")
     run (*m, typical, in, 512);
     const double x = 10.0 / sw.seconds();
     note ("drive +6, harmonics 4: x realtime", x);
-    CHECK (x > 40.0);
+    CHECK_SPEED (x > 40.0);
 
     // every control moving all the time (glides, make-up re-evaluated every control period, speed crossfades)
     Values moving;
@@ -998,5 +998,5 @@ TEST_CASE ("tape. cpu benchmark (48 kHz stereo)")
     });
     const double x2 = 10.0 / sw2.seconds();
     note ("every control moving every block: x realtime", x2);
-    CHECK (x2 > 10.0);
+    CHECK_SPEED (x2 > 10.0);
 }

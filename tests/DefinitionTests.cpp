@@ -1159,7 +1159,7 @@ TEST_CASE ("defn. cpu (x realtime, 48 kHz stereo)")
             b.run (l2, r2, 512);
         const double x = seconds / sw.seconds();
         note (std::string (c.what) + ": x realtime", x);
-        CHECK (x >= (c.ts ? 40.0 : 80.0));
+        CHECK_SPEED (x >= (c.ts ? 40.0 : 80.0));
     }
 }
 

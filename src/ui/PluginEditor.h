@@ -83,6 +83,7 @@ public:
     static constexpr int kDefaultWidth = 1180, kDefaultHeight = 720;
     static constexpr int kMinWidth = 980, kMinHeight = 600;
     static constexpr int kMaxWidth = 1800, kMaxHeight = 1100;
+    static constexpr int kScreenMarginW = 40, kScreenMarginH = 90;   // a first window keeps this much of the screen free
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;

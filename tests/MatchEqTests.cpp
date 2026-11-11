@@ -1451,7 +1451,7 @@ TEST_CASE ("meq. CPU: x realtime per FIR size and phase (48 kHz stereo)")
                 pstest::note ("Linear 32768 while capturing: x realtime", xc);
             }
         }
-    CHECK (worst >= 60.0);
+    CHECK_SPEED (worst >= 60.0);
 }
 
 TEST_CASE ("meq. stereo mean includes a signal whose other channel is silent")

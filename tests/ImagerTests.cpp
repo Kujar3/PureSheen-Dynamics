@@ -487,7 +487,7 @@ TEST_CASE ("img. cpu benchmark")
         note (std::string ("img. cpu: ") + (config == 0 ? "1 band" : "4 bands Analog")
                   + ", stereoize II + recover + antiphase, x realtime",
               10.0 / secs);
-        CHECK (10.0 / secs > 20.0);
+        CHECK_SPEED (10.0 / secs > 20.0);
     }
 }
 

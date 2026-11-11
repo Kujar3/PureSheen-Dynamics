@@ -731,7 +731,7 @@ TEST_CASE ("max. cpu: real-time factor per mode at 48 kHz stereo (Spectral / Mul
         rig.run (s);
         const double factor = 10.0 / std::max (sw.seconds(), 1.0e-6);
         std::cout << " " << m << ": " << fmt (factor, 0) << "x";
-        CHECK (factor >= 30.0);
+        CHECK_SPEED (factor >= 30.0);
     }
     std::cout << "\n";
 }

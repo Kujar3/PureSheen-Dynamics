@@ -291,7 +291,7 @@ TEST_CASE ("conv. kernel replacement from another thread is lock-free and never 
     pstest::note ("crossfaded partitions found", fades);
     pstest::note ("worst error against the matching reference", worst);
     pstest::note ("partitions matching no reference", unmatched);
-    CHECK (installs.load() > 100);
+    CHECK_SPEED (installs.load() > 100);
     CHECK (fades >= installs.load() - 2);   // every install is heard as exactly one fade (the last may be pending)
     CHECK (fades <= installs.load());
     CHECK_EQ (unmatched, 0);
@@ -335,5 +335,5 @@ TEST_CASE ("conv. benchmark (16384 taps, partition 512, stereo, 48 kHz)")
     processIrregular (c, L, R, 512);
     const double t = sw.seconds();
     pstest::note ("x real time", seconds / t);
-    CHECK (seconds / t > 20.0);
+    CHECK_SPEED (seconds / t > 20.0);
 }

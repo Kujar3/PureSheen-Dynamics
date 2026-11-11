@@ -1012,6 +1012,6 @@ TEST_CASE ("lowc. cpu")
         const double xr = seconds / std::max (1.0e-9, sw.seconds());
         note (std::string (b.name) + " (x realtime)", xr);
         // 4 linear-phase bands (one forward and four inverse FFTs per hop) and per-band detectors: ~55x at 48 kHz
-        CHECK (xr > (b.sr > 100000.0 ? 12.0 : 45.0));
+        CHECK_SPEED (xr > (b.sr > 100000.0 ? 12.0 : 45.0));
     }
 }

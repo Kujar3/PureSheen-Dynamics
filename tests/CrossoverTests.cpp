@@ -572,6 +572,6 @@ TEST_CASE ("xover. benchmark (4 bands, 48 kHz stereo)")
         run (x, L, R, 512);
         const double t = sw.seconds();
         pstest::note (std::string (typeName (type)) + ": x real time", seconds / t);
-        CHECK (seconds / t > 20.0);
+        CHECK_SPEED (seconds / t > 20.0);
     }
 }

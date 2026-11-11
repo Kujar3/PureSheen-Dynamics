@@ -1337,7 +1337,7 @@ TEST_CASE ("pnch. cpu benchmark")
         }
         const double x = 10.0 / best;
         pstest::note (std::string (b.name) + ": x realtime", x);
-        CHECK (x > 30.0);
+        CHECK_SPEED (x > 30.0);
     }
 }
 

@@ -1729,7 +1729,7 @@ TEST_CASE ("tbal. cpu benchmark (48 kHz stereo)")
         note (std::string (c.name) + ": x realtime", x);
         worst = std::min (worst, x);
     }
-    CHECK (worst >= 80.0);
+    CHECK_SPEED (worst >= 80.0);
 }
 
 TEST_CASE ("tbal. proposed factory presets behave on music-like material")

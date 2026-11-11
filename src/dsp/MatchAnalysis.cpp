@@ -463,7 +463,9 @@ void computeMatchCurve (const MatchSpectrum& reference, const MatchSpectrum& cur
     }
     if (! (lr > 0.0) || ! (lc > 0.0))
         return;
-    const double offset = 10.0 * std::log10 (lr) - 10.0 * std::log10 (lc);
+    // Differences of logs are taken before the factor 10: written as 10 log a - 10 log b, a compiler that fuses the
+    // multiply-add (clang on Apple Silicon) leaves a rounding residue where a == b, so equal spectra were not flat.
+    const double offset = 10.0 * (std::log10 (lr) - std::log10 (lc));
 
     const double lo = std::clamp ((double) params.lowHz, 1.0, 1.0e6);
     const double hi = std::max (lo, std::clamp ((double) params.highHz, 1.0, 1.0e6));
@@ -477,7 +479,7 @@ void computeMatchCurve (const MatchSpectrum& reference, const MatchSpectrum& cur
         if (f < 10.0 || ! hasR[i] || ! hasC[i])
             continue;   // 7.
 
-        const double d = 10.0 * std::log10 (Rs[i]) - 10.0 * std::log10 (Cs[i]) - offset;
+        const double d = 10.0 * (std::log10 (Rs[i]) - std::log10 (Cs[i])) - offset;
 
         // 4. region
         double t = 1.0;

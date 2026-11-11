@@ -1045,7 +1045,7 @@ TEST_CASE ("peq. cpu benchmark (96 kHz stereo, every section and drive)")
     run (*m, v, in, ChannelMode::MidSide, 512);
     const double x = 10.0 / sw.seconds();
     note ("x realtime", x);
-    CHECK (x > 20.0);
+    CHECK_SPEED (x > 20.0);
 }
 
 TEST_CASE ("peq. the shared section designs (panel curves) sum to getMagnitudeDb")

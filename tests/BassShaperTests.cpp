@@ -1105,6 +1105,6 @@ TEST_CASE ("bass. cpu benchmark (48 kHz stereo)")
     bench (neutral, "neutral (defaults)");
     const double t = bench (typical, "typical (balance, punch, clean peak control)");
     const double w = bench (worst, "worst (all sections, characters 50, auto gain)");
-    CHECK (t > 60.0);
-    CHECK (w > 60.0);
+    CHECK_SPEED (t > 60.0);
+    CHECK_SPEED (w > 60.0);
 }

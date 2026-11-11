@@ -32,4 +32,18 @@ inline void pumpMessages (int milliseconds, int idleSleepMs = 1)
        #endif
     }
 }
+// Pumps until `done` returns true or `maxMilliseconds` pass; true when it got there. For waits whose length depends on
+// the machine (a modal prompt opening or closing), so a slow runner does not fail a fixed short pump.
+template <typename Predicate>
+bool pumpUntil (Predicate&& done, int maxMilliseconds)
+{
+    const auto end = juce::Time::getMillisecondCounter() + (juce::uint32) maxMilliseconds;
+    while (! done())
+    {
+        if (juce::Time::getMillisecondCounter() >= end)
+            return false;
+        pumpMessages (5);
+    }
+    return true;
+}
 } // namespace ps::dev

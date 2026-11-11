@@ -1058,7 +1058,7 @@ TEST_CASE ("clim. cpu: real-time factor at 48 kHz stereo (Tube, True Peak on; >=
     run (*m, v, s, 512);
     const double factor = ((double) s.size() / kSr) / std::max (1.0e-9, sw.seconds());
     note ("real-time factor", factor);
-    CHECK (factor > 40.0);
+    CHECK_SPEED (factor > 40.0);
 }
 
 TEST_CASE ("clim. corrupt samples are replaced without poisoning audio histories")

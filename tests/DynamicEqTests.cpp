@@ -1647,7 +1647,7 @@ TEST_CASE ("deq. benchmarks (6 bands x 2 sets, Analog and Digital, typical and w
         }
         const double t = sw.seconds();
         say (std::string ("benchmark ") + run.name + ": " + fmt (seconds / t, 1) + " x real time");
-        CHECK (seconds / t > run.minRt);
+        CHECK_SPEED (seconds / t > run.minRt);
     }
 }
 TEST_CASE ("deq. solo lookahead automation crossfades the monitored delay in both modes")

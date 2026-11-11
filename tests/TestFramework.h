@@ -6,6 +6,7 @@
 //
 // CHECK* failures are recorded and the test continues; REQUIRE* failures abort the current test case.
 
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <sstream>
@@ -45,6 +46,12 @@ inline void reportFailure (const char* file, int line, const std::string& messag
 {
     ++failureCount();
     std::cout << "    FAIL " << file << ":" << line << "  " << message << "\n";
+}
+
+inline bool slowMachine()
+{
+    static const bool slow = [] { const char* v = std::getenv ("PURESHEEN_SLOW_MACHINE"); return v != nullptr && *v != '\0' && *v != '0'; }();
+    return slow;
 }
 
 template <typename T>
@@ -88,6 +95,19 @@ std::string show (const std::vector<T>& v)
         if (! (cb_a_ == cb_b_))                                                                                \
             pstest::reportFailure (__FILE__, __LINE__, "CHECK_EQ(" #a ", " #b ")  got " + pstest::show (cb_a_) \
                                                            + " vs " + pstest::show (cb_b_));                   \
+    } while (0)
+
+// A speed (or thread-timing) check. With PURESHEEN_SLOW_MACHINE set (the shared CI runners) a miss is printed and not
+// counted: the numbers are still in the log, but a busy virtual machine does not fail the build.
+#define CHECK_SPEED(cond)                                                                                        \
+    do {                                                                                                         \
+        if (! (cond))                                                                                            \
+        {                                                                                                        \
+            if (pstest::slowMachine())                                                                           \
+                std::cout << "    slow machine, not counted: " << __FILE__ << ":" << __LINE__ << "  " #cond "\n"; \
+            else                                                                                                 \
+                pstest::reportFailure (__FILE__, __LINE__, "CHECK_SPEED(" #cond ")");                            \
+        }                                                                                                        \
     } while (0)
 
 #define REQUIRE(cond)                                                                    \

@@ -594,7 +594,7 @@ TEST_CASE ("exc. cpu benchmark")
         CHECK (std::isfinite (out.l.back()));
         const char* names[] { "1 band os 4x", "4 bands os 4x", "4 bands os off" };
         note (std::string ("exc. cpu: ") + names[config] + ", M/S, post filter, x realtime", 10.0 / secs);
-        CHECK (10.0 / secs > 10.0);
+        CHECK_SPEED (10.0 / secs > 10.0);
     }
 }
 

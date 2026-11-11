@@ -1334,7 +1334,7 @@ TEST_CASE ("smth. cpu (x realtime, 48 kHz stereo)")
         run (s, x, 512, ctx);
         const double rt = seconds / std::max (1.0e-9, w.seconds());
         note (std::string (c.name) + ": x realtime", rt);
-        CHECK (rt >= 80.0);
+        CHECK_SPEED (rt >= 80.0);
     }
 }
 

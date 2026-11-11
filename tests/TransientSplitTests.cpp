@@ -342,5 +342,5 @@ TEST_CASE ("ts. no allocation in process / setParams / reset, and CPU")
     note ("60 s stereo 48 kHz through the splitter (s)", secs);
     note ("realtime factor", 60.0 / std::max (secs, 1.0e-6));
     CHECK_EQ (allocations, 0LL);
-    CHECK (secs < 0.6);   // >= 100x realtime even on a slow machine (spec target 500x, printed above)
+    CHECK_SPEED (secs < 0.6);   // >= 100x realtime even on a slow machine (spec target 500x, printed above)
 }

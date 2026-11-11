@@ -1510,7 +1510,7 @@ TEST_CASE ("dyn. CPU: 4 bands Digital at 48 kHz")
         pstest::note (std::string (mode == ChannelMode::Stereo ? "Stereo" : "M/S")
                           + ": % of one core for 4 bands Digital, tilt detection, limiters",
                       100.0 * t / seconds);
-        CHECK (t < 0.25 * seconds);
+        CHECK_SPEED (t < 0.25 * seconds);
     }
 
     // the Dynamics part alone (Analog, 4 bands)
