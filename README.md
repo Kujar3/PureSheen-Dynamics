@@ -14,6 +14,10 @@ Dither, Classic Compressor, Passive EQ, Classic Limiter, Tape, and De-limiter. T
 PureSheen Dynamics is an independent project, not affiliated with or endorsed by any plugin maker. It contains no code
 or assets from commercial plugins. Some behaviour was tuned by measuring the audio output of commercial plugins.
 
+[![Watch the PureSheen Dynamics launch video on YouTube](https://img.youtube.com/vi/qUHee39tjKI/maxresdefault.jpg)](https://www.youtube.com/watch?v=qUHee39tjKI)
+
+**▶ [Watch the launch video](https://www.youtube.com/watch?v=qUHee39tjKI)** (1:46): a quick tour of the suite.
+
 ![PureSheen Dynamics](docs/screenshot.png)
 
 ## Install
