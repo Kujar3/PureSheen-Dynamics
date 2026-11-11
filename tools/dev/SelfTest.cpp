@@ -2719,14 +2719,19 @@ void testTsPanelBindings()
     };
     const auto widths = [&p] (const juce::String& prompt)
     {
-        return (prompt + "; widths A " + juce::String (p.getParameterValue ("img.b1.width"))
-                + ", B " + juce::String (p.getParameterValue ("img.b.b1.width"))).toStdString();
+        return (prompt + "; widths A " + juce::String (p.getParameterValue ("img.b1.width"), 6)
+                + ", B " + juce::String (p.getParameterValue ("img.b.b1.width"), 6)).toStdString();
+    };
+    // A value comes back through the parameter's 0..1 range, which is not exact on every compiler.
+    const auto widthIs = [&p] (const char* id, float expected)
+    {
+        return std::abs (p.getParameterValue (id) - expected) < 1.0e-3f;
     };
     p.setParameterValue ("img.b1.width", 45.0f);
     p.setParameterValue ("img.b.b1.width", -55.0f);
     display.onBandDoubleClick (0, bandEvent);
     const auto firstPrompt = answerPrompt ("0");
-    check (p.getParameterValue ("img.b1.width") == 45.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
+    check (widthIs ("img.b1.width", 45.0f) && widthIs ("img.b.b1.width", 0.0f),
            "UI: Imager Sustain width edit affects only set B when unlinked", widths (firstPrompt));
 
     p.setParameterValue ("img.link", 1.0f);
@@ -2734,7 +2739,7 @@ void testTsPanelBindings()
     p.setParameterValue ("img.b.b1.width", -55.0f);
     display.onBandDoubleClick (0, bandEvent);
     const auto linkedPrompt = answerPrompt ("0");
-    check (p.getParameterValue ("img.b1.width") == 0.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
+    check (widthIs ("img.b1.width", 0.0f) && widthIs ("img.b.b1.width", 0.0f),
            "UI: Imager linked width edit updates both T/S sets", widths (linkedPrompt));
 
     p.setParameterValue ("img.link", 0.0f);
