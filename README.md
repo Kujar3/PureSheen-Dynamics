@@ -4,7 +4,8 @@ A complete mastering suite in one plugin: two equalizers, multiband dynamics, a 
 maximizer and dither, in a chain you can reorder. It has loudness metering, gain-matched bypass, per-module solo and
 delta listening, A-D snapshots, undo history and factory presets for common targets (streaming, club, radio).
 
-VST3 + CLAP + Standalone, Windows, built with JUCE 8. Made for FL Studio, works in any DAW.
+VST3 + CLAP + Standalone on Windows and macOS, plus Audio Units on macOS, built with JUCE 8. Made for FL Studio, works in
+any DAW.
 
 Every module also comes as a plugin of its own, available in VST3 and CLAP formats: PureSheen Bass Shaper, Smoother, 
 Match EQ, Low Contrast, Definition, Punch, Tone Balance, Dynamic EQ, EQ, Multiband Dynamics, Imager, Exciter, Maximizer, 
@@ -33,6 +34,10 @@ If FL Studio has the plugin loaded, the installer offers to close it first.
 **By hand, without an installer:** unpack `<Name>-<version>-Manual.zip` and follow `How to install.txt` inside. It holds
 the `.vst3` folder and the `.clap` file. Copy the folder to `C:\Program Files\Common Files\VST3` (needs admin rights), or
 to any folder you add under FL's *Options > Manage plugins > Plugin search paths*.
+
+**On a Mac:** unpack `PureSheen-Complete-<version>-macOS.zip` and follow `How to install.txt` inside. It holds the suite
+and every single module as AU, VST3 and CLAP for Apple Silicon and Intel Macs (macOS 11 or newer), the standalone app
+and the Claude connector. The Mac builds aren't signed by Apple, so the text also explains how to allow them.
 
 **From a build:**
 
