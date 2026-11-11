@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 
+# macOS: Big Sur is the oldest version that runs on both Apple Silicon and Intel. Floating-point text conversion goes
+# through src/core/NumberText.h, because Apple's std::from_chars for doubles would need macOS 26.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS the plugins run on")
+
 project(PureSheen VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -11,7 +15,8 @@ if(MSVC)
 endif()
 
 # Link-time-optimised links in parallel can crash the MSVC linker (C1001), and each one uses many threads by itself.
-set_property(GLOBAL PROPERTY JOB_POOLS ps_link=3)
+set(PURESHEEN_LINK_JOBS 3 CACHE STRING "Links at the same time (each LTO link uses several threads and much memory)")
+set_property(GLOBAL PROPERTY JOB_POOLS ps_link=${PURESHEEN_LINK_JOBS})
 set(CMAKE_JOB_POOL_LINK ps_link)
 
 set(JUCE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE" CACHE PATH "Path to the JUCE checkout")
@@ -213,6 +218,11 @@ endfunction()
 # are not part of "all"; build them with the target PureSheenSingles (or PureSheen_<id>_VST3 / _CLAP, one at a time).
 # ---------------------------------------------------------------------------
 add_custom_target(PureSheenSingles)
+# macOS adds Audio Units (for Logic Pro and GarageBand) to every plugin.
+set(PS_EXTRA_FORMATS)
+if(APPLE)
+    set(PS_EXTRA_FORMATS AU)
+endif()
 foreach(line IN LISTS PS_PRODUCT_LINES)
     string(REPLACE "," ";" fields "${line}")
     list(GET fields 0 id)
@@ -221,12 +231,16 @@ foreach(line IN LISTS PS_PRODUCT_LINES)
     list(GET fields 4 vst3_categories)
     list(GET fields 5 clap_features)
     if(id STREQUAL "suite")
-        ps_add_plugin(PureSheen "${id}" "${name}" "${code}" "VST3;Standalone" "${vst3_categories}" "${clap_features}")
+        ps_add_plugin(PureSheen "${id}" "${name}" "${code}" "VST3;Standalone;${PS_EXTRA_FORMATS}" "${vst3_categories}" "${clap_features}")
     else()
         set(target "PureSheen_${id}")
-        ps_add_plugin(${target} "${id}" "${name}" "${code}" "VST3" "${vst3_categories}" "${clap_features}")
+        ps_add_plugin(${target} "${id}" "${name}" "${code}" "VST3;${PS_EXTRA_FORMATS}" "${vst3_categories}" "${clap_features}")
         set_target_properties(${target} ${target}_VST3 PROPERTIES EXCLUDE_FROM_ALL TRUE)
         add_dependencies(PureSheenSingles ${target}_VST3)
+        if(APPLE)
+            set_target_properties(${target}_AU PROPERTIES EXCLUDE_FROM_ALL TRUE)
+            add_dependencies(PureSheenSingles ${target}_AU)
+        endif()
         if(PS_HAS_CLAP)
             set_target_properties(${target}_CLAP PROPERTIES EXCLUDE_FROM_ALL TRUE)
             add_dependencies(PureSheenSingles ${target}_CLAP)

@@ -41,7 +41,19 @@ namespace
 const juce::Identifier kStateTag ("PureSheen"), kChainTag ("Chain"), kOptionsTag ("Options"), kUiLegacyTag ("UiState"),
     kSnapshotsTag ("Snapshots"), kSnapshotTag ("Snapshot"), kSlot ("slot"), kEditorW ("editorW"), kEditorH ("editorH"),
     kPresetName ("presetName"), kPresetModified ("presetModified"), kVersion ("version"), kHistoryDepth ("historyDepth"),
-    kActiveSnapshot ("activeSnapshot");
+    kActiveSnapshot ("activeSnapshot"), kMetersIgnoreGainMatch ("metersIgnoreGainMatch"),
+    kSoloKeepsMaximizer ("soloKeepsMaximizer");
+
+// The two monitoring options of the editor's Options menu (ui/Options.cpp writes them into the UI state's "Options"
+// child) reach the chain from here, so they hold with no editor open, after a session loads and for the connector.
+void applyMonitoringOptions (ps::Chain& chain, const juce::ValueTree& ui)
+{
+    auto options = ui.getChildWithName (kOptionsTag);
+    if (! options.isValid())
+        options = ui;
+    chain.setMetersIgnoreGainMatch ((bool) options.getProperty (kMetersIgnoreGainMatch, false));
+    chain.setSoloKeepsMaximizer ((bool) options.getProperty (kSoloKeepsMaximizer, false));
+}
 
 constexpr int kStateVersion = 1;
 constexpr double kGestureSettleMs = 250.0;
@@ -1191,6 +1203,7 @@ void PureSheenProcessor::setStateInformation (const void* data, int size)
         d.uiState = juce::ValueTree (kOptionsTag);
         if (optionsTree.isValid())
             d.uiState.copyPropertiesAndChildrenFrom (optionsTree, nullptr);
+        applyMonitoringOptions (d.chain, d.uiState);
 
         for (auto& s : d.snapshots)
             s.reset();
@@ -1878,6 +1891,7 @@ void PureSheenProcessor::setUiState (const juce::ValueTree& tree)
     }
     if (tree.hasProperty (kHistoryDepth))
         impl->history.setDepth ((int) tree.getProperty (kHistoryDepth));
+    applyMonitoringOptions (impl->chain, tree);
 }
 
 void PureSheenProcessor::setEditorSize (int width, int height)

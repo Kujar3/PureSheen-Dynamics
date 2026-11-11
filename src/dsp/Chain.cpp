@@ -70,6 +70,10 @@
 //   powered-off module is soloed, by that module's own loudness change (not the whole chain's): every slot measures
 //   the K-weighted loudness of its aligned dry input and its output (mean squares, ~1 s) while it processes at full
 //   wet with no monitor active, and keeps the last estimate while powered off.
+//   (1.2) With setMetersIgnoreGainMatch the output taps get the same mix without either match gain, so Modern mode's
+//   compensation does not lower the meters (an option users asked for: the readings should be the master's).
+// - (1.2) setSoloKeepsMaximizer: a powered Maximizer keeps processing while another module is soloed, so a solo is
+//   heard at about the mastered level. Gain match stays frozen meanwhile (solo is still monitoring).
 // - Global bypass = the raw input (before input gain) delayed by the chain latency; the chain keeps running.
 // - Difference meter: RMS of the slot output vs the aligned dry input, measured in the module's channel domain,
 //   before channel solo; one-pole 300 ms on the mean squares; 0 dB for silence.
@@ -552,6 +556,8 @@ struct Chain::Impl
     std::vector<float> raw[2], cur[2], dry[2], bus[2], tmp[2];
     std::vector<float> tPart[2], sPart[2], tDry[2], sDry[2], dtT[2], dtS[2];   // (phase 2) T/S scratch
     std::vector<float> modeDip;   // product of slot latency-switch fades for bypass and the delta sum
+    std::vector<float> meterBuf[2];   // the output without the match gain, for the taps (metersIgnoreMatch)
+    std::atomic<bool> metersIgnoreMatch { false }, soloKeepsMaximizer { false };
     StereoDelay bypassDelay;
     DcFilter dcFilter;
     Ramp inGain[2], outGain[2], mono, swap, bypass, deltaMix, dcAmount, classicAmount, modernAmount, soloClassicAmount;
@@ -778,7 +784,9 @@ struct Chain::Impl
             const bool ts = mode == ChannelMode::TransientSustain;
             const bool perSet = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight || ts;
             const int chSolo = perSet ? channelSolo[t].load (std::memory_order_relaxed) : -1;
-            s.enabled = s.params.power && (soloType < 0 || soloType == t) && ! modePending;
+            // Solo keeps the Maximizer: it stays in while another module is soloed (soloing the Maximizer is unchanged).
+            const bool keptBySolo = t == (int) ModuleType::Maximizer && soloKeepsMaximizer.load (std::memory_order_relaxed);
+            s.enabled = s.params.power && (soloType < 0 || soloType == t || keptBySolo) && ! modePending;
             s.monitorActive = s.monitor.soloBand >= 0 || s.monitor.auditionOn || s.monitor.soloDetectionFilter
                               || s.monitor.soloRegion;
 
@@ -1477,6 +1485,8 @@ struct Chain::Impl
 
         // 6. match gain + global bypass
         const bool gainsIdle = classicAmount.isAt (0.0f) && modernAmount.isAt (0.0f) && soloClassicAmount.isAt (0.0f);
+        // Meters ignore Gain Match: the taps get the same mix with neither match gain (as with Gain Match off).
+        const bool separateMeters = ! gainsIdle && metersIgnoreMatch.load (std::memory_order_relaxed);
         float appliedDb = 0.0f;
         for (int i = 0; i < n; ++i)
         {
@@ -1498,6 +1508,8 @@ struct Chain::Impl
             {
                 const float y = gp == 1.0f ? x[c][i] : x[c][i] * gp;
                 const float b = (gb == 1.0f ? r[c][i] : r[c][i] * gb) * modeDip[(size_t) i];
+                if (separateMeters)
+                    meterBuf[c][(size_t) i] = mixExact (x[c][i], r[c][i] * modeDip[(size_t) i], bp);
                 x[c][i] = mixExact (y, b, bp);
             }
         }
@@ -1506,16 +1518,18 @@ struct Chain::Impl
         // 7. dither
         dither.process (x, n);
 
-        // 8. output taps
-        meterPeaks (x[0], x[1], n, ioMeters.outputPeak, ioMeters.outputClip);
-        ioMeters.outputTruePeak.storeMax (outputTp.process (x[0], x[1], n));
-        outputMs.process (x[0], x[1], n);
-        outputIntegrated.process (x[0], x[1], n);
+        // 8. output taps (the unmatched mix when the meters ignore Gain Match; it leaves out the dither, -90 dB or less)
+        float* meterTap[2] { meterBuf[0].data(), meterBuf[1].data() };
+        float* const* const tap = separateMeters ? meterTap : x;
+        meterPeaks (tap[0], tap[1], n, ioMeters.outputPeak, ioMeters.outputClip);
+        ioMeters.outputTruePeak.storeMax (outputTp.process (tap[0], tap[1], n));
+        outputMs.process (tap[0], tap[1], n);
+        outputIntegrated.process (tap[0], tap[1], n);
         ioMeters.outputMomentaryLufs.store (outputMs.momentaryLufs());
         ioMeters.outputShortTermLufs.store (outputMs.shortTermLufs());
         ioMeters.outputIntegratedLufs.store (outputIntegrated.integratedLufs());
         ioMeters.outputLra.store (outputIntegrated.loudnessRange());
-        outputFifo.push (x[0], x[1], n);
+        outputFifo.push (tap[0], tap[1], n);
 
         std::memcpy (out0, x[0], sizeof (float) * (size_t) n);
         std::memcpy (out1, x[1], sizeof (float) * (size_t) n);
@@ -1532,7 +1546,7 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
     d.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
     d.maxBlock = std::max (1, maxBlockSize);
 
-    for (auto* set : { &d.raw, &d.cur, &d.dry, &d.bus, &d.tmp, &d.tPart, &d.sPart, &d.tDry, &d.sDry, &d.dtT, &d.dtS })
+    for (auto* set : { &d.raw, &d.cur, &d.dry, &d.bus, &d.tmp, &d.tPart, &d.sPart, &d.tDry, &d.sDry, &d.dtT, &d.dtS, &d.meterBuf })
         for (auto& v : *set)
             v.assign ((size_t) d.maxBlock, 0.0f);
     d.modeDip.assign ((size_t) d.maxBlock, 1.0f);
@@ -1653,6 +1667,11 @@ void Chain::setSolo (int moduleTypeOrMinus1) noexcept
 }
 
 int Chain::getSolo() const noexcept { return impl->solo.load(); }
+
+void Chain::setMetersIgnoreGainMatch (bool on) noexcept { impl->metersIgnoreMatch.store (on); }
+bool Chain::getMetersIgnoreGainMatch() const noexcept { return impl->metersIgnoreMatch.load(); }
+void Chain::setSoloKeepsMaximizer (bool on) noexcept { impl->soloKeepsMaximizer.store (on); }
+bool Chain::getSoloKeepsMaximizer() const noexcept { return impl->soloKeepsMaximizer.load(); }
 
 void Chain::setDelta (ModuleType t, bool on) noexcept
 {

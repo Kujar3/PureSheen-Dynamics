@@ -39,7 +39,8 @@ const juce::Identifier idMeterType ("meterType"), idMeterScale ("meterScale"), i
     idPeakHold ("peakHoldMs"), idRmsWindow ("rmsWindowMs"), idTruePeaks ("detectTruePeaks"), idKType ("kSystemType"),
     idSpecType ("spectrumType"), idFreqScale ("freqScale"), idAveraging ("spectrumAveragingS"),
     idSpecPeak ("spectrumPeakHold"), idSpecFill ("spectrumFill"), idTilt ("spectrumTilt"), idFft ("fftSize"),
-    idTooltips ("showTooltips"), idDim ("dimBypassed"), idHistory ("historyDepth"), idRefSpectrum ("showReferenceSpectrum");
+    idTooltips ("showTooltips"), idDim ("dimBypassed"), idHistory ("historyDepth"), idRefSpectrum ("showReferenceSpectrum"),
+    idMetersIgnoreMatch ("metersIgnoreGainMatch"), idSoloKeepsMax ("soloKeepsMaximizer");   // (PluginProcessor.cpp reads these two)
 } // namespace
 
 juce::ValueTree UiOptions::toValueTree() const
@@ -63,6 +64,8 @@ juce::ValueTree UiOptions::toValueTree() const
     t.setProperty (idDim, dimBypassed, nullptr);
     t.setProperty (idHistory, historyDepth, nullptr);
     t.setProperty (idRefSpectrum, showReferenceSpectrum, nullptr);
+    t.setProperty (idMetersIgnoreMatch, metersIgnoreGainMatch, nullptr);
+    t.setProperty (idSoloKeepsMax, soloKeepsMaximizer, nullptr);
     return t;
 }
 
@@ -95,6 +98,8 @@ UiOptions UiOptions::fromValueTree (const juce::ValueTree& t)
     o.dimBypassed = (bool) t.getProperty (idDim, o.dimBypassed);
     o.historyDepth = juce::jlimit (10, 1000, (int) t.getProperty (idHistory, o.historyDepth));
     o.showReferenceSpectrum = (bool) t.getProperty (idRefSpectrum, o.showReferenceSpectrum);
+    o.metersIgnoreGainMatch = (bool) t.getProperty (idMetersIgnoreMatch, o.metersIgnoreGainMatch);
+    o.soloKeepsMaximizer = (bool) t.getProperty (idSoloKeepsMax, o.soloKeepsMaximizer);
     return o;
 }
 } // namespace ps::ui

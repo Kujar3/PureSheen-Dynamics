@@ -74,7 +74,16 @@ struct BandStats
     // Phase correlation of L and R in the band: sum Re(L conj R) / sqrt(sum |L|^2 * sum |R|^2), -1..+1.
     // +1 = mono (identical), 0 = unrelated, -1 = polarity inverted (cancels in mono). 1 when silent.
     float correlation = 1.0f;
+
+    // (1.2) Dynamics of the band over time, from its level in each analysis frame (about 0.1 s apart: hop = half the
+    // FFT size), frames more than kBandDynamicsGateDb below the band's mean power left out (quiet passages and
+    // silence in that band). kNoValue until kBandDynamicsMinFrames frames count.
+    float dynamicRangeDb = kNoValue;   // 95th - 10th percentile of the frame levels: how far the band's level moves
+    float peakOverMedianDb = kNoValue; // 99th - 50th percentile: how far its loudest moments stand out (punch)
 };
+
+inline constexpr double kBandDynamicsGateDb = 20.0;
+inline constexpr int kBandDynamicsMinFrames = 20;
 
 struct TrackProfile
 {
@@ -197,6 +206,13 @@ private:
     std::array<int, kCurvePoints> curveFirstBin {};
     std::array<int, kCurvePoints + 1> curveWeightStart {};
     std::vector<float> curveWeights;
+
+    // Band dynamics: per band, the bins it covers and two histograms of its frame levels (kDynHistBins steps of
+    // kDynHistStepDb from kDynHistMinDb): since reset, and forgetting like the Recent spectrum average.
+    static constexpr int kDynHistBins = 440;
+    static constexpr double kDynHistMinDb = -100.0, kDynHistStepDb = 0.25;
+    std::vector<signed char> binBand;               // per bin: its band, -1 outside 20 Hz .. 20 kHz
+    std::vector<double> bandHist, bandHistRecent;   // kNumBands * kDynHistBins
 
     int fftSize = 0, hop = 0, fill = 0;
     bool sawDifferentChannels = false;

@@ -21,6 +21,9 @@
  #include <fcntl.h>
  #include <io.h>
  #include <windows.h>
+#else
+ #include <cerrno>
+ #include <signal.h>
 #endif
 
 namespace
@@ -70,7 +73,7 @@ const std::vector<Tool>& tools()
           R"({"id":{"type":"string","description":"An id from list_instances."}})", R"(["id"])", false, true },
         { "get_status", "The overview: version, host, track, sample rate, latency, preset, bypass, the module chain, undo state.",
           R"({})", "[]", true, true },
-        { "get_meters", "Loudness now (momentary, short-term, integrated LUFS, loudness range) at the input and output, the Maximizer's gain reduction, and each module's level change. Integrated loudness and loudness range cover everything since reset_loudness, including across setting changes. True peak and the Maximizer's peak gain reduction are the highest since the last get_meters call by anyone (peak_window_seconds is how long ago that was), so call it once to clear old peaks and again after the audio you care about. host_position_seconds is the playhead. The gain reduction 'now' values are one audio block, usually 0 between peaks: use the peak value to judge limiting. ceiling_applies_to says which peak the Maximizer's ceiling limits: with 'sample peak', the true peak can read above the ceiling and that is expected. Null until there is audio.",
+        { "get_meters", "Loudness now (momentary, short-term, integrated LUFS, loudness range) at the input and output, the Maximizer's gain reduction, and each module's level change. Integrated loudness and loudness range cover everything since reset_loudness, including across setting changes. True peak and the Maximizer's peak gain reduction are the highest since the last get_meters call by anyone (peak_window_seconds is how long ago that was), so call it once to clear old peaks and again after the audio you care about. host_position_seconds is the playhead. The gain reduction 'now' values are one audio block, usually 0 between peaks: use the peak value to judge limiting. ceiling_applies_to says which peak the Maximizer's ceiling limits: with 'sample peak', the true peak can read above the ceiling and that is expected. With Multiband Dynamics in the chain, 'dynamics' gives each band's detector level and its compressor, limiter and total gain change, per channel-mode part (one audio block, so read it a few times while the music plays). With Modern Gain Match the output values are lowered by the match gain unless meters_ignore_gain_match is true. 'solo' names a soloed module: the output then is a monitor signal, and solo_keeps_maximizer says whether the Maximizer still runs. Null until there is audio.",
           R"({})", "[]", false, false },
         { "reset_loudness", "Restarts the integrated loudness and loudness range that get_meters reports, for instance when the user plays the track from the top. get_comparison has its own: reset_comparison.",
           R"({})", "[]", false, true },
@@ -132,7 +135,7 @@ const std::vector<Tool>& tools()
           R"({"id":{"type":"integer"}})", R"(["id"])", false, true },
         { "set_reference_loop", "Chooses the part of a reference to compare with. With start and end: sets that loop letter and makes it active. Letter alone: makes it active. With clear: clears it. No letter: the whole track.",
           R"({"id":{"type":"integer"},"letter":{"type":"string","enum":["A","B","C","D","E"]},"start_seconds":{"type":"number"},"end_seconds":{"type":"number"},"clear":{"type":"boolean"}})", R"(["id"])", false, true },
-        { "get_comparison", "The master against the selected reference: loudness, true peak, dynamics, tonal balance and width per band, and plain-language hints. The master is only analysed while a reference is in the list, so its width and mono compatibility need one too, and they fill in while the user's master plays. The analysis is its own measurement: it adds up everything played since reset_comparison, so it differs from get_meters, whose window starts elsewhere. When settings_changed_during_analysis is true the reading blends audio from before and after the change: reset_comparison before judging it. Peaks are the highest so far, so one spike stays in them and in what follows from them. peak_to_loudness_db uses the sample peak (sample_peak_db minus integrated_lufs), not the true peak, on purpose: inter-sample overshoot would make a clipped master look more dynamic. The bands are fixed analysis bands, and the Imager's crossovers are its own.",
+        { "get_comparison", "The master against the selected reference: loudness, true peak, dynamics, tonal balance and width per band, and plain-language hints. The master is only analysed while a reference is in the list, so its width and mono compatibility need one too, and they fill in while the user's master plays. The analysis is its own measurement: it adds up everything played since reset_comparison, so it differs from get_meters, whose window starts elsewhere. When settings_changed_during_analysis is true the reading blends audio from before and after the change: reset_comparison before judging it. Peaks are the highest so far, so one spike stays in them and in what follows from them. peak_to_loudness_db uses the sample peak (sample_peak_db minus integrated_lufs), not the true peak, on purpose: inter-sample overshoot would make a clipped master look more dynamic. The bands are fixed analysis bands, and the Imager's crossovers are its own. Per band, dynamic_range_db is how far the band's level moves (95th minus 10th percentile of its levels about every 0.1 s, its quiet stretches left out) and peak_over_median_db how far its loudest moments stand out (99th minus 50th): lower than the reference means that band is more compressed. They need a few seconds of audio.",
           R"({})", "[]", true, true },
     };
     return list;
@@ -157,8 +160,8 @@ bool processIsRunning (int pid)
     CloseHandle (handle);
     return running;
    #else
-    juce::ignoreUnused (pid);
-    return true;
+    // Signal 0 checks without sending anything; EPERM means it exists under another user.
+    return pid > 0 && (kill ((pid_t) pid, 0) == 0 || errno == EPERM);
    #endif
 }
 

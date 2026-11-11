@@ -302,6 +302,39 @@ TEST_CASE ("chain. solo processes only the soloed module")
     CHECK (maxDiffDelayed (l, x, 30, 4800, 6.0f) < 1.0e-5);
 }
 
+TEST_CASE ("chain. solo can keep the Maximizer on")
+{
+    auto* a = new TestModule (ModuleType::Equalizer1, 2.0f, 10);
+    auto* mx = new TestModule (ModuleType::Maximizer, 3.0f, 20);
+    Rig rig ({ { ModuleType::Equalizer1, a }, { ModuleType::Maximizer, mx } });
+    const auto x = pstest::pinkNoise (0.3, 1.0, 48000.0, 21u);
+
+    // Off (the default): soloing the EQ bypasses the Maximizer.
+    CHECK (! rig.chain.getSoloKeepsMaximizer());
+    rig.chain.setSolo ((int) ModuleType::Equalizer1);
+    auto l = x, r = x;
+    rig.run (l, r);
+    CHECK (maxDiffDelayed (l, x, 30, 4800, 2.0f) < 1.0e-5);
+
+    // On: the EQ solo still goes through the Maximizer.
+    rig.chain.setSoloKeepsMaximizer (true);
+    CHECK (rig.chain.getSoloKeepsMaximizer());
+    rig.run (l = x, r = x);
+    rig.run (l = x, r = x);
+    CHECK (maxDiffDelayed (l, x, 30, 4800, 6.0f) < 1.0e-5);
+
+    // A powered-off Maximizer stays off, and soloing the Maximizer itself is unchanged.
+    setValue (rig.values, "max.on", 0.0f);
+    rig.run (l = x, r = x);
+    rig.run (l = x, r = x);
+    CHECK (maxDiffDelayed (l, x, 30, 4800, 2.0f) < 1.0e-5);
+    setValue (rig.values, "max.on", 1.0f);
+    rig.chain.setSolo ((int) ModuleType::Maximizer);
+    rig.run (l = x, r = x);
+    rig.run (l = x, r = x);
+    CHECK (maxDiffDelayed (l, x, 30, 4800, 3.0f) < 1.0e-5);
+}
+
 TEST_CASE ("chain. channel modes: M/S encode, channel on/off and channel solo")
 {
     auto* a = new TestModule (ModuleType::Equalizer1);
@@ -406,6 +439,41 @@ TEST_CASE ("chain. gain match converges (classic and modern)")
         note ("modern: applied match gain (dB)", rig.chain.getIoMeters().gainMatchDb.load());
         CHECK (std::abs (outLufs - inputLufs) < 0.5);
         CHECK_NEAR (rig.chain.getIoMeters().gainMatchDb.load(), -6.02, 0.5);
+    }
+
+    // modern, meters ignoring Gain Match: what is heard is levelled, the output meters and FIFO read the master
+    {
+        Rig rig ({ { ModuleType::Equalizer1, new TestModule (ModuleType::Equalizer1, 2.0f, 64) } });
+        setValue (rig.values, "io.gainMatch", 1.0f);
+        setValue (rig.values, "io.gainMatchModern", 1.0f);
+        rig.chain.setMetersIgnoreGainMatch (true);
+        CHECK (rig.chain.getMetersIgnoreGainMatch());
+        auto l = x, r = x;
+        rig.run (l, r);
+        const size_t tail = (size_t) (3.0 * sr);
+        const float heard = measureIntegratedLufs (l.data() + l.size() - tail, r.data() + r.size() - tail, (long long) tail, sr);
+        const float metered = rig.chain.getIoMeters().outputShortTermLufs.load();
+        note ("modern, meters ignore the match: metered - input (LU, expect +6.02)", metered - inputLufs);
+        CHECK (std::abs (heard - inputLufs) < 0.5);
+        CHECK (std::abs (metered - inputLufs - 6.02) < 0.5);
+        CHECK_NEAR (rig.chain.getIoMeters().gainMatchDb.load(), -6.02, 0.5);
+
+        // the output FIFO carries the unmatched signal too: the last samples are 2 x the delayed input
+        std::vector<float> fl (32768), fr (32768);
+        const int got = rig.chain.getOutputFifo().pull (fl.data(), fr.data(), 32768);
+        REQUIRE (got > 4800);
+        double worst = 0.0;
+        for (int i = got - 4800; i < got; ++i)
+        {
+            const size_t src = x.size() - (size_t) (got - i) - 64;
+            worst = std::max (worst, std::abs ((double) fl[(size_t) i] - 2.0 * x[src]));
+        }
+        CHECK (worst < 1.0e-5);
+
+        // off again: the meters follow what is heard
+        rig.chain.setMetersIgnoreGainMatch (false);
+        rig.run (l = x, r = x);
+        CHECK (std::abs (rig.chain.getIoMeters().outputShortTermLufs.load() - inputLufs) < 0.5);
     }
 
     // classic: the bypassed signal is levelled to the processed loudness

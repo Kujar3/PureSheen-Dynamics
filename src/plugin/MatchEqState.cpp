@@ -1,17 +1,17 @@
 #include "plugin/MatchEqState.h"
 
+#include "core/NumberText.h"
 #include "dsp/Chain.h"
 #include "dsp/MatchEq.h"
 #include "plugin/UndoHistory.h"
 
 #include <atomic>
-#include <charconv>
 #include <cmath>
 #include <cstring>
 
 // Match EQ parts of the processor (see MatchEqState.h). Choices made where the contract does not decide:
 // - Only valid spectra are stored; an invalid one (cleared, or a capture shorter than 1 s) counts as empty.
-// - seconds / sampleRate are written as the shortest decimal that round-trips the double exactly (std::to_chars), the
+// - seconds / sampleRate are written as the shortest decimal that round-trips the double exactly (core/NumberText.h), the
 //   PSD arrays as base64 of little-endian float32, so a state round trip is bit-exact.
 // - A preset load replaces the References only when the preset carries a "MatchEq" child (see the header).
 // - Undo descriptions: "Match EQ: captured the reference", "... captured the current spectrum", "... cleared the
@@ -57,20 +57,14 @@ namespace
 
     juce::String exactDouble (double v)
     {
-        char buf[64] {};
-        const auto r = std::to_chars (buf, buf + sizeof (buf) - 1, v);
-        *r.ptr = 0;
-        return juce::String (buf);
+        return juce::String (ps::formatDoubleText (v));
     }
 
     double parseDouble (const juce::var& v)
     {
         const auto s = v.toString().toStdString();
-        if (s.empty())
-            return 0.0;
         double d = 0.0;
-        const auto result = std::from_chars (s.data(), s.data() + s.size(), d);
-        return result.ec == std::errc() && result.ptr == s.data() + s.size() && std::isfinite (d) ? d : 0.0;
+        return ps::parseDoubleText (s.data(), s.data() + s.size(), d) ? d : 0.0;
     }
 
     std::string asciiTag (const juce::String& s)

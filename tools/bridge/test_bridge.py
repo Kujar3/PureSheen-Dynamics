@@ -248,6 +248,17 @@ def main():
             time.sleep(0.25)
         check(lufs is not None and -60 < lufs < 0, f"the meters see the tone: {lufs}")
         check(helper.tool_json("get_meters")["host_playing"] in (True, False), "host_playing")
+        monitoring = helper.tool_json("get_meters")
+        check(monitoring["solo"] is None and monitoring["solo_keeps_maximizer"] is False, f"solo state: {monitoring.get('solo')}")
+        check(monitoring["output"]["meters_ignore_gain_match"] is False, "the meters follow Gain Match by default")
+        if "dyn" in [m["module"] for m in helper.tool_json("get_status")["chain"]]:
+            dyn = monitoring.get("dynamics")
+            check(dyn is not None and len(dyn["bands"]) >= 1 and "gain_change_db" in dyn["bands"][0]["parts"][0], f"Dynamics bands in get_meters: {dyn}")
+        else:
+            helper.tool_json("add_module", {"module": "dyn"})
+            dyn = helper.tool_json("get_meters").get("dynamics")
+            check(dyn is not None and dyn["channel_mode"] == "Stereo" and dyn["bands"][0]["parts"][0]["part"] == "stereo", f"Dynamics bands in get_meters: {dyn}")
+            helper.tool_json("undo")
         helper.tool_json("get_meters")   # clears the peak held since the last read
         time.sleep(0.5)
         peak = helper.tool_json("get_meters")["output"]["true_peak_dbtp"]
@@ -402,6 +413,8 @@ def main():
         check(ready is not None and ready["references"][0]["integrated_lufs"] is not None, "with its loudness")
         comparison = helper.tool_json("get_comparison")
         check(len(comparison["bands"]) == 6 and len(comparison["hints"]) >= 1, "get_comparison has bands and hints")
+        check(all("master_dynamic_range_db" in b and "reference_peak_over_median_db" in b for b in comparison["bands"]), "every band has its dynamics fields")
+        check(any(b["reference_dynamic_range_db"] is not None for b in comparison["bands"]), f"the reference has band dynamics: {comparison['bands']}")
         looped = helper.tool_json("set_reference_loop", {"id": reference_id, "letter": "B", "start_seconds": 1.0, "end_seconds": 3.0})
         check(looped["references"][0]["active_loop"] == "B", "a loop becomes active")
         helper.tool_json("set_reference_loop", {"id": reference_id})

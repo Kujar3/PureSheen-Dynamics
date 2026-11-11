@@ -1,0 +1,50 @@
+PureSheen Dynamics for macOS - install by hand
+==============================================
+
+Every PureSheen plugin is in this download: the suite (PureSheen Dynamics) and each
+module as a plugin of its own. Copy only the ones you want. They run on macOS 11 or
+newer, on Apple Silicon and Intel Macs.
+
+First: quit your DAW.
+
+1. Copy the plugins into your user's plugin folders. In Finder, choose Go > Go to
+   Folder (Shift-Cmd-G) and open each of these (make the folder if it is missing):
+
+     Audio Units (Logic Pro, GarageBand)   ~/Library/Audio/Plug-Ins/Components
+     VST3                                  ~/Library/Audio/Plug-Ins/VST3
+     CLAP                                  ~/Library/Audio/Plug-Ins/CLAP
+
+   Copy the files from the folders "Components", "VST3" and "CLAP" of this download
+   into the matching folder. Each one is a single item you copy as a whole.
+
+2. These builds are not signed by Apple, so macOS blocks what was downloaded until
+   you allow it. Open Terminal (Applications > Utilities) and paste:
+
+     xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins
+
+   This only removes the "downloaded from the internet" mark from your plug-in folders.
+
+3. Logic Pro checks Audio Units when it starts. If a PureSheen plugin is missing,
+   open Logic Pro > Settings > Plug-in Manager, select it and click "Reset & Rescan
+   Selection".
+
+The standalone app (optional)
+"PureSheen Dynamics.app" runs the suite without a DAW. Copy it to Applications, then
+in Terminal:  xattr -dr com.apple.quarantine "/Applications/PureSheen Dynamics.app"
+
+Claude connector (optional, only if you use Claude Desktop or Claude Code)
+The folder "Claude connector (optional)" holds PureSheenBridge, a small program that lets
+Claude control the suite. Make a folder named "PureSheen Dynamics" inside Applications,
+copy PureSheenBridge into it, and in Terminal:
+
+  xattr -d com.apple.quarantine "/Applications/PureSheen Dynamics/PureSheenBridge"
+
+Then in the plugin use Options > Claude: turn on "Allow Claude to connect" and copy the
+setup for your Claude app.
+
+To update, replace what you copied. To remove, delete it.
+
+Licence
+This is free software under the GNU AGPL v3, with no warranty: see LICENSE.txt and
+THIRD-PARTY-NOTICES.txt. You have the right to its source code:
+https://github.com/Kujar3/PureSheen-Dynamics

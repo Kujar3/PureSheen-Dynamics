@@ -1,5 +1,7 @@
 #include "plugin/import/ImportEngine.h"
 
+#include "core/NumberText.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -448,8 +450,7 @@ std::optional<double> parseNumber (std::string_view s)
         return std::nullopt;
 
     double v = 0.0;
-    const auto r = std::from_chars (buffer, buffer + s.size(), v, std::chars_format::general);
-    if (r.ec != std::errc() || r.ptr != buffer + s.size() || ! std::isfinite (v))
+    if (! ps::parseDoubleText (buffer, buffer + s.size(), v))
         return std::nullopt;
     return v;
 }

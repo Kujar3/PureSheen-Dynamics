@@ -190,6 +190,10 @@ struct UiOptions
 
     bool showReferenceSpectrum = true;     // (phase 3) the selected reference's curve on the module analysers
 
+    // (1.2) Monitoring, applied to the chain by the processor (PluginProcessor.cpp, applyMonitoringOptions).
+    bool metersIgnoreGainMatch = false;    // output meters read the output as with Gain Match off
+    bool soloKeepsMaximizer = false;       // a powered Maximizer keeps processing while another module is soloed
+
     juce::ValueTree toValueTree() const;
     static UiOptions fromValueTree (const juce::ValueTree&);
 };

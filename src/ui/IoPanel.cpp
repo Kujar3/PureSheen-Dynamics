@@ -341,7 +341,8 @@ struct IoPanel::Impl
 
         gainMatch.setTooltip ("Gain Match: compare at equal loudness. When you bypass, the bypassed sound is turned to "
                               "the same loudness as the processed one, so you judge the sound and not the volume "
-                              "(Options > Gain Match chooses which side is levelled).");
+                              "(Options > Gain Match chooses which side is levelled, and whether the meters show the "
+                              "output without the match gain).");
         bypass.setTooltip ("Bypass: hear the unprocessed input (latency kept, so the timing does not jump)");
         bypass.setOnColour (Colours::minor);
         mono.setTooltip ("Mono: sum left and right to check the mix in mono");

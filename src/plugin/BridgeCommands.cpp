@@ -1,5 +1,6 @@
 #include "plugin/Bridge.h"
 
+#include "dsp/Dynamics.h"
 #include "dsp/Maximizer.h"
 #include "plugin/Assistant.h"
 #include "plugin/PluginProcessor.h"
@@ -227,6 +228,57 @@ juce::var cmdGetStatus (PureSheenProcessor& p, Args)
     return juce::var (object.release());
 }
 
+// (1.2) Multiband Dynamics, per band and channel set: what each band's compressor and limiter do right now (the latest
+// audio block; the detector is the level they react to). Stereo has one set; M/S and L/R two in one instance; in
+// Transient / Sustain the sustain part is the twin instance.
+juce::var dynamicsBandsToVar (PureSheenProcessor& p)
+{
+    auto& chain = p.getChain();
+    const int numBands = juce::jlimit (1, ps::kMaxBands, juce::roundToInt (p.getParameterValue ("dyn.bands")));
+    const int modeIndex = juce::roundToInt (p.getParameterValue ("dyn.chMode"));
+    const auto mode = (ps::ChannelMode) juce::jlimit (0, 3, modeIndex);
+    const auto& modeChoices = ps::paramSpecs()[(size_t) ps::paramIndex ("dyn.chMode")].choices;
+    const auto modeName = modeIndex >= 0 && modeIndex < (int) modeChoices.size() ? juce::String (modeChoices[(size_t) modeIndex])
+                                                                                  : juce::String (modeIndex);
+
+    struct Source { const ps::DynamicsMeters* meters; int set; const char* name; };
+    const auto& first = static_cast<ps::Dynamics&> (chain.getModule (ps::ModuleType::Dynamics, 0)).getMeters();
+    std::vector<Source> sources;
+    switch (mode)
+    {
+        case ps::ChannelMode::Stereo:    sources = { { &first, 0, "stereo" } }; break;
+        case ps::ChannelMode::MidSide:   sources = { { &first, 0, "mid" }, { &first, 1, "side" } }; break;
+        case ps::ChannelMode::LeftRight: sources = { { &first, 0, "left" }, { &first, 1, "right" } }; break;
+        case ps::ChannelMode::TransientSustain:
+            sources = { { &first, 0, "transient" },
+                        { &static_cast<ps::Dynamics&> (chain.getModule (ps::ModuleType::Dynamics, 1)).getMeters(), 0, "sustain" } };
+            break;
+    }
+
+    const auto db = [] (const ps::AtomicFloat& v)
+    {
+        const float x = v.load();
+        return x > -150.0f ? number (x, 100.0) : juce::var();
+    };
+
+    juce::Array<juce::var> bands;
+    for (int b = 0; b < numBands; ++b)
+    {
+        const float lo = b == 0 ? 20.0f : p.getParameterValue ("dyn.xover" + juce::String (b));
+        const float hi = b == numBands - 1 ? 20000.0f : p.getParameterValue ("dyn.xover" + juce::String (b + 1));
+        juce::Array<juce::var> parts;
+        for (const auto& s : sources)
+            parts.add (makeObject ({ { "part", juce::String (s.name) },
+                                     { "detector_db", db (s.meters->detectorDb[s.set][b]) },
+                                     { "gain_change_db", number (s.meters->gainReductionDb[s.set][b].load(), 100.0) },
+                                     { "compressor_db", number (s.meters->compGainDb[s.set][b].load(), 100.0) },
+                                     { "limiter_db", number (s.meters->limGainDb[s.set][b].load(), 100.0) } }));
+        bands.add (makeObject ({ { "band", b + 1 }, { "low_hz", number (lo, 1.0) }, { "high_hz", number (hi, 1.0) },
+                                 { "parts", parts } }));
+    }
+    return makeObject ({ { "channel_mode", modeName }, { "bands", bands } });
+}
+
 juce::var cmdGetMeters (PureSheenProcessor& p, Args)
 {
     auto& chain = p.getChain();
@@ -252,6 +304,8 @@ juce::var cmdGetMeters (PureSheenProcessor& p, Args)
     output.getDynamicObject()->setProperty ("loudness_range_lu", number (meters.outputLra.load(), 100.0));
     output.getDynamicObject()->setProperty ("true_peak_dbtp", truePeakDb (meters.outputTruePeak));
     output.getDynamicObject()->setProperty ("gain_match_db", number (meters.gainMatchDb.load(), 100.0));
+    // Options > Gain Match: with this on, the output values above leave out the match gain (what the master measures).
+    output.getDynamicObject()->setProperty ("meters_ignore_gain_match", chain.getMetersIgnoreGainMatch());
 
     juce::Array<juce::var> modules;
     for (auto type : p.getChainOrder())
@@ -278,6 +332,13 @@ juce::var cmdGetMeters (PureSheenProcessor& p, Args)
             { "gain_reduction_now_right_db", number (m.gainReductionDb[1].load(), 100.0) },
             { "upward_gain_db", number (m.upwardGainDb.load(), 100.0) } }));
     }
+
+    if (p.isModuleInChain (ps::ModuleType::Dynamics))
+        object.getDynamicObject()->setProperty ("dynamics", dynamicsBandsToVar (p));
+
+    const int solo = chain.getSolo();
+    object.getDynamicObject()->setProperty ("solo", solo >= 0 ? juce::var (moduleIdPrefix ((ps::ModuleType) solo)) : juce::var());
+    object.getDynamicObject()->setProperty ("solo_keeps_maximizer", chain.getSoloKeepsMaximizer());
     return object;
 }
 
@@ -959,6 +1020,9 @@ juce::var cmdGetComparison (PureSheenProcessor& p, Args)
 {
     const auto& refs = p.getTrackReferencing();
     const auto comparison = refs.getComparison();
+    // Band dynamics come straight from the two profiles (the comparison's band levels are relative, these are not).
+    const auto master = refs.getMixProfile();
+    const auto reference = refs.getReferenceProfile();
 
     juce::Array<juce::var> bands;
     for (int i = 0; i < ps::kNumBands; ++i)
@@ -968,7 +1032,11 @@ juce::var cmdGetComparison (PureSheenProcessor& p, Args)
         bands.add (makeObject ({ { "band", juce::String (info.name) }, { "low_hz", number (info.lowHz) }, { "high_hz", number (info.highHz) },
                                  { "valid", band.valid }, { "master_minus_reference_db", number (band.levelDiffDb, 100.0) },
                                  { "master_width_pct", number (band.mixWidthPct, 100.0) },
-                                 { "reference_width_pct", number (band.refWidthPct, 100.0) } }));
+                                 { "reference_width_pct", number (band.refWidthPct, 100.0) },
+                                 { "master_dynamic_range_db", number (master.bands[(size_t) i].dynamicRangeDb, 100.0) },
+                                 { "reference_dynamic_range_db", number (reference.bands[(size_t) i].dynamicRangeDb, 100.0) },
+                                 { "master_peak_over_median_db", number (master.bands[(size_t) i].peakOverMedianDb, 100.0) },
+                                 { "reference_peak_over_median_db", number (reference.bands[(size_t) i].peakOverMedianDb, 100.0) } }));
     }
 
     juce::Array<juce::var> hints;

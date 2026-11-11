@@ -101,6 +101,15 @@ public:
     void setTapModule (int moduleTypeOrMinus1) noexcept;                 // which module feeds the module taps
     void resetIntegratedLoudness() noexcept;                             // I / LRA readouts (UI "reset")
 
+    // (1.2) Monitoring options, any thread. Meters ignore Gain Match: the output taps (IoMeters' output values and the
+    // output FIFO) read the output as it would be with Gain Match off, so Modern mode's compensation does not lower
+    // them; what is heard keeps the match gain. Solo keeps the Maximizer: while another module is soloed, a powered
+    // Maximizer in the chain keeps processing, so a soloed module is heard at about the mastered level.
+    void setMetersIgnoreGainMatch (bool) noexcept;
+    bool getMetersIgnoreGainMatch() const noexcept;
+    void setSoloKeepsMaximizer (bool) noexcept;
+    bool getSoloKeepsMaximizer() const noexcept;
+
     //==============================================================================
     // Audio thread
     void process (float* const* channels, int numSamples, ParamValues, const HostInfo&) noexcept;

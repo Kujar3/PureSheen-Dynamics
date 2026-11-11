@@ -632,7 +632,8 @@ juce::String ChainStrip::getTooltip()
     {
         case Part::plus:  return "Add a module to the chain";
         case Part::led:   return "Power: switch this module on or off (it keeps its latency, so the timing never jumps)";
-        case Part::solo:  return "Solo: hear only what this module does (the other modules are bypassed)";
+        case Part::solo:  return "Solo: hear only what this module does (the other modules are bypassed; Options can keep "
+                                 "the Maximizer on, so the level stays close to the master)";
         case Part::delta: return "Delta: hear only the difference this module makes";
         case Part::close: return "Remove from the chain";
         case Part::body:

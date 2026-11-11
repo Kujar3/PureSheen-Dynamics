@@ -657,6 +657,8 @@ struct HeaderBar::Impl
         const bool modern = proc.getParameterValue ("io.gainMatchModern") >= 0.5f;
         gm.addItem (3000, "Classic: level the bypassed signal to the processed one", true, ! modern);
         gm.addItem (3001, "Modern: level the processed output to the input", true, modern);
+        gm.addSeparator();
+        gm.addItem (3002, "Meters show the output without the match gain", true, o.metersIgnoreGainMatch);
 
         const int depths[] = { 50, 100, 200, 500, 1000 };
         for (int i = 0; i < 5; ++i)
@@ -673,6 +675,7 @@ struct HeaderBar::Impl
         {
             menu.addItem (3201, "Dim bypassed modules", true, o.dimBypassed);
             menu.addItem (3202, "Show the reference in the analysers", true, o.showReferenceSpectrum);
+            menu.addItem (3203, "Keep the Maximizer on while soloing a module", true, o.soloKeepsMaximizer);
             menu.addSeparator();
 
             juce::PopupMenu claude;
@@ -722,10 +725,12 @@ struct HeaderBar::Impl
             else if (r == 2500)             n.spectrumPeakHold = ! n.spectrumPeakHold;
             else if (r == 2501)             n.spectrumFill = ! n.spectrumFill;
             else if (r == 3000 || r == 3001) { proc.setParameterValue ("io.gainMatchModern", r == 3001 ? 1.0f : 0.0f); return; }
+            else if (r == 3002)             n.metersIgnoreGainMatch = ! n.metersIgnoreGainMatch;
             else if (r >= 3100 && r < 3105) n.historyDepth = depthL[r - 3100];
             else if (r == 3200)             n.showTooltips = ! n.showTooltips;
             else if (r == 3201)             n.dimBypassed = ! n.dimBypassed;
             else if (r == 3202)             n.showReferenceSpectrum = ! n.showReferenceSpectrum;
+            else if (r == 3203)             n.soloKeepsMaximizer = ! n.soloKeepsMaximizer;
 
             ctx.applyOptions (n);
         });
@@ -744,7 +749,7 @@ struct HeaderBar::Impl
 
         // Plain text the user pastes: nothing here edits another program's settings.
         const auto helper = psplug::Bridge::findHelper();
-        const auto path = helper.existsAsFile() ? helper.getFullPathName() : juce::String ("<path to PureSheenBridge.exe>");
+        const auto path = helper.existsAsFile() ? helper.getFullPathName() : "<path to " + helper.getFileName() + ">";
 
         if (item == 3301)
         {

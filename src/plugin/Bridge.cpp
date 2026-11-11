@@ -379,12 +379,19 @@ void Bridge::setAllowed (bool allowed)
 
 juce::File Bridge::findHelper()
 {
+    // Windows: the installer's folder in Program Files. macOS: /Applications/PureSheen Dynamics, as the Mac download's
+    // "How to install.txt" says. Either: next to the registration folder, for a helper copied by hand.
+   #if JUCE_WINDOWS
+    const juce::String name ("PureSheenBridge.exe");
+   #else
+    const juce::String name ("PureSheenBridge");
+   #endif
     const auto installed = juce::File::getSpecialLocation (juce::File::globalApplicationsDirectory)
                                .getChildFile ("PureSheen Dynamics")
-                               .getChildFile ("PureSheenBridge.exe");
+                               .getChildFile (name);
     if (installed.existsAsFile())
         return installed;
-    const auto copied = bridge::folder().getSiblingFile ("PureSheenBridge.exe");
+    const auto copied = bridge::folder().getSiblingFile (name);
     return copied.existsAsFile() ? copied : installed;
 }
 

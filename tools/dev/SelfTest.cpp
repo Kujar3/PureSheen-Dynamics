@@ -1637,7 +1637,15 @@ void testState()
     ui.setProperty ("meterType", 3, nullptr);
     ui.setProperty ("selectedModule", 2, nullptr);
     ui.appendChild (juce::ValueTree ("Recent"), nullptr);
+    juce::ValueTree editorOptions ("Options");   // the editor's UiOptions child carries the two monitoring options
+    editorOptions.setProperty ("metersIgnoreGainMatch", true, nullptr);
+    editorOptions.setProperty ("soloKeepsMaximizer", true, nullptr);
+    ui.appendChild (editorOptions, nullptr);
+    check (! a.proc.getChain().getMetersIgnoreGainMatch() && ! a.proc.getChain().getSoloKeepsMaximizer(),
+           "monitoring options: off by default");
     a.proc.setUiState (ui);
+    check (a.proc.getChain().getMetersIgnoreGainMatch() && a.proc.getChain().getSoloKeepsMaximizer(),
+           "monitoring options: the UI state turns them on in the chain");
     a.proc.setEditorSize (1300, 800);
     a.proc.flushPendingChanges (true);
 
@@ -1658,6 +1666,8 @@ void testState()
                && b.proc.getUiState().getChildWithName ("Recent").isValid(),
            "state: UI state (Options) restored", b.proc.getUiState().toXmlString().toStdString());
     check (b.proc.getEditorSize() == juce::Point<int> (1300, 800), "state: editor size restored");
+    check (b.proc.getChain().getMetersIgnoreGainMatch() && b.proc.getChain().getSoloKeepsMaximizer(),
+           "state: the monitoring options reach the chain with no editor open");
     check (b.proc.getHistory().size() == 1 && b.proc.getHistory()[0].description == "Initial state",
            "state: loading starts a fresh history");
     check (b.proc.getCurrentPresetName() == "Default" && b.proc.isPresetModified(),

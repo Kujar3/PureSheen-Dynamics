@@ -71,6 +71,10 @@ The **?** button in the top-right corner explains every part inside the plugin. 
 3. **Compare honestly.** Turn on **Gain Match**, then toggle **Bypass**. Both play at the same loudness, so you judge
    the sound, not the volume. **S** on a module solos it. The **triangle (Delta)** plays only what that module
    changes.
+   - *Options > Gain Match* picks Classic (the bypass is levelled) or Modern (the processed output is levelled). In
+     Modern you can have the meters show the output without the match gain, so they read your master's real level.
+   - *Options > Keep the Maximizer on while soloing a module* plays a soloed module through the Maximizer, so the
+     level stays close to the master while you compare.
 4. **Keep versions.** Snapshots **A-D** store complete settings. The clock icon opens the undo history.
 5. **Compare with a reference.** Drop released songs you like (WAV, MP3, FLAC, AIFF or OGG, up to 10) anywhere on
    the plugin, or open the **Reference** page from the switch next to the logo.
@@ -119,6 +123,8 @@ plugins don't have this.
 3. Play your track and ask Claude something like "How loud is this master, and how does it compare with my reference?"
 
 Claude can change settings and the module chain, load and save presets, run the Assistant, and compare with reference tracks.
+It reads what each band of Multiband Dynamics is doing, and how dynamic each frequency band of your master and the
+reference is.
 Each change to settings or the chain is one undo step in the History, labelled "Claude:", and that includes results that arrive
 later, from the Assistant or Learn. Bypass and Gain Match stay with you. Claude can't hear your music or start playback,
 so you press play and you judge the result.
@@ -171,6 +177,22 @@ powershell -ExecutionPolicy Bypass -File scripts\package-all.ps1
 
 `-Only eq,tape` limits it to those plugins, `-CompleteOnly` makes only the all-in-one installer, `-SkipBuild` packages
 what is already built, and `-TestRoot <folder>` builds test installers as above. A single plugin builds with `scripts\build.bat build PureSheen_eq_VST3 PureSheen_eq_CLAP`.
+
+### macOS
+
+On a Mac the same CMake project also builds Audio Units, as universal binaries (Apple Silicon and Intel) for macOS 11
+or newer. You need Xcode, CMake and Ninja. Fetch JUCE as above and clap-juce-extensions as `scripts/fetch_clap.bat`
+does (the commit and patch it names), then:
+
+```
+cmake -S . -B build-mac -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+cmake --build build-mac --target PureSheen_VST3 PureSheen_AU PureSheen_CLAP PureSheen_Standalone PureSheenSingles PureSheenBridge
+bash scripts/package-mac.sh build-mac dist
+```
+
+The GitHub Actions workflow *macOS build* (`.github/workflows/macos.yml`) does all of this and runs the tests and
+`auval`. Start it from the Actions tab, and the zip is the run's artifact. The Mac builds aren't signed by Apple, so
+`How to install.txt` in the zip explains how to allow them.
 
 See `ARCHITECTURE.md` for how the code is organised.
 

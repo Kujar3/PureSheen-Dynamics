@@ -1,0 +1,84 @@
+# macOS build: every plugin as VST3, Audio Unit and CLAP (universal: Apple Silicon + Intel, macOS 11 or newer), the
+# standalone app and the Claude connector, in one zip (scripts/package-mac.sh). Run it from the Actions tab ("Run
+# workflow"); a version tag runs it too. The zip is the run's artifact. Then the tests run on the same machine:
+# CoreTests, the processor self-test, the connector tests and Apple's auval on every Audio Unit.
+name: macOS build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 300
+    env:
+      JUCE_TAG: 8.0.16-security
+      # clap-juce-extensions main @ 2026-10-06, clap 1.2.7 (the commit scripts/fetch_clap.bat pins)
+      CJE_COMMIT: 7adee3a1bd4684d4caa5601100e364abccff4b4d
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch JUCE and clap-juce-extensions
+        run: |
+          git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE.git third_party/JUCE
+          git clone https://github.com/free-audio/clap-juce-extensions.git third_party/clap-juce-extensions
+          git -C third_party/clap-juce-extensions -c advice.detachedHead=false checkout "$CJE_COMMIT"
+          git -C third_party/clap-juce-extensions submodule update --init --recursive
+          git -C third_party/clap-juce-extensions apply "$GITHUB_WORKSPACE/scripts/clap-juce-extensions-state-rescan.patch"
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-mac -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DPURESHEEN_LINK_JOBS=2
+
+      - name: Build
+        run: |
+          cmake --build build-mac --target PureSheen_VST3 PureSheen_AU PureSheen_CLAP PureSheen_Standalone \
+            PureSheenSingles PureSheenBridge CoreTests PureSheenDev
+
+      - name: Package
+        run: bash scripts/package-mac.sh build-mac dist
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: PureSheen-macOS
+          path: dist/*.zip
+          retention-days: 30
+
+      - name: CoreTests
+        run: build-mac/CoreTests
+
+      - name: Processor self-test, connector and import tests
+        if: always()
+        run: |
+          dev="$GITHUB_WORKSPACE/build-mac/PureSheenDev_artefacts/Release/PureSheenDev"
+          "$dev" selftest
+          "$dev" bridgetest
+          "$dev" importtest
+          python3 tools/bridge/test_bridge.py "$GITHUB_WORKSPACE/build-mac/PureSheenBridge_artefacts/Release/PureSheenBridge" "$dev"
+
+      - name: auval (every Audio Unit)
+        if: always()
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          ditto dist/PureSheen-Complete-*-macOS/Components ~/Library/Audio/Plug-Ins/Components
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          failed=0
+          while IFS=, read -r id name code rest; do
+            [ -n "$id" ] || continue
+            if auval -v aufx "$code" Kuja > "auval-$id.txt" 2>&1; then
+              echo "auval passed: $name"
+            else
+              echo "auval FAILED: $name"; tail -n 30 "auval-$id.txt"; failed=1
+            fi
+          done < <(tail -n +2 installer/products.csv | tr -d '\r')
+          exit $failed

@@ -128,7 +128,19 @@ void TrackAnalyser::prepare (double newSampleRate, Averaging newAveraging)
 
     prepareCurveWeights();
 
-    forget = std::exp (-((double) hop / sampleRate) / kRecentSeconds);
+    // Band dynamics: each bin belongs to the band its centre frequency falls in.
+    binBand.assign (numBins, (signed char) -1);
+    for (size_t k = 0; k < numBins; ++k)
+    {
+        const double f = (double) k * sampleRate / fftSize;
+        for (int b = 0; b < kNumBands; ++b)
+            if (f >= bandInfo (b).lowHz && f < bandInfo (b).highHz)
+                binBand[k] = (signed char) b;
+    }
+    bandHist.assign ((size_t) (kNumBands * kDynHistBins), 0.0);
+    bandHistRecent.assign ((size_t) (kNumBands * kDynHistBins), 0.0);
+
+    forget =std::exp (-((double) hop / sampleRate) / kRecentSeconds);
 
     loudness.prepare (sampleRate);
     peaks.prepare (sampleRate);
@@ -214,6 +226,8 @@ void TrackAnalyser::reset() noexcept
     std::fill (accRecentL.begin(), accRecentL.end(), 0.0);
     std::fill (accRecentR.begin(), accRecentR.end(), 0.0);
     std::fill (accRecentCross.begin(), accRecentCross.end(), 0.0);
+    std::fill (bandHist.begin(), bandHist.end(), 0.0);
+    std::fill (bandHistRecent.begin(), bandHistRecent.end(), 0.0);
 
     fill = 0;
     sawDifferentChannels = false;
@@ -309,8 +323,10 @@ void TrackAnalyser::analyseFrame() noexcept
 
     const double f = forget;
     const int mask = fftSize - 1;
+    const int half = fftSize / 2;
+    double bandPower[kNumBands] {};
 
-    for (int k = 0; k <= fftSize / 2; ++k)
+    for (int k = 0; k <= half; ++k)
     {
         const std::complex<float> z = scratch[(size_t) k];
         const std::complex<float> zc = std::conj (scratch[(size_t) ((fftSize - k) & mask)]);
@@ -331,6 +347,26 @@ void TrackAnalyser::analyseFrame() noexcept
         accRecentL[bin] = accRecentL[bin] * f + pl;
         accRecentR[bin] = accRecentR[bin] * f + pr;
         accRecentCross[bin] = accRecentCross[bin] * f + cross;
+
+        if (const int b = binBand[bin]; b >= 0)
+            bandPower[b] += ((k == 0 || k == half) ? 1.0 : 2.0) * 0.5 * (pl + pr);
+    }
+
+    // Band dynamics: this frame's level per band (mean of channels, same scale as BandStats::levelDb).
+    const double frameNorm = 1.0 / ((double) fftSize * windowEnergy);
+    for (auto& h : bandHistRecent)
+        h *= f;
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        const double p = bandPower[b] * frameNorm;
+        if (! (p > 0.0))
+            continue;
+        const double db = 10.0 * std::log10 (p);
+        if (! (db >= kDynHistMinDb))
+            continue;
+        const int i = std::min (kDynHistBins - 1, (int) ((db - kDynHistMinDb) / kDynHistStepDb));
+        bandHist[(size_t) (b * kDynHistBins + i)] += 1.0;
+        bandHistRecent[(size_t) (b * kDynHistBins + i)] += 1.0;
     }
 
     // The first frame covers fftSize new samples, every later one hop new samples.
@@ -414,6 +450,46 @@ TrackProfile TrackAnalyser::profile() const
         return s;
     };
 
+    // Band dynamics from a histogram of frame levels: leave out frames more than kBandDynamicsGateDb below the band's
+    // mean power, then read percentiles (linear inside a histogram step).
+    const auto bandDynamics = [] (const double* hist, float& rangeDb, float& peakDb)
+    {
+        const auto centre = [] (int i) { return kDynHistMinDb + (i + 0.5) * kDynHistStepDb; };
+
+        double count = 0.0, powerSum = 0.0;
+        for (int i = 0; i < kDynHistBins; ++i)
+        {
+            count += hist[i];
+            powerSum += hist[i] * std::pow (10.0, 0.1 * centre (i));
+        }
+        if (! (count > 0.0) || ! (powerSum > 0.0))
+            return;
+
+        const double gateDb = 10.0 * std::log10 (powerSum / count) - kBandDynamicsGateDb;
+        const int first = std::clamp ((int) std::ceil ((gateDb - kDynHistMinDb) / kDynHistStepDb - 0.5), 0, kDynHistBins);
+        double gated = 0.0;
+        for (int i = first; i < kDynHistBins; ++i)
+            gated += hist[i];
+        if (gated < (double) kBandDynamicsMinFrames)
+            return;
+
+        const auto percentile = [&] (double q)
+        {
+            const double target = q * gated;
+            double below = 0.0;
+            for (int i = first; i < kDynHistBins; ++i)
+            {
+                if (hist[i] > 0.0 && below + hist[i] >= target)
+                    return kDynHistMinDb + (i + (target - below) / hist[i]) * kDynHistStepDb;
+                below += hist[i];
+            }
+            return kDynHistMinDb + kDynHistBins * kDynHistStepDb;
+        };
+
+        rangeDb = (float) (percentile (0.95) - percentile (0.10));
+        peakDb = (float) (percentile (0.99) - percentile (0.50));
+    };
+
     for (int b = 0; b < kNumBands; ++b)
     {
         const auto& info = bandInfo (b);
@@ -422,6 +498,9 @@ TrackProfile TrackAnalyser::profile() const
 
         band.levelDb = dbOrNoValue (0.5 * (s.left + s.right));
         stereoStats (s, band.widthPct, band.correlation);
+
+        const auto& hist = recent ? bandHistRecent : bandHist;
+        bandDynamics (hist.data() + (size_t) (b * kDynHistBins), band.dynamicRangeDb, band.peakOverMedianDb);
     }
 
     {

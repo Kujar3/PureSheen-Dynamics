@@ -368,6 +368,43 @@ TEST_CASE ("ta. Peaks, RMS, crest and PLR")
     CHECK_NEAR (p.spectralLoudnessDb, p.integratedLufs, 0.1);
 }
 
+TEST_CASE ("ta. Band dynamics: a steady band reads ~0 dB, a band switching between two levels reads their spacing")
+{
+    const double sr = 48000.0, seconds = 12.0;
+    // Bass: a steady 120 Hz sine. Mids: a 1 kHz sine 1 s at -10 dB, then 2 s at -22 dB, and so on (12 dB apart; a
+    // third of the time loud, so the median is the quiet level).
+    auto x = pstest::sine (120.0, -12.0, seconds, sr);
+    const auto mid = pstest::sine (1000.0, -10.0, seconds, sr);
+    for (size_t i = 0; i < x.size(); ++i)
+        x[i] += ((i / (size_t) sr) % 3 == 0 ? 1.0f : 0.25119f) * mid[i];
+
+    for (auto mode : { Averaging::SinceReset, Averaging::Recent })
+    {
+        const auto p = analyseStereo (x, x, sr, mode);
+        const auto& bass = p.bands[(size_t) Band::Low];
+        const auto& mids = p.bands[(size_t) Band::Mid];
+        REQUIRE (ps::hasValue (bass.dynamicRangeDb));
+        REQUIRE (ps::hasValue (mids.dynamicRangeDb));
+        CHECK (bass.dynamicRangeDb < 0.5f);
+        CHECK (bass.peakOverMedianDb < 0.5f);
+        // Frames straddling a switch read in between, so the spread is close to 12 dB, not exact.
+        CHECK_NEAR (mids.dynamicRangeDb, 12.0, 1.0);
+        CHECK_NEAR (mids.peakOverMedianDb, 12.0, 1.0);
+        if (mode == Averaging::SinceReset)
+        {
+            pstest::note ("two-level mids: dynamic range dB (expect ~12)", mids.dynamicRangeDb);
+            pstest::note ("two-level mids: peak over median dB", mids.peakOverMedianDb);
+        }
+    }
+
+    // A band with no content has no reading, and too short a stretch has none either.
+    const auto steady = analyseStereo (pstest::sine (1000.0, -10.0, seconds, sr), pstest::sine (1000.0, -10.0, seconds, sr), sr);
+    CHECK (! ps::hasValue (steady.bands[(size_t) Band::Sub].dynamicRangeDb)
+           || steady.bands[(size_t) Band::Sub].levelDb < -90.0f);
+    const auto shortRun = pstest::sine (1000.0, -10.0, 1.2, sr);
+    CHECK (! ps::hasValue (analyseStereo (shortRun, shortRun, sr).bands[(size_t) Band::Mid].dynamicRangeDb));
+}
+
 TEST_CASE ("ta. PLR ignores the overshoot between samples (clipped masters must not look more dynamic)")
 {
     // A sine at a quarter of the sample rate, 45 degrees off the sample grid: every sample is at +-0.707 of the true

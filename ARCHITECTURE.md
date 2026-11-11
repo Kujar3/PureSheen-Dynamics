@@ -1023,6 +1023,27 @@ The Assistant's lowest target is `kMinTargetLufs` = -24. Going below the referen
 "Film and TV -23 LUFS" and "US Broadcast -24 LUFS" (category Film and Broadcast) use only the Maximizer, because a film mix
 should stay as mixed, and trim sets their level; "Film Target -23" and "Broadcast Target -24" are the module presets.
 
+## Monitoring options, band dynamics and macOS (1.2)
+
+From a user's feedback. Two options in the Options menu, stored with the other UI options (per instance, in the
+session) and applied to the chain by the processor (`applyMonitoringOptions`), so they hold with no editor open:
+- Gain Match > "Meters show the output without the match gain" (`Chain::setMetersIgnoreGainMatch`): the output taps
+  (IoMeters' output values and the output FIFO, so the I/O panel, analysers and the connector) get the same mix without
+  either match gain. Modern mode then levels what is heard while the meters read the master. They leave out the dither.
+- "Keep the Maximizer on while soloing a module" (`Chain::setSoloKeepsMaximizer`): a powered Maximizer stays enabled
+  while another module is soloed. Gain match stays frozen (solo is still monitoring).
+
+`TrackAnalyser` keeps, per analysis band, a histogram of the band's level in each frame (0.25 dB steps, since reset and
+forgetting like Recent). `BandStats::dynamicRangeDb` (95th - 10th percentile) and `peakOverMedianDb` (99th - 50th) are
+read from it, frames more than 20 dB below the band's mean power left out. The connector's `get_comparison` gives
+them for master and reference, and `get_meters` the multiband Dynamics' per-band detector and gain values.
+
+macOS: `CMAKE_OSX_DEPLOYMENT_TARGET` 11.0, Audio Units added on Apple, `.github/workflows/macos.yml` builds universal
+binaries, packages them with `scripts/package-mac.sh`, and runs the tests and auval. Apple's C++ library has
+floating-point `to_chars` / `from_chars` only from macOS 13.3 / 26, so `core/NumberText.h` uses a classic-locale stream
+there. The helper is `PureSheenBridge` without `.exe`, found in `/Applications/PureSheen Dynamics`, and checks for dead
+instances with `kill (pid, 0)`.
+
 ## Connection to Claude (phase 4)
 
 Lets Claude Desktop or Claude Code control the suite over MCP. Suite only: a single-module plugin has no bridge. Three parts:
