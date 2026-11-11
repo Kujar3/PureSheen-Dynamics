@@ -55,10 +55,7 @@
 // learn, delta); each "is neutral" check has a counterpart that proves the path does audible work when it should.
 // Every other check tests the processor itself.
 
-namespace juce::detail
-{
-bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
-}
+#include "MessagePump.h"
 
 namespace
 {
@@ -2699,12 +2696,7 @@ void testTsPanelBindings()
             prompt->getTextEditor ("text")->setText (text, false);
             prompt->exitModalState (1);
         }
-       #if JUCE_WINDOWS || JUCE_LINUX
-        const auto end = juce::Time::getMillisecondCounter() + 50u;
-        while (juce::Time::getMillisecondCounter() < end)
-            if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
-                juce::Thread::sleep (1);
-       #endif
+        ps::dev::pumpMessages (50);
     };
     p.setParameterValue ("img.b1.width", 45.0f);
     p.setParameterValue ("img.b.b1.width", -55.0f);
@@ -3002,12 +2994,7 @@ void testPromptLifetime()
 {
     const auto pump = []
     {
-       #if JUCE_WINDOWS || JUCE_LINUX
-        const auto end = juce::Time::getMillisecondCounter() + 50u;
-        while (juce::Time::getMillisecondCounter() < end)
-            if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
-                juce::Thread::sleep (1);
-       #endif
+        ps::dev::pumpMessages (50);
     };
     int calls = 0;
     auto parent = std::make_unique<juce::Component>();

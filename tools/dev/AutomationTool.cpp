@@ -19,10 +19,7 @@
 // the way a clip does, block by block, and writes how much sharper the output's steps get than at the same settings
 // held still, and whether the visible panel changed. Band 2 and up and channel set B run the same code, so they are
 // left out.
-namespace juce::detail
-{
-bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
-}
+#include "MessagePump.h"
 
 namespace
 {
@@ -45,13 +42,7 @@ void check (bool ok, const juce::String& name, const juce::String& detail = {})
     }
 }
 
-void pumpMessages (int milliseconds)
-{
-    const auto end = juce::Time::getMillisecondCounter() + (juce::uint32) milliseconds;
-    while (juce::Time::getMillisecondCounter() < end)
-        if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
-            juce::Thread::sleep (1);
-}
+void pumpMessages (int milliseconds) { ps::dev::pumpMessages (milliseconds); }
 
 // A value change the way a host's automation delivers it: no gesture, and the host is told nothing back.
 void automate (juce::RangedAudioParameter& p, float normalised)

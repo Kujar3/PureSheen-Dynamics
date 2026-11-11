@@ -18,10 +18,7 @@
 // Every single-module plugin is the processor locked to one module. These checks cover what the lock promises: the
 // parameter set, the chain, the state, the presets it shares with the suite, realtime safety, and that it sounds like
 // the suite with only that module in the chain. The snapshots show each panel at the three window sizes.
-namespace juce::detail
-{
-bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
-}
+#include "MessagePump.h"
 
 namespace
 {

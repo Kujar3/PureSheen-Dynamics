@@ -31,18 +31,48 @@ jobs:
           git -C third_party/clap-juce-extensions submodule update --init --recursive
           git -C third_party/clap-juce-extensions apply "$GITHUB_WORKSPACE/scripts/clap-juce-extensions-state-rescan.patch"
 
-      - name: Install Ninja
-        run: brew install ninja
+      - name: Install Ninja and ccache
+        run: brew install ninja ccache
+
+      # A full build takes about two hours on the runner; ccache keeps the objects between runs. The cache is saved
+      # even when the build fails, so a fix-and-rerun only compiles what changed.
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-macos-${{ github.sha }}
+          restore-keys: ccache-macos-
 
       - name: Configure
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
+          ccache --set-config=max_size=5G
+          ccache --zero-stats
           cmake -S . -B build-mac -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DPURESHEEN_LINK_JOBS=2
 
-      - name: Build
+      # The test tools first: they are quick, and a failure there shows before the plugins have taken their two hours.
+      - name: Build the tests and the connector
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: cmake --build build-mac --target CoreTests PureSheenDev PureSheenBridge
+
+      - name: Build the plugins
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           cmake --build build-mac --target PureSheen_VST3 PureSheen_AU PureSheen_CLAP PureSheen_Standalone \
-            PureSheenSingles PureSheenBridge CoreTests PureSheenDev
+            PureSheenSingles
+          ccache --show-stats
+
+      - name: Save the compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-macos-${{ github.sha }}
 
       - name: Package
         run: bash scripts/package-mac.sh build-mac dist

@@ -35,28 +35,14 @@
 // UI checks (any failure fails the command): every module panel builds controls, the chain feeds its UI taps, nothing
 // in the editor takes keyboard focus, the History popup and Help overlay open, a chain drag reorders the processor's
 // chain.
-namespace juce::detail
-{
-bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
-}
+#include "MessagePump.h"
 
 namespace
 {
 constexpr double kSampleRate = 48000.0;
 constexpr int kBlock = 1600;   // one 30 Hz tick at 48 kHz
 
-void pumpMessages (int milliseconds)
-{
-   #if JUCE_WINDOWS || JUCE_LINUX
-    const auto end = juce::Time::getMillisecondCounter() + (juce::uint32) milliseconds;
-
-    while (juce::Time::getMillisecondCounter() < end)
-        if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
-            juce::Thread::sleep (2);
-   #else
-    juce::ignoreUnused (milliseconds);
-   #endif
-}
+void pumpMessages (int milliseconds) { ps::dev::pumpMessages (milliseconds, 2); }
 
 bool writeImage (const juce::Image& image, const juce::File& file)
 {

@@ -15,20 +15,11 @@
 //   (default "stop") appears in <folder>.
 // PureSheenDev bridgetest
 //   The connection itself, in this process: refusals, and what a command does to the processor.
-namespace juce::detail
-{
-bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
-}
+#include "MessagePump.h"
 
 namespace
 {
-void pump (int milliseconds)
-{
-    const auto end = juce::Time::getMillisecondCounter() + (juce::uint32) milliseconds;
-    while (juce::Time::getMillisecondCounter() < end)
-        if (! juce::detail::dispatchNextMessageOnSystemQueue (true))
-            juce::Thread::sleep (1);
-}
+void pump (int milliseconds) { ps::dev::pumpMessages (milliseconds); }
 
 // Plays a quiet stereo tone through the processor, as a host would (this thread stands in for the audio thread).
 class FakeAudio final : private juce::Thread
