@@ -1,11 +1,16 @@
 # macOS build: every plugin as VST3, Audio Unit and CLAP (universal: Apple Silicon + Intel, macOS 11 or newer), the
 # standalone app and the Claude connector, in one zip (scripts/package-mac.sh). Run it from the Actions tab ("Run
-# workflow"); a version tag runs it too. The zip is the run's artifact. Then the tests run on the same machine:
-# CoreTests, the processor self-test, the connector tests and Apple's auval on every Audio Unit.
+# workflow"); a version tag runs it too. The zip is the run's artifact. The tests run on the same machine: CoreTests,
+# the processor self-test, the connector tests and Apple's auval on every Audio Unit.
 name: macOS build
 
 on:
   workflow_dispatch:
+    inputs:
+      plugins:
+        description: "Build, package and check the plugins (off: only the tests, about 30 minutes)"
+        type: boolean
+        default: true
   push:
     tags: ["v*"]
 
@@ -22,6 +27,7 @@ jobs:
       CJE_COMMIT: 7adee3a1bd4684d4caa5601100e364abccff4b4d
       # Shared 3-core virtual machines: speed checks print their numbers but do not fail (tests/TestFramework.h).
       PURESHEEN_SLOW_MACHINE: "1"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v4
 
@@ -36,18 +42,16 @@ jobs:
       - name: Install Ninja and ccache
         run: brew install ninja ccache
 
-      # A full build takes about two hours on the runner; ccache keeps the objects between runs. The cache is saved
-      # even when the build fails, so a fix-and-rerun only compiles what changed.
+      # A full build takes about two hours on the runner; ccache keeps the objects between runs (the newest cache is
+      # restored). It is saved even when the build fails, so a fix-and-rerun only compiles what changed.
       - name: Restore the compiler cache
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-macos-${{ github.sha }}
+          key: ccache-macos-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-macos-
 
       - name: Configure
-        env:
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           ccache --set-config=max_size=5G
           ccache --zero-stats
@@ -55,62 +59,68 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DPURESHEEN_LINK_JOBS=2
 
-      # The test tools first: they are quick, and a failure there shows before the plugins have taken their two hours.
+      # The test tools first, and the tests right after them: a failure shows before the plugins take their two hours.
       - name: Build the tests and the connector
-        env:
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        id: tools
         run: cmake --build build-mac --target CoreTests PureSheenDev PureSheenBridge
 
+      # One step per tool, each run whatever the others did, so one failure does not hide the rest.
+      - name: CoreTests
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: build-mac/CoreTests
+
+      - name: Processor self-test (and the single-module plugins)
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev selftest
+
+      - name: Connector test in the processor
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev bridgetest
+
+      - name: Import test
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev importtest
+
+      - name: Connector helper end to end
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: |
+          python3 tools/bridge/test_bridge.py "$GITHUB_WORKSPACE/build-mac/PureSheenBridge_artefacts/Release/PureSheenBridge" \
+            "$GITHUB_WORKSPACE/build-mac/PureSheenDev_artefacts/Release/PureSheenDev"
+
+      # Built whatever the tests said (the job still fails if one did); a manual run can leave the plugins out.
       - name: Build the plugins
-        env:
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        id: plugins
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.plugins) }}
         run: |
           cmake --build build-mac --target PureSheen_VST3 PureSheen_AU PureSheen_CLAP PureSheen_Standalone \
             PureSheenSingles
-          ccache --show-stats
+
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache --show-stats || true
 
       - name: Save the compiler cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: ccache-macos-${{ github.sha }}
+          key: ccache-macos-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Package
+        id: package
+        if: ${{ !cancelled() && steps.plugins.outcome == 'success' }}
         run: bash scripts/package-mac.sh build-mac dist
 
       - name: Upload the zip
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: PureSheen-macOS
           path: dist/*.zip
           retention-days: 30
 
-      - name: CoreTests
-        if: always()
-        run: build-mac/CoreTests
-
-      # One step per tool, each run whatever the others did, so one failure does not hide the rest.
-      - name: Processor self-test (and the single-module plugins)
-        if: always()
-        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev selftest
-
-      - name: Connector test in the processor
-        if: always()
-        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev bridgetest
-
-      - name: Import test
-        if: always()
-        run: build-mac/PureSheenDev_artefacts/Release/PureSheenDev importtest
-
-      - name: Connector helper end to end
-        if: always()
-        run: |
-          python3 tools/bridge/test_bridge.py "$GITHUB_WORKSPACE/build-mac/PureSheenBridge_artefacts/Release/PureSheenBridge" \
-            "$GITHUB_WORKSPACE/build-mac/PureSheenDev_artefacts/Release/PureSheenDev"
-
       - name: auval (every Audio Unit)
-        if: always()
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: |
           mkdir -p ~/Library/Audio/Plug-Ins/Components
           ditto dist/PureSheen-Complete-*-macOS/Components ~/Library/Audio/Plug-Ins/Components

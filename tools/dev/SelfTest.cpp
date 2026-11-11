@@ -2697,34 +2697,45 @@ void testTsPanelBindings()
                                 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &c, &c, juce::Time(), pos, juce::Time(), 1, false);
     };
     const auto bandEvent = eventAt (display, display.getBandArea (0).getCentre());
-    // A band's double-click asks for a value: answer the prompt.
+    // A band's double-click asks for a value: answer the prompt. The first window of the process can take a while to
+    // open on a slow machine, hence the long waits (they end as soon as the prompt is there / gone).
     const auto answerPrompt = [] (const char* text)
     {
         auto& modal = *juce::ModalComponentManager::getInstance();
-        ps::dev::pumpUntil ([&] { return modal.getNumModalComponents() > 0; }, 2000);
+        const bool opened = ps::dev::pumpUntil ([&] { return modal.getNumModalComponents() > 0; }, 10000);
+        bool answered = false;
         if (auto* prompt = dynamic_cast<juce::AlertWindow*> (modal.getModalComponent (0)))
-        {
-            prompt->getTextEditor ("text")->setText (text, false);
-            prompt->exitModalState (1);
-        }
+            if (auto* editor = prompt->getTextEditor ("text"))
+            {
+                editor->setText (text, false);
+                prompt->exitModalState (1);
+                answered = true;
+            }
         // the answer arrives through an async callback once the prompt has closed
-        ps::dev::pumpUntil ([&] { return modal.getNumModalComponents() == 0; }, 2000);
+        const bool closed = ps::dev::pumpUntil ([&] { return modal.getNumModalComponents() == 0; }, 10000);
         ps::dev::pumpMessages (50);
+        return juce::String ("prompt opened ") + (opened ? "yes" : "no") + ", answered " + (answered ? "yes" : "no")
+               + ", closed " + (closed ? "yes" : "no");
+    };
+    const auto widths = [&p] (const juce::String& prompt)
+    {
+        return (prompt + "; widths A " + juce::String (p.getParameterValue ("img.b1.width"))
+                + ", B " + juce::String (p.getParameterValue ("img.b.b1.width"))).toStdString();
     };
     p.setParameterValue ("img.b1.width", 45.0f);
     p.setParameterValue ("img.b.b1.width", -55.0f);
     display.onBandDoubleClick (0, bandEvent);
-    answerPrompt ("0");
+    const auto firstPrompt = answerPrompt ("0");
     check (p.getParameterValue ("img.b1.width") == 45.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
-           "UI: Imager Sustain width edit affects only set B when unlinked");
+           "UI: Imager Sustain width edit affects only set B when unlinked", widths (firstPrompt));
 
     p.setParameterValue ("img.link", 1.0f);
     panel.refresh();
     p.setParameterValue ("img.b.b1.width", -55.0f);
     display.onBandDoubleClick (0, bandEvent);
-    answerPrompt ("0");
+    const auto linkedPrompt = answerPrompt ("0");
     check (p.getParameterValue ("img.b1.width") == 0.0f && p.getParameterValue ("img.b.b1.width") == 0.0f,
-           "UI: Imager linked width edit updates both T/S sets");
+           "UI: Imager linked width edit updates both T/S sets", widths (linkedPrompt));
 
     p.setParameterValue ("img.link", 0.0f);
     panel.refresh();

@@ -592,6 +592,19 @@ TEST_CASE ("import.core. compound controls clamp extreme finite inputs without o
             CHECK (std::isfinite (plain));
     }
 
+    // One control at a time first, so a failure names the control that raised the flag.
+    for (const char* control : { "After Gain", "Aux: After Gain", "After Freq", "Aux: After Freq" })
+        for (const char* v : { "1e308", "-1e308" })
+        {
+            std::feclearexcept (FE_ALL_EXCEPT);
+            const auto one = importModule ("Glow", "120000", { param ("Split", "1"), param (control, v) });
+            const int raised = std::fetestexcept (FE_INVALID | FE_OVERFLOW);
+            REQUIRE (one.ok);
+            if (raised != 0)
+                pstest::reportFailure (__FILE__, __LINE__, std::string ("exciter post filter: ") + control + " = " + v
+                                                               + " raised floating point flags " + std::to_string (raised));
+        }
+
     std::feclearexcept (FE_ALL_EXCEPT);
     const auto post = importModule ("Glow", "120000", { param ("Split", "1"), param ("After Gain", "1e308"),
                                                         param ("Aux: After Gain", "-1e308"),

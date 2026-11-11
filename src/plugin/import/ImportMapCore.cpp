@@ -597,9 +597,11 @@ void exciterFinish (ModuleImport& m)
         }
     }
 
-    // Post filter (ours is shared; a gain of 0 dB is no filter).
-    const double gainA = m.getOr (kExcPostGain, -1, 0, 0.0);
-    const double freqA = m.get (kExcPostFreq, -1, 0);
+    // Post filter (ours is shared; a gain of 0 dB is no filter). Hostile magnitudes are bounded before any arithmetic
+    // (set() clamps them to our range anyway); clang on Apple Silicon raised the overflow flag on them.
+    const auto bounded = [] (double v) { return std::isnan (v) ? v : std::clamp (v, -1.0e12, 1.0e12); };
+    const double gainA = bounded (m.getOr (kExcPostGain, -1, 0, 0.0));
+    const double freqA = bounded (m.get (kExcPostFreq, -1, 0));
     m.set ("~.post.gain", gainA);
     m.set ("~.post.on", std::abs (gainA) > 0.01 ? 1.0 : 0.0);
     if (! std::isnan (freqA))
@@ -608,8 +610,8 @@ void exciterFinish (ModuleImport& m)
     // Set B is read as ignored (marked first, so reading it does not count it as imported).
     m.ignore (kExcPostGain, -1, 1);
     m.ignore (kExcPostFreq, -1, 1);
-    const double gainB = m.getOr (kExcPostGain, -1, 1, 0.0);
-    const double freqB = m.get (kExcPostFreq, -1, 1);
+    const double gainB = bounded (m.getOr (kExcPostGain, -1, 1, 0.0));
+    const double freqB = bounded (m.get (kExcPostFreq, -1, 1));
     const bool gainsDiffer = std::abs (addFinite (gainB, -gainA)) > 1.0e-4;
     const bool freqsDiffer = (std::abs (gainA) > 0.01 || std::abs (gainB) > 0.01) && ! std::isnan (freqA)
                              && ! std::isnan (freqB) && std::abs (addFinite (freqB, -freqA)) > 0.01;

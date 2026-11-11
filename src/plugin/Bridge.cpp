@@ -10,6 +10,8 @@
 
 #if JUCE_WINDOWS
  #include <process.h>
+#else
+ #include <unistd.h>
 #endif
 
 namespace psplug
@@ -35,12 +37,13 @@ bool sameToken (const juce::String& a, const juce::String& b)
     return difference == 0;
 }
 
+// The helper drops an instance file whose process is gone, so every platform must write its real id.
 int currentProcessId()
 {
    #if JUCE_WINDOWS
     return (int) _getpid();
    #else
-    return 0;
+    return (int) getpid();
    #endif
 }
 

@@ -69,10 +69,24 @@ struct Client
 
     bool connect (int port) { return socket.connect ("127.0.0.1", port, 1000); }
 
+    // A read without waiting leaves a JUCE socket non-blocking, and on macOS a long write then sends only a part:
+    // write until all of it is out (or the other end has closed).
     bool send (const juce::String& line)
     {
         const auto text = line + "\n";
-        return socket.write (text.toRawUTF8(), (int) text.getNumBytesAsUTF8()) > 0;
+        const char* data = text.toRawUTF8();
+        int left = (int) text.getNumBytesAsUTF8();
+        while (left > 0)
+        {
+            if (socket.waitUntilReady (false, 3000) <= 0)
+                return false;
+            const int written = socket.write (data, left);
+            if (written <= 0)
+                return false;
+            data += written;
+            left -= written;
+        }
+        return true;
     }
 
     // Empty: closed, or nothing within the time.
@@ -194,6 +208,7 @@ int runBridgeTests()
     const int port = (int) info["port"];
     const auto token = info["token"].toString();
     check (port > 0 && token.length() == 48, "port and a long token");
+    check ((int) info["pid"] > 0, "the process id (the helper drops files of processes that are gone)");
 
     const auto hello = "{\"protocol\":1,\"token\":\"" + token + "\"}";
 

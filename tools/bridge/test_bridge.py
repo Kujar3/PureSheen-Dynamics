@@ -168,6 +168,9 @@ def main():
     try:
         instances = helper.tool_json("list_instances")["instances"]
         check(len(instances) == 1, "one instance")
+        if not instances:
+            print(f"test_bridge: the helper found no instance, so the rest cannot run ({checks - failures} passed, {failures} failed)")
+            return 1
         instance_id = instances[0]["id"]
 
         status = helper.tool_json("get_status")
