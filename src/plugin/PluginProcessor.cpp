@@ -449,6 +449,7 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
     // Message thread. For the connector's meters and comparison: when the settings last changed, and how far the
     // master's analysis had got by then.
     double lastChangeMs = -1.0, lastMeterReadMs = -1.0, analysedAtChange = 0.0;
+    double lastConnectorMs = -1.0;   // (1.3) the last connector command; < 0: none, or too long ago to keep analysing
     int analysisRunAtChange = -1;
     void noteSettingsChanged();
 
@@ -834,6 +835,12 @@ struct PureSheenProcessor::Impl final : private juce::Timer,
             const ScopedRequest origin (*this, assistantRequest);
             if (assistant != nullptr)
                 assistant->tick();       // Assistant: start the analysis when the capture is full, collect results
+            if (referencing != nullptr && lastConnectorMs >= 0.0
+                && nowMs() - lastConnectorMs > PureSheenProcessor::kConnectorAnalysisMinutes * 60000.0)
+            {
+                lastConnectorMs = -1.0;
+                referencing->setMasterAnalysisWanted (false);   // the connector went quiet: no analysis nobody reads
+            }
             if (referencing != nullptr && referencing->tick()) // Track Referencing: finished loads, queued restores, the Assistant link
                 owner.sendChangeMessage();
         }
@@ -1034,6 +1041,7 @@ void PureSheenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         d.values[(size_t) d.ditherOnIndex] = d.values[(size_t) d.bypassIndex] > 0.5f ? 0.0f : 1.0f;
 
     ps::HostInfo host;
+    host.offline = isNonRealtime();   // an export: the chain ignores monitoring (Gain Match, solo, Delta ...)
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
         {
@@ -2074,6 +2082,13 @@ double PureSheenProcessor::takeSecondsSinceMeterRead()
     const double now = nowMs(), last = impl->lastMeterReadMs;
     impl->lastMeterReadMs = now;
     return last < 0.0 ? -1.0 : (now - last) / 1000.0;
+}
+
+void PureSheenProcessor::noteConnectorActivity()
+{
+    impl->lastConnectorMs = nowMs();
+    if (impl->referencing != nullptr)
+        impl->referencing->setMasterAnalysisWanted (true);
 }
 
 int PureSheenProcessor::beginClaudeRequest() { return impl->historyRequest = ++impl->lastRequest; }

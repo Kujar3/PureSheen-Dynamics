@@ -12,6 +12,7 @@ namespace psplug
 namespace
 {
 constexpr float kSilentMeanSquare = 1.0e-7f;   // -70 dBFS
+constexpr double kMinHeardSeconds = 1.0;       // a whole-song listen that heard less has nothing to analyse
 constexpr double kMaxFileSeconds = 600.0;       // "Analyse a file": longest file read
 
 const juce::Identifier kTag ("Assistant"), kCard ("Card"), kP ("P"), kRef ("Reference");
@@ -183,7 +184,11 @@ void Assistant::pushAudio (const float* left, const float* right, int numSamples
         for (int i = 0; i < numSamples; ++i)
             sq += 0.5 * ((double) left[i] * left[i] + (double) right[i] * right[i]);
 
-        if (sq / numSamples >= kSilentMeanSquare)
+        if (sq / numSamples >= kSilentMeanSquare && capWhole.load (std::memory_order_relaxed))
+        {
+            pushWhole (l, r, left, right, numSamples);
+        }
+        else if (sq / numSamples >= kSilentMeanSquare)
         {
             const long long cap = capCapacity.load();
             const long long at = capWritten.load();
@@ -199,6 +204,59 @@ void Assistant::pushAudio (const float* left, const float* right, int numSamples
     capBusy.store (false);
 }
 
+// Whole-song listen, audio thread: both fills take the block; a fill that completes a window louder than the best so
+// far becomes the best, and goes on in the window the old best (or nobody) had.
+void Assistant::pushWhole (float* l, float* r, const float* left, const float* right, int numSamples) noexcept
+{
+    const long long window = capCapacity.load();
+    if (window <= 0)
+        return;
+
+    for (int t = 0; t < 2; ++t)
+    {
+        long long at = whole.written[t];
+        int done = 0;
+        while (done < numSamples)
+        {
+            if (at < 0)   // the second fill has not started yet
+            {
+                const auto skip = (int) std::min<long long> (numSamples - done, -at);
+                at += skip;
+                done += skip;
+                continue;
+            }
+            const auto n = (int) std::min<long long> (numSamples - done, window - at);
+            float* dl = l + (long long) whole.buffer[t] * window + at;
+            float* dr = r + (long long) whole.buffer[t] * window + at;
+            double energy = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                const float a = left[done + i], b = right[done + i];
+                dl[i] = a;
+                dr[i] = b;
+                energy += (double) a * a + (double) b * b;
+            }
+            whole.energy[t] += energy;
+            at += n;
+            done += n;
+            if (at == window)
+            {
+                if (whole.energy[t] > whole.bestEnergy)
+                {
+                    const int unused = whole.best >= 0 ? whole.best : whole.spare;
+                    whole.best = whole.buffer[t];
+                    whole.bestEnergy = whole.energy[t];
+                    whole.buffer[t] = unused;
+                }
+                whole.energy[t] = 0.0;
+                at = 0;
+            }
+        }
+        whole.written[t] = at;
+    }
+    capHeard.store (capHeard.load (std::memory_order_relaxed) + numSamples);
+}
+
 void Assistant::releaseCapture()
 {
     capArmed.store (false);
@@ -208,6 +266,8 @@ void Assistant::releaseCapture()
         std::this_thread::yield();
     capCapacity.store (0);
     capWritten.store (0);
+    capWhole.store (false);
+    capHeard.store (0);
     std::vector<float>().swap (captureL);
     std::vector<float>().swap (captureR);
 }
@@ -265,6 +325,7 @@ void Assistant::setSettings (const Settings& s, bool rebuildNow)
 {
     settings = s;
     settings.analysisSeconds = std::clamp (finiteOr (s.analysisSeconds, 8.0f), kMinSeconds, kMaxSeconds);
+    settings.wholeSong = s.wholeSong;
     settings.engine.loudnessLufs = std::clamp (finiteOr (s.engine.loudnessLufs, -10.0f), ps::assist::kMinTargetLufs,
                                                ps::assist::kMaxTargetLufs);
     settings.engine.ceilingDb = std::clamp (finiteOr (s.engine.ceilingDb, -0.1f), -3.0f, 0.0f);
@@ -302,16 +363,90 @@ void Assistant::startListening()
     stopRequested.store (false);
 
     const auto capacity = (long long) std::ceil (settings.analysisSeconds * sampleRate.load());
-    captureL.assign ((size_t) capacity, 0.0f);
-    captureR.assign ((size_t) capacity, 0.0f);
+    const size_t windows = settings.wholeSong ? 3 : 1;
+    captureL.assign ((size_t) capacity * windows, 0.0f);
+    captureR.assign ((size_t) capacity * windows, 0.0f);
     capWritten.store (0);
     capCapacity.store (capacity);
+    whole = {};
+    whole.written[1] = -(capacity / 2);
+    capHeard.store (0);
+    heardSeen = 0;
+    heardSeenMs = juce::Time::getMillisecondCounterHiRes();
+    capWhole.store (settings.wholeSong);
     capL.store (captureL.data());
     capR.store (captureR.data());
     progress.store (0.0f);
     phase.store ((int) Phase::Listening);
-    status = "Play the loudest part of your track.";
+    status = settings.wholeSong ? "Play your song." : "Play the loudest part of your track.";
     capArmed.store (true);
+    changed();
+}
+
+double Assistant::getHeardSeconds() const noexcept
+{
+    return (double) (capWhole.load() ? capHeard.load() : capWritten.load()) / sampleRate.load();
+}
+
+bool Assistant::finishListening()
+{
+    if (getPhase() != Phase::Listening || ! capWhole.load())
+        return false;
+    if (stopRequested.load())   // the sample rate changed under this listen: the next tick cancels it
+        return false;
+
+    capArmed.store (false);
+    while (capBusy.load())
+        std::this_thread::yield();
+
+    // The loudest finished window; a song shorter than one window is the part of the first fill.
+    const auto window = (size_t) capCapacity.load();
+    size_t from = 0, length = (size_t) std::max<long long> (0, std::min<long long> (capHeard.load(), (long long) window));
+    if (whole.best >= 0)
+    {
+        from = (size_t) whole.best * window;
+        length = window;
+    }
+    else
+    {
+        from = (size_t) whole.buffer[0] * window;
+    }
+
+    if ((double) length < kMinHeardSeconds * sampleRate.load())
+    {
+        releaseCapture();
+        invalidateResults();
+        phase.store ((int) (suggestions.empty() ? Phase::Failed : Phase::Ready));
+        progress.store (0.0f);
+        status = "Not enough audio was heard. Play the track and try again.";
+        changed();
+        return true;
+    }
+
+    std::vector<float> l (captureL.begin() + (std::ptrdiff_t) from, captureL.begin() + (std::ptrdiff_t) (from + length));
+    std::vector<float> r (captureR.begin() + (std::ptrdiff_t) from, captureR.begin() + (std::ptrdiff_t) (from + length));
+    analyseCapture (std::move (l), std::move (r));
+    return true;
+}
+
+void Assistant::analyseCapture (std::vector<float> left, std::vector<float> right)
+{
+    lastLeft = std::move (left);
+    lastRight = std::move (right);
+    lastRate = sampleRate.load();
+    releaseCapture();
+    invalidateResults();
+    phase.store ((int) Phase::Analysing);
+    progress.store (0.0f);
+    status = "Analysing...";
+    auto l = lastLeft, r = lastRight;
+    const double rate = lastRate;
+    const auto set = settings;
+    const auto ref = reference;
+    const int gen = generation.load();
+    startWorker ([this, gen, l, r, rate, set, ref]() mutable {
+        runAnalysis (gen, std::move (l), std::move (r), rate, set, ref, true);
+    });
     changed();
 }
 
@@ -369,7 +504,8 @@ float Assistant::getProgress() const noexcept
     if (getPhase() == Phase::Listening)
     {
         const auto cap = capCapacity.load();
-        return cap > 0 ? juce::jlimit (0.0f, 1.0f, (float) capWritten.load() / (float) cap) : 0.0f;
+        const auto got = capWhole.load() ? capHeard.load() : capWritten.load();   // whole song: full after one window
+        return cap > 0 ? juce::jlimit (0.0f, 1.0f, (float) got / (float) cap) : 0.0f;
     }
     return workerActive.load() ? progress.load() : 0.0f;
 }
@@ -378,6 +514,14 @@ juce::String Assistant::getStatusText() const
 {
     if (getPhase() == Phase::Listening)
     {
+        if (capWhole.load())
+        {
+            const int heardSeconds = (int) getHeardSeconds();
+            if (heardSeconds < 1)
+                return "Play your song. Stop playback when it has played.";
+            return "Listening to the whole song... " + juce::String (heardSeconds / 60) + ":"
+                   + juce::String (heardSeconds % 60).paddedLeft ('0', 2) + " heard. Stop playback when it has played.";
+        }
         const auto heard = (double) capWritten.load() / sampleRate.load();
         if (heard < 0.05)
             return "Play the loudest part of your track.";
@@ -478,29 +622,30 @@ void Assistant::tick()
     if (stopRequested.exchange (false) && getPhase() == Phase::Listening)
         cancel();
 
+    // Whole song: over when the audio has stopped for a while (playback stopped) or after the longest song we take
+    if (getPhase() == Phase::Listening && capWhole.load())
+    {
+        const long long heard = capHeard.load();
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (heard != heardSeen)
+        {
+            heardSeen = heard;
+            heardSeenMs = now;
+        }
+        const double rate = sampleRate.load();
+        // Any audio heard counts for the stop: after less than kMinHeardSeconds it ends as "not enough audio".
+        if ((heard > 0 && now - heardSeenMs > kWholeSongStopSeconds * 1000.0)
+            || heard >= (long long) (kWholeSongMaxSeconds * rate))
+            finishListening();
+    }
+
     // Capture full -> analyse
-    if (getPhase() == Phase::Listening && capCapacity.load() > 0 && capWritten.load() >= capCapacity.load())
+    if (getPhase() == Phase::Listening && ! capWhole.load() && capCapacity.load() > 0 && capWritten.load() >= capCapacity.load())
     {
         capArmed.store (false);
         while (capBusy.load())
             std::this_thread::yield();
-        lastLeft = captureL;
-        lastRight = captureR;
-        lastRate = sampleRate.load();
-        releaseCapture();
-        invalidateResults();
-        phase.store ((int) Phase::Analysing);
-        progress.store (0.0f);
-        status = "Analysing...";
-        auto l = lastLeft, r = lastRight;
-        const double rate = lastRate;
-        const auto set = settings;
-        const auto ref = reference;
-        const int gen = generation.load();
-        startWorker ([this, gen, l, r, rate, set, ref]() mutable {
-            runAnalysis (gen, std::move (l), std::move (r), rate, set, ref, true);
-        });
-        changed();
+        analyseCapture (captureL, captureR);
     }
 
     if (! pendingFlag.exchange (false))
@@ -715,6 +860,7 @@ juce::ValueTree Assistant::buildStateTree() const
     t.setProperty ("useReference", e.useReference, nullptr);
     t.setProperty ("allowed", juce::String::toHexString ((juce::int64) e.allowedModules), nullptr);
     t.setProperty ("seconds", settings.analysisSeconds, nullptr);
+    t.setProperty ("wholeSong", settings.wholeSong, nullptr);
     t.setProperty ("loudnessMatched", loudnessMatched, nullptr);
     t.setProperty ("applied", applied, nullptr);
     t.setProperty ("detected", (int) detected, nullptr);
@@ -833,6 +979,7 @@ void Assistant::restoreNow (const juce::ValueTree& t)
     e.useReference = (bool) t.getProperty ("useReference", true);
     e.allowedModules = (unsigned) t.getProperty ("allowed", "ffffffff").toString().getHexValue64();
     settings.analysisSeconds = std::clamp (prop (t, "seconds", 8.0f), kMinSeconds, kMaxSeconds);
+    settings.wholeSong = (bool) t.getProperty ("wholeSong", false);
     loudnessMatched = (bool) t.getProperty ("loudnessMatched", true);
     detected = (ps::ToneTarget) std::clamp ((int) t.getProperty ("detected", 0), 0, (int) ps::ToneTarget::Count - 1);
     inputLufs = prop (t, "inputLufs", ps::kNoValue);

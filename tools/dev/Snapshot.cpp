@@ -1035,9 +1035,17 @@ int runSnapshot (const juce::File& outputDir)
 
                 h = h2;
                 const auto lowHandle = d->getHandleArea (false).getCentre();
+                // Since 0.6.1 a double-click types a value (right-click resets): it opens the prompt and edits nothing.
+                const float low2 = value ("defn.a.low");
                 d->mouseDoubleClick (event (d, lowHandle, lowHandle, left, 2));
+                pumpMessages (50);
+                auto& modal = *juce::ModalComponentManager::getInstance();
+                const bool prompted = modal.getNumModalComponents() > 0;
+                modal.cancelAllModalComponents();
+                pumpMessages (50);
                 h2 = steps();
-                report (std::abs (value ("defn.a.low") - 300.0f) < 0.5f && h2 == h + 1, "double-click resets the low cutoff");
+                report (prompted && juce::exactlyEqual (value ("defn.a.low"), low2) && h2 == h && modal.getNumModalComponents() == 0,
+                        "double-click asks for the low cutoff and edits nothing");
 
                 h = h2;
                 const float high2 = value ("defn.a.high");

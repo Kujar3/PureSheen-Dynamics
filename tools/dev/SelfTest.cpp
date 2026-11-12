@@ -9,6 +9,7 @@
 #include "dsp/DeLimiter.h"
 #include "dsp/Tape.h"
 #include "plugin/Assistant.h"
+#include "plugin/Bridge.h"
 #include "plugin/FactoryPresets.h"
 #include "plugin/MatchEqState.h"
 #include "plugin/PluginProcessor.h"
@@ -2667,6 +2668,55 @@ void testMonitoring()
     for (size_t i = 4096; i < wide.l.size(); ++i)
         widePeak = juce::jmax (widePeak, std::abs (wide.l[i]), std::abs (wide.r[i]));
     check (dbOf (widePeak) > -50.0f, "[dsp] monitor: delta of a widened Imager is audible", str (dbOf (widePeak), " dBFS"));
+
+    // An offline render (an export) ignores monitoring: with everything left on it is the same file as with nothing on.
+    const auto setUp = [] (Host& x)
+    {
+        x.prepare();
+        x.set ("max.gain", 6.0f);
+        x.set ("img.b1.width", 60.0f);
+    };
+    Host clean, left;
+    setUp (clean);
+    setUp (left);
+    left.set ("io.gainMatch", 1.0f);
+    left.set ("io.gainMatchModern", 1.0f);
+    left.proc.setSoloModule ((int) ps::ModuleType::Imager);
+    left.proc.setDelta (ps::ModuleType::Maximizer, true);
+    ps::ModuleMonitor band;
+    band.soloBand = 0;
+    left.proc.setMonitor (ps::ModuleType::Dynamics, band);
+    clean.proc.setNonRealtime (true);
+    left.proc.setNonRealtime (true);
+    const auto wanted = clean.stream (48000, musicLikeInput (0.1f));
+    const auto rendered = left.stream (48000, musicLikeInput (0.1f));
+    check (nullDb (wanted, rendered, 0) <= -200.0f,
+           "[dsp] monitor: an offline render ignores Gain Match, solo, Delta and band solo",
+           str (nullDb (wanted, rendered, 0), " dB"));
+    check (left.proc.getSoloModule() == (int) ps::ModuleType::Imager && left.proc.getDelta (ps::ModuleType::Maximizer)
+               && left.get ("io.gainMatch") > 0.5f && left.proc.getMonitor (ps::ModuleType::Dynamics).soloBand == 0,
+           "monitor: the switches themselves stay as the user left them");
+    clean.proc.setNonRealtime (false);
+    left.proc.setNonRealtime (false);
+    const auto master = clean.stream (48000, musicLikeInput (0.1f));
+    const auto monitored = left.stream (48000, musicLikeInput (0.1f));
+    check (nullDb (master, monitored, 0, 24000) > -60.0f, "[dsp] monitor: and they are heard again after the render",
+           str (nullDb (master, monitored, 0, 24000), " dB"));
+
+    // A host that goes from monitored playback straight into a render, without preparing the plugin again: the file
+    // starts clean, not on a fade out of the solo. `fresh` is what a prepared instance renders.
+    Host fresh;
+    setUp (fresh);
+    fresh.proc.setNonRealtime (true);
+    const auto freshRender = fresh.stream (48000, musicLikeInput (0.1f));
+    left.proc.setNonRealtime (true);
+    const auto b0 = psdev::getAllocationCounts();
+    const auto direct = left.stream (48000, musicLikeInput (0.1f));
+    const auto b1 = psdev::getAllocationCounts();
+    check (nullDb (freshRender, direct, 0) <= -120.0f, "[dsp] monitor: a render straight after monitored playback starts clean",
+           str (nullDb (freshRender, direct, 0), " dB"));
+    check (b1.allocations == b0.allocations && b1.frees == b0.frees, "realtime: and switching into it does not allocate");
+    left.proc.setNonRealtime (false);
 }
 
 //==============================================================================
@@ -3213,6 +3263,92 @@ bool waitForAssistant (Host& h, double seconds)
         juce::Thread::sleep (20);
     }
     return false;
+}
+
+// (1.3) Whole-song listen: no fixed length, the loudest part heard is what gets analysed.
+void testAssistantWholeSong()
+{
+    std::cout << "\n-- Assistant: whole-song listen\n";
+    using psplug::Assistant;
+    Host h;
+    h.prepare();
+    auto& a = h.proc.getAssistant();
+    auto settings = a.getSettings();
+    check (! settings.wholeSong, "whole song: off by default");
+    settings.analysisSeconds = 5.0f;
+    settings.wholeSong = true;
+    a.setSettings (settings);
+
+    // Cards are enough here: wait for them, then stop the background loudness work.
+    const auto waitForCards = [&] (double seconds)
+    {
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        while (juce::Time::getMillisecondCounterHiRes() - t0 < seconds * 1000.0)
+        {
+            h.proc.flushPendingChanges (false);
+            if (a.getPhase() == Assistant::Phase::Ready && ! a.getSuggestions().empty())
+                return true;
+            if (a.getPhase() == Assistant::Phase::Failed)
+                return false;
+            juce::Thread::sleep (20);
+        }
+        return false;
+    };
+
+    // A quiet song, ended with Done.
+    a.startListening();
+    check (a.isWholeSongListen() && ! a.finishListening() == false, "whole song: Done with nothing heard ends the listen");
+    check (a.getPhase() != Assistant::Phase::Listening && a.getSuggestions().empty(),
+           "whole song: and nothing is analysed", a.getStatusText().toStdString());
+
+    a.startListening();
+    h.stream ((long long) (12.0 * kRate), musicLikeInput (0.03f), { 512, 100, 1, 1024, 63 });
+    h.proc.flushPendingChanges (false);
+    check (a.getPhase() == Assistant::Phase::Listening && std::abs (a.getHeardSeconds() - 12.0) < 0.1,
+           "whole song: it keeps listening past the analysis time", str (a.getHeardSeconds(), " s heard"));
+    check (a.finishListening(), "whole song: Done ends it");
+    const bool quietReady = waitForCards (240.0);
+    const float quietLufs = a.getInputLufs();
+    a.cancel();
+    check (quietReady, "whole song: the quiet song gives suggestions", a.getStatusText().toStdString());
+
+    // Quiet, a loud part, quiet again: the loud part is what it analyses. Playback stopping ends the listen.
+    a.startListening();
+    const auto before = psdev::getAllocationCounts();
+    h.stream ((long long) (11.0 * kRate), musicLikeInput (0.03f), { 512, 100, 1, 1024, 63 });
+    h.stream ((long long) (8.0 * kRate), musicLikeInput (0.25f), { 512, 100, 1, 1024, 63 });
+    h.stream ((long long) (9.0 * kRate), musicLikeInput (0.03f), { 512, 100, 1, 1024, 63 });
+    const auto after = psdev::getAllocationCounts();
+    check (after.allocations == before.allocations && after.frees == before.frees,
+           "realtime: the whole-song capture is allocation free");
+    const auto stopped = juce::Time::getMillisecondCounterHiRes();
+    while (a.getPhase() == Assistant::Phase::Listening && juce::Time::getMillisecondCounterHiRes() - stopped < 15000.0)
+    {
+        h.proc.flushPendingChanges (false);
+        juce::Thread::sleep (20);
+    }
+    const double waited = (juce::Time::getMillisecondCounterHiRes() - stopped) / 1000.0;
+    check (a.getPhase() != Assistant::Phase::Listening && waited >= Assistant::kWholeSongStopSeconds - 0.2,
+           "whole song: the listen ends when the audio has stopped for a few seconds", str (waited, " s"));
+    const bool loudReady = waitForCards (240.0);
+    const float loudLufs = a.getInputLufs();
+    a.cancel();
+    check (loudReady && loudLufs - quietLufs > 12.0f, "whole song: the loudest part heard is the one analysed",
+           str (quietLufs, " LUFS for the quiet song, ", loudLufs, " with the loud part"));
+
+    // The setting travels with the state, and a normal listen is unchanged by it being off.
+    juce::MemoryBlock state;
+    h.proc.getStateInformation (state);
+    Host other;
+    other.prepare();
+    other.proc.setStateInformation (state.getData(), (int) state.getSize());
+    other.proc.flushPendingChanges (false);
+    check (other.proc.getAssistant().getSettings().wholeSong, "whole song: the setting is saved with the project");
+    settings.wholeSong = false;
+    a.setSettings (settings);
+    a.startListening();
+    check (! a.isWholeSongListen() && ! a.finishListening(), "whole song: a normal listen has nothing to finish early");
+    a.cancel();
 }
 
 void testAssistant()
@@ -4085,6 +4221,43 @@ void testTrackReferencing()
     }
 }
 
+// (1.3) get_meters gives the master's bands with nothing in the reference list and whatever is in the chain.
+void testConnectorMeters()
+{
+    std::cout << "\n-- Connector: the master's bands in get_meters\n";
+    Host h;
+    h.prepare();
+    h.proc.setChainOrder ({ ps::ModuleType::Maximizer });   // no Multiband Dynamics
+    auto& refs = h.proc.getTrackReferencing();
+    check (! refs.isMasterAnalysisWanted(), "connector bands: the master is not analysed before a command asks");
+    const auto first = psplug::runBridgeCommand (h.proc, "get_meters", juce::var());
+    check (first.hasProperty ("master_bands") && first["master_bands"].isVoid(), "connector bands: null until there is audio");
+    check (refs.isMasterAnalysisWanted(), "connector bands: a command starts the master's analysis");
+
+    // The analysis is drained here between short stretches, so a starved analysis thread cannot drop audio.
+    const auto before = psdev::getAllocationCounts();
+    auto music = musicLikeInput (0.1f);
+    for (int i = 0; i < 12; ++i)
+    {
+        h.stream ((long long) (0.5 * kRate), [&music, i] (long long n, float& l, float& r) { music (n + (long long) (i * 0.5 * kRate), l, r); });
+        refs.runAnalysisNow();
+    }
+    const auto after = psdev::getAllocationCounts();
+    check (after.allocations == before.allocations && after.frees == before.frees,
+           "connector bands: feeding the analysis does not allocate on the audio thread");
+
+    const auto meters = psplug::runBridgeCommand (h.proc, "get_meters", juce::var());
+    const auto bands = meters["master_bands"]["bands"];
+    bool complete = bands.size() == ps::kNumBands;
+    for (int i = 0; complete && i < bands.size(); ++i)
+        complete = bands[i]["level_db"].isDouble() && bands[i]["dynamic_range_db"].isDouble()
+                   && bands[i]["peak_over_median_db"].isDouble() && bands[i]["width_pct"].isDouble();
+    check (complete, "connector bands: every band has its level, dynamics and width with no reference and no Dynamics",
+           juce::JSON::toString (meters["master_bands"], true).toStdString());
+    check ((double) meters["master_bands"]["analysed_seconds"] > 4.0, "connector bands: and says how much audio it holds");
+    check (! meters.hasProperty ("dynamics"), "connector bands: the Dynamics readings still need the module");
+}
+
 int runProductTests (const juce::StringArray& args);   // ProductTests.cpp
 
 int runSelfTest()
@@ -4119,7 +4292,9 @@ int runSelfTest()
     testPromptLifetime();
     testThreads();
     testAssistant();
+    testAssistantWholeSong();
     testTrackReferencing();
+    testConnectorMeters();
 
     std::cout << "\n-- Match EQ state, undo and file loader\n";
     const int matchFailures = psplug::runMatchEqStateTests();

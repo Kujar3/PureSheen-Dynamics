@@ -279,6 +279,33 @@ juce::var dynamicsBandsToVar (PureSheenProcessor& p)
     return makeObject ({ { "channel_mode", modeName }, { "bands", bands } });
 }
 
+// (1.3) The master's analysis bands, whatever is in the chain: level, how far the level moves, how far the loudest
+// moments stand out, and width. The same analysis get_comparison reads, kept running while the connector is in use.
+juce::var masterBandsToVar (PureSheenProcessor& p)
+{
+    const auto& refs = p.getTrackReferencing();
+    const auto profile = refs.getMixProfile();
+    if (! profile.valid)
+        return {};
+
+    juce::Array<juce::var> bands;
+    for (int i = 0; i < ps::kNumBands; ++i)
+    {
+        const auto& band = profile.bands[(size_t) i];
+        const auto& info = ps::bandInfo ((ps::Band) i);
+        bands.add (makeObject ({ { "band", juce::String (info.name) }, { "low_hz", number (info.lowHz) }, { "high_hz", number (info.highHz) },
+                                 { "level_db", number (band.levelDb, 100.0) },
+                                 { "dynamic_range_db", number (band.dynamicRangeDb, 100.0) },
+                                 { "peak_over_median_db", number (band.peakOverMedianDb, 100.0) },
+                                 { "width_pct", number (band.widthPct, 100.0) } }));
+    }
+    const auto freshness = p.getAnalysisFreshness();
+    return makeObject ({ { "analysed_seconds", numberD (profile.analysedSeconds) },
+                         { "window", refs.getSettings().averaging == ps::Averaging::Recent ? "recent" : "since reset" },
+                         { "settings_changed_during_analysis", freshness.blendsSettings },
+                         { "bands", bands } });
+}
+
 juce::var cmdGetMeters (PureSheenProcessor& p, Args)
 {
     auto& chain = p.getChain();
@@ -335,6 +362,8 @@ juce::var cmdGetMeters (PureSheenProcessor& p, Args)
 
     if (p.isModuleInChain (ps::ModuleType::Dynamics))
         object.getDynamicObject()->setProperty ("dynamics", dynamicsBandsToVar (p));
+
+    object.getDynamicObject()->setProperty ("master_bands", masterBandsToVar (p));
 
     const int solo = chain.getSolo();
     object.getDynamicObject()->setProperty ("solo", solo >= 0 ? juce::var (moduleIdPrefix ((ps::ModuleType) solo)) : juce::var());
@@ -763,6 +792,7 @@ juce::var assistantToVar (const Assistant& a)
         { "phase", juce::String (phaseName (a.getPhase())) },
         { "progress", number (a.getProgress(), 1000.0) },
         { "status", a.getStatusText() },
+        { "heard_seconds", a.getPhase() == Assistant::Phase::Listening ? numberD (a.getHeardSeconds()) : juce::var() },
         { "working", a.isWorking() },
         { "has_audio", a.hasAnalysis() },
         { "detected_target", juce::String (ps::assist::targetName (a.getDetectedTarget())) },
@@ -781,7 +811,8 @@ juce::var assistantToVar (const Assistant& a)
             { "use_maximizer", settings.engine.useMaximizer },
             { "ceiling_db", number (settings.engine.ceilingDb, 100.0) },
             { "true_peak", settings.engine.truePeak },
-            { "analysis_seconds", number (settings.analysisSeconds, 10.0) } }) } });
+            { "analysis_seconds", number (settings.analysisSeconds, 10.0) },
+            { "whole_song", settings.wholeSong } }) } });
 }
 
 juce::var cmdGetAssistant (PureSheenProcessor& p, Args) { return assistantToVar (p.getAssistant()); }
@@ -789,8 +820,14 @@ juce::var cmdGetAssistant (PureSheenProcessor& p, Args) { return assistantToVar 
 juce::var cmdAssistantListen (PureSheenProcessor& p, Args args)
 {
     auto& a = p.getAssistant();
-    if (args["action"].toString() == "cancel")
+    const auto action = args["action"].toString();
+    if (action == "cancel")
         a.cancel();
+    else if (action == "finish")
+    {
+        if (! a.finishListening())
+            fail ("There is no whole-song listen to finish. A normal listen ends by itself.");
+    }
     else
         a.startListening();
     return assistantToVar (a);
@@ -888,6 +925,8 @@ juce::var cmdAssistantSettings (PureSheenProcessor& p, Args args)
         settings.engine.truePeak = (bool) args["true_peak"];
     if (args.hasProperty ("analysis_seconds"))
         settings.analysisSeconds = juce::jlimit (Assistant::kMinSeconds, Assistant::kMaxSeconds, requireNumber (args, "analysis_seconds"));
+    if (args.hasProperty ("whole_song"))
+        settings.wholeSong = (bool) args["whole_song"];
 
     // A rebuild applies a new suggestion over the current settings, so it only happens when asked for.
     const bool rebuild = (bool) args["rebuild"] && a.hasAnalysis();
@@ -1144,6 +1183,7 @@ juce::var runBridgeCommand (PureSheenProcessor& processor, const juce::String& c
         fail ("Unknown command '" + command + "'.");
     if (! processor.getProduct().isSuite())
         fail ("Only PureSheen Dynamics takes commands.");
+    processor.noteConnectorActivity();   // keeps the master's analysis running for get_meters' bands
     return found->second.run (processor, args);
 }
 

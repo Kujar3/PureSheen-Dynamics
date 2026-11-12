@@ -683,6 +683,16 @@ struct AssistantPanel::Impl
         loudness.onChange = [this] (double v) { auto s = assistant.getSettings(); s.engine.loudnessLufs = (float) v; s.engine.autoLoudness = false; assistant.setSettings (s); };
         ceiling.onChange = [this] (double v) { auto s = assistant.getSettings(); s.engine.ceilingDb = (float) v; assistant.setSettings (s); };
         seconds.onChange = [this] (double v) { auto s = assistant.getSettings(); s.analysisSeconds = (float) v; assistant.setSettings (s); };
+        // (1.3) Whole song: no need to know where the loudest part is. The time above is then the length of that part.
+        wholeSong.setText ("Whole song");
+        wholeSong.setTooltip ("Listen for as long as the song plays and use its loudest part. Play the song, then stop "
+                              "playback (or press Done). Off: listen to the part you play for the time set here");
+        wholeSong.onClick = [this] { auto s = assistant.getSettings(); s.wholeSong = ! s.wholeSong; assistant.setSettings (s); };
+        done.setText ("Done");
+        done.setTooltip ("The song has played: use the loudest part heard so far");
+        done.setOn (true);
+        done.setFilledWhenOn (true);
+        done.onClick = [this] { assistant.finishListening(); };
         back.setText ("Back");
         back.onClick = [this] { page = assistant.getSuggestions().empty() ? Page::Start : Page::Results; userPage = page == Page::Start; layout(); };
         start.setText ("Start listening");
@@ -717,6 +727,26 @@ struct AssistantPanel::Impl
         setup.onClick = [this] { page = Page::Custom; userPage = true; layout(); };
         bypass.setText ("Bypass");
         bypass.setTooltip ("Compare with the unprocessed track, level matched (hold the button)");
+        // (1.3) The cards differ in loudness on purpose (Gentle is quieter, Loud is louder), and the louder one tends
+        // to win a comparison. This plays them all at the loudness of the unprocessed track: Gain Match in Modern
+        // mode, the I/O panel's own switch, so it shows there too and an export ignores it.
+        equalLoud.setText ("Equal loudness");
+        equalLoud.setTooltip ("Play every suggestion at the loudness of your unprocessed track, so you compare the sound "
+                              "and not the level. This is Gain Match (Modern): turn it off to hear the real level");
+        equalLoud.onClick = [this]
+        {
+            if (equalLoudnessOn())
+            {
+                proc.setParameterValue ("io.gainMatch", 0.0f);
+                proc.setParameterValue ("io.gainMatchModern", modernBeforeEqual);
+            }
+            else
+            {
+                modernBeforeEqual = proc.getParameterValue ("io.gainMatchModern");
+                proc.setParameterValue ("io.gainMatchModern", 1.0f);
+                proc.setParameterValue ("io.gainMatch", 1.0f);
+            }
+        };
         openChain.setText ("Open chain");
         openChain.setTooltip ("Edit the modules of this chain");
         openChain.onClick = [this] { ctx.select (kChainSelection); };
@@ -732,7 +762,7 @@ struct AssistantPanel::Impl
             owner.addChildComponent (p);
         for (auto* comp : std::initializer_list<juce::Component*> { &useMax, &autoLoud, &truePeak, &loudness, &ceiling, &seconds,
                                                                 &back, &start, &cancel, &fromFile, &relearn, &setup,
-                                                                &bypass, &openChain, &matched })
+                                                                &bypass, &openChain, &matched, &equalLoud, &wholeSong, &done })
             owner.addChildComponent (comp);
 
         toneMatch = std::make_unique<MacroControl> (assistant, Macro::ToneMatch, juce::Slider::RotaryHorizontalVerticalDrag);
@@ -914,13 +944,17 @@ struct AssistantPanel::Impl
         loudness.setAlpha (s.engine.autoLoudness ? 0.5f : 1.0f);
         ceiling.setValue (s.engine.ceilingDb);
         seconds.setValue (s.analysisSeconds);
+        wholeSong.setOn (s.wholeSong);
+        if (page == Page::Listen && done.isVisible() != assistant.isWholeSongListen())
+            layout();
         matched.setOn (assistant.isLoudnessMatched());
         start.setText (assistant.hasAnalysis() ? "Rebuild" : "Start listening");
         start.setTooltip (assistant.hasAnalysis() ? "Build the suggestions again from the audio already heard, with these targets"
                                                   : "Listen to the track and build the suggestions");
 
         // Bypass: held = global bypass with classic gain match (monitoring parameters, never in the history); the
-        // previous bypass / gain match / match mode come back on release.
+        // previous bypass / gain match / match mode come back on release. With Equal loudness on the match stays
+        // Modern: the suggestions already play at the unprocessed track's loudness, which is what bypass plays.
         const bool held = bypass.isMouseButtonDown();
         if (held != bypassHeld)
         {
@@ -929,8 +963,11 @@ struct AssistantPanel::Impl
             {
                 monitorBefore = { proc.getParameterValue ("io.bypass"), proc.getParameterValue ("io.gainMatch"),
                                   proc.getParameterValue ("io.gainMatchModern") };
-                proc.setParameterValue ("io.gainMatchModern", 0.0f);
-                proc.setParameterValue ("io.gainMatch", 1.0f);
+                if (! equalLoudnessOn())
+                {
+                    proc.setParameterValue ("io.gainMatchModern", 0.0f);
+                    proc.setParameterValue ("io.gainMatch", 1.0f);
+                }
                 proc.setParameterValue ("io.bypass", 1.0f);
             }
             else
@@ -939,6 +976,8 @@ struct AssistantPanel::Impl
             }
         }
         bypass.setOn (held);
+        if (! held)
+            equalLoud.setOn (equalLoudnessOn());
 
         // Cards
         const auto cards = assistant.getSuggestions();
@@ -1112,14 +1151,24 @@ struct AssistantPanel::Impl
             loudness.setBounds (srow.removeFromLeft (sw));
             ceiling.setBounds (srow.removeFromRight (sw));
             col.removeFromTop (12);
-            seconds.setBounds (col.removeFromTop (36).withWidth (sw));
-            for (auto* c : std::initializer_list<juce::Component*> { &loudness, &ceiling, &seconds })
+            auto timeRow = col.removeFromTop (36);
+            seconds.setBounds (timeRow.removeFromLeft (sw));
+            timeRow.removeFromLeft (20);
+            wholeSong.setBounds (timeRow.removeFromLeft (104).withSizeKeepingCentre (104, 26).translated (0, 5));
+            for (auto* c : std::initializer_list<juce::Component*> { &loudness, &ceiling, &seconds, &wholeSong })
                 c->setVisible (true);
         }
         else if (page == Page::Listen)
         {
             listenArea = r;
-            auto bottom = r.removeFromBottom (32).withSizeKeepingCentre (360, 30);
+            const bool whole = assistant.isWholeSongListen();   // a whole-song listen ends with Done (or when playback stops)
+            auto bottom = r.removeFromBottom (32).withSizeKeepingCentre (whole ? 460 : 360, 30);
+            if (whole)
+            {
+                done.setBounds (bottom.removeFromLeft (90));
+                bottom.removeFromLeft (10);
+                done.setVisible (true);
+            }
             cancel.setBounds (bottom.removeFromLeft (110));
             fromFile.setBounds (bottom.removeFromRight (230));
             cancel.setVisible (true);
@@ -1133,10 +1182,12 @@ struct AssistantPanel::Impl
             top.removeFromRight (8);
             bypass.setBounds (top.removeFromRight (80).withSizeKeepingCentre (80, 26));
             top.removeFromRight (8);
+            equalLoud.setBounds (top.removeFromRight (118).withSizeKeepingCentre (118, 26));
+            top.removeFromRight (8);
             relearn.setBounds (top.removeFromRight (84).withSizeKeepingCentre (84, 26));
             top.removeFromRight (8);
             setup.setBounds (top.removeFromRight (90).withSizeKeepingCentre (90, 26));
-            for (auto* c : std::initializer_list<juce::Component*> { &openChain, &bypass, &relearn, &setup })
+            for (auto* c : std::initializer_list<juce::Component*> { &openChain, &bypass, &equalLoud, &relearn, &setup })
                 c->setVisible (true);
 
             auto cardsRow = r.removeFromTop (68);
@@ -1464,6 +1515,16 @@ struct AssistantPanel::Impl
     std::vector<ps::ModuleType> moduleTypes;
     std::array<PillButton, 3> intensity;
     PillButton useMax, autoLoud, truePeak, back, start, cancel, fromFile, relearn, setup, bypass, openChain, matched;
+    PillButton equalLoud, wholeSong, done;
+    // io.gainMatchModern before Equal loudness turned Modern on. An editor opened with it already on does not know,
+    // and leaves the mode at Modern when the pill goes off.
+    float modernBeforeEqual = 1.0f;
+
+    bool equalLoudnessOn() const
+    {
+        return proc.getParameterValue ("io.gainMatch") > 0.5f && proc.getParameterValue ("io.gainMatchModern") > 0.5f;
+    }
+
     SettingSlider loudness { "Loudness target", ps::assist::kMinTargetLufs, ps::assist::kMaxTargetLufs, 0.5, [] (double v) { return juce::String (v, 1) + " LUFS"; } };
     SettingSlider ceiling { "Output level", -3.0, 0.0, 0.1, [] (double v) { return juce::String (v, 1) + " dB"; } };
     SettingSlider seconds { "Analysis time", 5.0, 30.0, 1.0, [] (double v) { return juce::String (juce::roundToInt (v)) + " s"; } };

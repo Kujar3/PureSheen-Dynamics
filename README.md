@@ -66,6 +66,11 @@ The **?** button in the top-right corner explains every part inside the plugin. 
    of dynamic, corrective, and spatial modules optimized for the detected genre. Instead of forcing a single workflow,
    it generates 6 distinct, editable starting profiles to choose from (such as Gentle, Loud, Warm, Bright & Wide, or Punchy).
    Each choice is saved as an individual undo step, allowing you to fine-tune every module manually.
+   - **Equal loudness** on the results page plays every suggestion at the loudness of your unprocessed track. Loud is
+     built louder and Gentle quieter, and the louder one tends to win a comparison, so compare with this on and
+     judge the level with it off.
+   - Not sure where the loudest part is? Turn on **Whole song** under *Custom*, play the song and stop playback: the
+     Assistant keeps the loudest part it heard and works from that.
 1. **Start from a preset.** Click the preset name in the header.
    - *Streaming Ready* aims at about -14 LUFS and -1 dBTP.
    - *Loud and Clear* aims at about -9 LUFS, *Club Loud* at about -8 LUFS.
@@ -84,6 +89,9 @@ The **?** button in the top-right corner explains every part inside the plugin. 
      Modern you can have the meters show the output without the match gain, so they read your master's real level.
    - *Options > Keep the Maximizer on while soloing a module* plays a soloed module through the Maximizer, so the
      level stays close to the master while you compare.
+   - An export is safe from these: when the host renders a file, Gain Match, solo, Delta and band solos are ignored
+     and come back afterwards. Bypass, Mono and Swap are settings and do apply. (This needs a host that tells its
+     plugins it is exporting, as FL Studio does.)
 4. **Keep versions.** Snapshots **A-D** store complete settings. The clock icon opens the undo history.
 5. **Compare with a reference.** Drop released songs you like (WAV, MP3, FLAC, AIFF or OGG, up to 10) anywhere on
    the plugin, or open the **Reference** page from the switch next to the logo.
@@ -133,7 +141,7 @@ plugins don't have this.
 
 Claude can change settings and the module chain, load and save presets, run the Assistant, and compare with reference tracks.
 It reads what each band of Multiband Dynamics is doing, and how dynamic each frequency band of your master and the
-reference is.
+reference is. The master's own bands (level, dynamics, width) are there with any chain and no reference.
 Each change to settings or the chain is one undo step in the History, labelled "Claude:", and that includes results that arrive
 later, from the Assistant or Learn. Bypass and Gain Match stay with you. Claude can't hear your music or start playback,
 so you press play and you judge the result.
@@ -156,7 +164,8 @@ scripts\build.bat build PureSheen_VST3 PureSheen_CLAP PureSheen_Standalone CoreT
 `fetch_clap.bat` adds the optional CLAP build. Then run the checks:
 
 - `build\CoreTests.exe`: DSP unit tests (filters, crossovers, oversampling, convolution, every module), measured
-  against reference responses, null tests and true-peak limits
+  against reference responses, null tests and true-peak limits. Its CPU speed checks only count with
+  `build\CoreTests.exe --speed`, run alone on an idle machine: a normal run prints a miss and does not fail on it
 - `build\PureSheenDev_artefacts\Release\PureSheenDev.exe selftest`: processor-level integration tests (latency,
   nulls, state, presets, undo, and no allocation on the audio thread)
 - `build\PureSheenDev_artefacts\Release\PureSheenDev.exe snapshot out\snaps`: renders the UI to PNGs

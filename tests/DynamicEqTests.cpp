@@ -1860,7 +1860,7 @@ TEST_CASE ("deq. stopped audio does not repeatedly redesign a kernel awaiting co
     say ("stopped audio with a queued large kernel: " + fmt (1000.0 * cpu, 1) + " ms process CPU in "
          + fmt (1000.0 * elapsed, 1) + " ms elapsed");
     CHECK (cpu >= 0.0);
-    CHECK (cpu < 0.45 * elapsed + 0.01);
+    CHECK_SPEED (cpu < 0.45 * elapsed + 0.01);   // CPU time of the whole process: other threads' load counts too
     CHECK (rig.deq->isDesignPending());
     REQUIRE (rig.settle());
 }

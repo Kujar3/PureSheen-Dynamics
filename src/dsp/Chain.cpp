@@ -74,6 +74,9 @@
 //   compensation does not lower the meters (an option users asked for: the readings should be the master's).
 // - (1.2) setSoloKeepsMaximizer: a powered Maximizer keeps processing while another module is soloed, so a solo is
 //   heard at about the mastered level. Gain match stays frozen meanwhile (solo is still monitoring).
+// - (1.3) HostInfo::offline (the host renders a file): monitoring reads as off for the render, so an export is the
+//   master whatever was left on (Gain Match in either mode, module solo, Delta, channel solo, band / region /
+//   detector solo, EQ audition). The requests are kept and return with realtime playback. Smoother's Learn goes on.
 // - Global bypass = the raw input (before input gain) delayed by the chain latency; the chain keeps running.
 // - Difference meter: RMS of the slot output vs the aligned dry input, measured in the module's channel domain,
 //   before channel solo; one-pole 300 ms on the mean squares; 0 dB for silence.
@@ -480,7 +483,8 @@ struct Slot
     double msIn = 0.0, msOut = 0.0;
     SlotParams params;
     ChannelMode activeMode = ChannelMode::Stereo;   // the domain the module currently processes in
-    ModuleMonitor monitor;
+    ModuleMonitor monitor;            // what the module(s) got: monitorRequested, or that without solos (offline)
+    ModuleMonitor monitorRequested;
     unsigned monitorSeq = 0;
     bool deltaRequested = false;
     bool monitorActive = false; // band solo / audition / detector solo: the module's output is a monitor signal
@@ -558,6 +562,7 @@ struct Chain::Impl
     std::vector<float> modeDip;   // product of slot latency-switch fades for bypass and the delta sum
     std::vector<float> meterBuf[2];   // the output without the match gain, for the taps (metersIgnoreMatch)
     std::atomic<bool> metersIgnoreMatch { false }, soloKeepsMaximizer { false };
+    bool offlineState = false;        // HostInfo::offline of the last block (audio thread)
     StereoDelay bypassDelay;
     DcFilter dcFilter;
     Ramp inGain[2], outGain[2], mono, swap, bypass, deltaMix, dcAmount, classicAmount, modernAmount, soloClassicAmount;
@@ -601,6 +606,29 @@ struct Chain::Impl
         if (twins[t] != nullptr)
             twins[t]->reset();
         slots[t].splitRunning = false;   // the splitter restarts (reset) the next time it runs
+    }
+
+    // Everything back to its state after prepare() (Chain::reset; also the start of an offline render that follows
+    // monitored playback). No allocation.
+    void resetAll() noexcept
+    {
+        for (int t = 0; t < kNumModuleTypes; ++t)
+        {
+            if (! slotInUse (t))
+                continue;
+            resetModule (t);
+            clearSlot (slots[t]);
+        }
+        bypassDelay.clear();
+        dcFilter.reset();
+        dither.reset();
+        for (auto* lm : { &inputMs, &inputIntegrated, &outputMs, &outputIntegrated, &matchInput, &matchOutput })
+            lm->reset();
+        inputTp.clear();
+        outputTp.clear();
+        matchDb = matchTargetDb = 0.0;
+        soloMatchDb = 0.0;
+        firstBlock = true;
     }
 
     //==============================================================================
@@ -666,7 +694,22 @@ struct Chain::Impl
     }
 
     // Block-level state: params, latency, ramp targets. Called once per process() call.
-    void updateBlockState (ParamValues values, int numSamples) noexcept
+    // (1.3) The monitor a module gets during an offline render: nothing that changes what is heard. Learn stays.
+    static ModuleMonitor withoutSolos (ModuleMonitor m) noexcept
+    {
+        m.soloBand = -1;
+        m.auditionOn = false;
+        m.soloDetectionFilter = false;
+        m.soloRegion = false;
+        return m;
+    }
+
+    static bool hasSolos (const ModuleMonitor& m) noexcept
+    {
+        return m.soloBand >= 0 || m.auditionOn || m.soloDetectionFilter || m.soloRegion;
+    }
+
+    void updateBlockState (ParamValues values, int numSamples, bool offline) noexcept
     {
         pullOrder();
 
@@ -677,7 +720,9 @@ struct Chain::Impl
         }
         dither.setParams (ditherParams);
 
-        const int soloType = solo.load (std::memory_order_relaxed);
+        // (1.3) Offline render: every monitoring request reads as off (HostInfo::offline).
+        const bool offlineChanged = offline != offlineState;
+        const int soloType = offline ? -1 : solo.load (std::memory_order_relaxed);
         bool soloValid = false;
         bool anyDelta = false;
         bool monitoring = soloType >= 0;
@@ -686,15 +731,26 @@ struct Chain::Impl
         for (int t = 0; t < kNumModuleTypes; ++t)
         {
             auto& s = slots[t];
-            if (s.monitorSeq != monitorBoxes[t].seq.load (std::memory_order_acquire)
-                && monitorBoxes[t].read (s.monitor, s.monitorSeq))
+            const bool fresh = s.monitorSeq != monitorBoxes[t].seq.load (std::memory_order_acquire)
+                               && monitorBoxes[t].read (s.monitorRequested, s.monitorSeq);
+            // Entering or leaving an offline render only touches a module that has a solo to drop or to give back.
+            if (fresh || (offlineChanged && hasSolos (s.monitorRequested)))
+            {
+                s.monitor = offline ? withoutSolos (s.monitorRequested) : s.monitorRequested;
                 forwardMonitor (t);
+            }
         }
+        // A render that begins while monitoring was being heard, in a host that did not prepare the plugin again:
+        // start it as a prepared chain would, or its first milliseconds would fade out of the solo / Delta (slot and
+        // module fades, a soloed-out module's warm-up). After the monitors above, so the modules reset without them.
+        if (offline && offlineChanged && (monitoringActive || ! modernAmount.isAt (0.0f) || ! classicAmount.isAt (0.0f)))
+            resetAll();
+        offlineState = offline;
 
         for (int k = 0; k < audioCount; ++k)
         {
             auto& s = slots[audioOrder[k]];
-            s.deltaRequested = delta[audioOrder[k]].load (std::memory_order_relaxed);
+            s.deltaRequested = ! offline && delta[audioOrder[k]].load (std::memory_order_relaxed);
             anyDelta = anyDelta || s.deltaRequested;
         }
         const bool deltaIdle = deltaMix.isAt (0.0f) || firstBlock;
@@ -783,7 +839,7 @@ struct Chain::Impl
             const ChannelMode mode = s.activeMode;
             const bool ts = mode == ChannelMode::TransientSustain;
             const bool perSet = mode == ChannelMode::MidSide || mode == ChannelMode::LeftRight || ts;
-            const int chSolo = perSet ? channelSolo[t].load (std::memory_order_relaxed) : -1;
+            const int chSolo = perSet && ! offline ? channelSolo[t].load (std::memory_order_relaxed) : -1;
             // Solo keeps the Maximizer: it stays in while another module is soloed (soloing the Maximizer is unchanged).
             const bool keptBySolo = t == (int) ModuleType::Maximizer && soloKeepsMaximizer.load (std::memory_order_relaxed);
             s.enabled = s.params.power && (soloType < 0 || soloType == t || keptBySolo) && ! modePending;
@@ -878,8 +934,9 @@ struct Chain::Impl
         bypassDelay.setDelay (alignedLatency);
         monitoringActive = monitoring;
 
-        const bool classic = io.gainMatch && ! io.gainMatchModern;
-        const bool modern = io.gainMatch && io.gainMatchModern;
+        const bool gainMatch = io.gainMatch && ! offline;
+        const bool classic = gainMatch && ! io.gainMatchModern;
+        const bool modern = gainMatch && io.gainMatchModern;
         const bool soloOfPoweredOff = classic && soloValid && ! slots[soloType].params.power;
         if (soloValid)
             soloMatchDb = slots[soloType].loudness.matchDb;
@@ -900,7 +957,7 @@ struct Chain::Impl
 
         for (size_t i = 0; i < std::size (ramps); ++i)
         {
-            if (firstBlock)
+            if (firstBlock || offlineChanged)   // a render starts at its own gains, not on a fade from monitoring
                 ramps[i]->snap (targets[i]);
             else
                 ramps[i]->setTarget (targets[i]);
@@ -1615,27 +1672,7 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
     reset();
 }
 
-void Chain::reset() noexcept
-{
-    auto& d = *impl;
-    for (int t = 0; t < kNumModuleTypes; ++t)
-    {
-        if (! d.slotInUse (t))
-            continue;
-        d.resetModule (t);
-        d.clearSlot (d.slots[t]);
-    }
-    d.bypassDelay.clear();
-    d.dcFilter.reset();
-    d.dither.reset();
-    for (auto* lm : { &d.inputMs, &d.inputIntegrated, &d.outputMs, &d.outputIntegrated, &d.matchInput, &d.matchOutput })
-        lm->reset();
-    d.inputTp.clear();
-    d.outputTp.clear();
-    d.matchDb = d.matchTargetDb = 0.0;
-    d.soloMatchDb = 0.0;
-    d.firstBlock = true;
-}
+void Chain::reset() noexcept { impl->resetAll(); }
 
 void Chain::lockToModule (int moduleTypeOrMinus1) noexcept
 {
@@ -1711,7 +1748,7 @@ void Chain::process (float* const* channels, int numSamples, ParamValues values,
     if (! d.prepared || channels == nullptr || channels[0] == nullptr || channels[1] == nullptr || numSamples <= 0)
         return;
 
-    d.updateBlockState (values, numSamples);
+    d.updateBlockState (values, numSamples, host.offline);
 
     ProcessContext ctx;
     ctx.bpm = host.bpm > 0.0 ? host.bpm : 120.0;

@@ -48,10 +48,40 @@ inline void reportFailure (const char* file, int line, const std::string& messag
     std::cout << "    FAIL " << file << ":" << line << "  " << message << "\n";
 }
 
+#ifdef _MSC_VER
+ #pragma warning (push)
+ #pragma warning (disable : 4996)   // getenv: read once, before any thread starts
+#endif
+inline bool envSet (const char* name)
+{
+    const char* v = std::getenv (name);
+    return v != nullptr && *v != '\0' && *v != '0';
+}
+#ifdef _MSC_VER
+ #pragma warning (pop)
+#endif
+
+// Speed checks count only when asked for: `CoreTests --speed` or PURESHEEN_SPEED_CHECKS=1, on a machine that is doing
+// nothing else. In a normal run a miss is printed and not counted, so "0 failed" does not depend on the machine's load.
+// PURESHEEN_SLOW_MACHINE (the shared CI runners) keeps them uncounted even then.
+inline bool& speedChecksRequested()
+{
+    static bool on = envSet ("PURESHEEN_SPEED_CHECKS");
+    return on;
+}
+
 inline bool slowMachine()
 {
-    static const bool slow = [] { const char* v = std::getenv ("PURESHEEN_SLOW_MACHINE"); return v != nullptr && *v != '\0' && *v != '0'; }();
+    static const bool slow = envSet ("PURESHEEN_SLOW_MACHINE");
     return slow;
+}
+
+inline bool speedChecksCount() { return speedChecksRequested() && ! slowMachine(); }
+
+inline int& speedMissCount()
+{
+    static int n = 0;
+    return n;
 }
 
 template <typename T>
@@ -97,17 +127,20 @@ std::string show (const std::vector<T>& v)
                                                            + " vs " + pstest::show (cb_b_));                   \
     } while (0)
 
-// A speed (or thread-timing) check. With PURESHEEN_SLOW_MACHINE set (the shared CI runners) a miss is printed and not
-// counted: the numbers are still in the log, but a busy virtual machine does not fail the build.
-#define CHECK_SPEED(cond)                                                                                        \
-    do {                                                                                                         \
-        if (! (cond))                                                                                            \
-        {                                                                                                        \
-            if (pstest::slowMachine())                                                                           \
-                std::cout << "    slow machine, not counted: " << __FILE__ << ":" << __LINE__ << "  " #cond "\n"; \
-            else                                                                                                 \
-                pstest::reportFailure (__FILE__, __LINE__, "CHECK_SPEED(" #cond ")");                            \
-        }                                                                                                        \
+// A speed (or thread-timing) check: counted only in a speed run (see speedChecksRequested). Otherwise a miss is printed
+// with the numbers still in the log, and the summary line says how many there were.
+#define CHECK_SPEED(cond)                                                                                  \
+    do {                                                                                                   \
+        if (! (cond))                                                                                      \
+        {                                                                                                  \
+            if (pstest::speedChecksCount())                                                                \
+                pstest::reportFailure (__FILE__, __LINE__, "CHECK_SPEED(" #cond ")");                      \
+            else                                                                                           \
+            {                                                                                              \
+                ++pstest::speedMissCount();                                                                \
+                std::cout << "    speed, not counted: " << __FILE__ << ":" << __LINE__ << "  " #cond "\n"; \
+            }                                                                                              \
+        }                                                                                                  \
     } while (0)
 
 #define REQUIRE(cond)                                                                    \

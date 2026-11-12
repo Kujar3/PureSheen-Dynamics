@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.22)
 # through src/core/NumberText.h, because Apple's std::from_chars for doubles would need macOS 26.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS the plugins run on")
 
-project(PureSheen VERSION 1.2.0 LANGUAGES C CXX)
+project(PureSheen VERSION 1.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

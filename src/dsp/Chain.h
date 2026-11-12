@@ -48,6 +48,10 @@ struct HostInfo
 {
     double bpm = 120.0;
     bool isPlaying = false;
+    // (1.3) The host renders offline (an export). Monitoring is then ignored, so a switch left on cannot spoil the
+    // file: Gain Match, module solo, Delta, channel solo, band / region / detector solo and EQ audition all act as
+    // off, and return when the render ends. Bypass, Mono and Swap are settings and stay.
+    bool offline = false;
 };
 
 struct IoMeters

@@ -138,6 +138,9 @@ out/                      snapshots, renders, measurements (gitignored)
    - Test names are prefixed with your area (`"eq. digital mode is linear phase"`), so a filter runs only yours.
    - Measure with real numbers (frequency response via a sine sweep or impulse + FFT, THD, null tests, true peak),
      not just "doesn't crash".
+   - Anything that depends on how fast or how busy the machine is goes through `CHECK_SPEED`. It counts only in a
+     speed run (`CoreTests --speed` or `PURESHEEN_SPEED_CHECKS=1`, alone on an idle machine); a normal run prints the
+     miss and the summary says how many there were. `PURESHEEN_SLOW_MACHINE` (CI) keeps them uncounted even then.
 9. **User-facing text** is ASCII only and plain language. FL Studio is the main host (1920x1080).
 10. **Feature parity.** Where the research documents a behaviour, match it. Where it does not, choose what a mastering
     engineer would expect, and note the choice in a comment at the top of the module's .cpp.
@@ -1043,6 +1046,49 @@ binaries, packages them with `scripts/package-mac.sh`, and runs the tests and au
 floating-point `to_chars` / `from_chars` only from macOS 13.3 / 26, so `core/NumberText.h` uses a classic-locale stream
 there. The helper is `PureSheenBridge` without `.exe`, found in `/Applications/PureSheen Dynamics`, and checks for dead
 instances with `kill (pid, 0)`.
+
+## Export guard, equal loudness, whole-song listen and master bands (1.3)
+
+Four additions from a review of the finished suite, plus the speed checks (rule 8). No parameter was added: the
+925-entry table and its fingerprints are unchanged.
+
+**Export guard.** `HostInfo::offline` (the processor sets it from `isNonRealtime()`) makes `Chain::updateBlockState`
+read every monitoring request as off: Gain Match in either mode, module solo, Delta, channel solo, and the module
+monitors' band / region / detector solo and EQ audition (`withoutSolos`; Smoother's Learn goes on). The requests
+themselves are untouched, so the UI shows them and they are heard again after the render. Entering or leaving a
+render snaps the I/O ramps, and a render that begins while monitoring was heard resets the chain as a host's prepare
+would (`resetAll`), so a file does not start on a fade from the monitored state. Only a module that has a
+solo to drop gets a new monitor. Track Referencing already rendered the master only. Bypass, Mono and Swap are
+settings, not monitoring, and do apply. A host that exports in real time without saying so cannot be told apart from
+playback. Selftest: "monitor: an offline render ignores ...".
+
+**Equal loudness** (Assistant results page). The cards differ in loudness by design (Gentle -2 LU, Loud +1.5 LU), so
+flipping between them compared level. The pill turns Gain Match on in Modern mode (the I/O panel's own parameters,
+never in the history) and remembers the mode it found; it reads its state from those parameters, so the I/O panel and
+the pill always agree. While it is on, the page's held Bypass keeps Modern: the bypassed track and the cards are then
+at the same loudness already.
+
+**Whole-song listen** (`Assistant::Settings::wholeSong`, off by default; the Custom page's "Whole song", state
+property `wholeSong`, the connector's `whole_song`). The default stays the reference's: play the loudest part for
+`analysisSeconds`. With it on a listen has no fixed length and the Assistant analyses the loudest `analysisSeconds`
+it heard, as "Analyse a file" does for a file. The audio thread keeps three windows of that length: two fills half a
+window apart and the loudest finished one, exchanged by index when a louder window completes (`Assistant::pushWhole`:
+no copy, no allocation, memory independent of the song's length). The listen ends when no audio arrived for
+`kWholeSongStopSeconds` (3 s: playback stopped), with `finishListening()` (the page's Done, the connector's action
+`finish`) or after `kWholeSongMaxSeconds`. Less than 1 s heard is "Not enough audio". Known limit: the windows start
+every half window, so the part kept can sit up to a quarter window off the true loudest stretch; and a song with 3 s
+of digital silence in it ends the listen there. A sample-rate change during a listen cancels it, also against Done.
+Selftest: "-- Assistant: whole-song listen".
+
+**The master's bands in `get_meters`.** A tester asked for per-band readings without Multiband Dynamics in the chain.
+The master's analyser (`TrackReferencing`'s `TrackAnalyser`) had them, but was fed only with a reference in the list.
+`setMasterAnalysisWanted` feeds it with an empty list too; `PureSheenProcessor::noteConnectorActivity` (every
+connector command) turns that on and housekeeping turns it off `kConnectorAnalysisMinutes` (10) after the last
+command, so nobody pays for an analysis nobody reads. `get_meters` returns `master_bands`: per analysis band its
+level, `dynamic_range_db`, `peak_over_median_db` and width, with `analysed_seconds`, `window` and
+`settings_changed_during_analysis`. It is null until the analysis holds a second of audio, so the first call starts
+it. `dynamics` (what the Multiband Dynamics' compressors do) still needs that module. Selftest: "-- Connector: the
+master's bands in get_meters"; `tools/bridge/test_bridge.py` checks it through the helper.
 
 ## Connection to Claude (phase 4)
 

@@ -17,6 +17,12 @@
 //   the unprocessed mix). While listening, non-silent blocks (> -70 dBFS) are copied into a buffer the message thread
 //   allocated for Settings::analysisSeconds; silence does not count, so the user can start playback after pressing
 //   Listen. A file can be analysed instead (analyseFile: loader thread, the first analysisSeconds of its loudest part).
+//   Whole song (1.3, Settings::wholeSong, off by default): the listen has no fixed length. The user plays the song
+//   and the Assistant keeps the loudest analysisSeconds of what it hears, so nobody has to know where that part is.
+//   It ends when the audio stops for kWholeSongStopSeconds (playback stopped), with finishListening() (the page's
+//   Done), or after kWholeSongMaxSeconds. The audio thread keeps three windows of analysisSeconds: two it fills in
+//   turn, half a window apart, and the loudest finished one, swapped by index when a fuller one finishes (no copy,
+//   no allocation), so the memory does not grow with the song.
 //   Analyse (worker thread): ps::assist::analyse, buildSuggestions, then the Maximizer gain of the default suggestion
 //   (refineLoudness on the captured audio), which is applied right away (one undo step, "Assistant: Suggested (Rock)"),
 //   then the other cards' gains and the default's loudness-match tables. A card applied later gets its tables then.
@@ -73,7 +79,11 @@ public:
     {
         ps::assist::Settings engine;
         float analysisSeconds = 8.0f;     // 5..30
+        bool wholeSong = false;           // (1.3) listen until playback stops and use the loudest analysisSeconds
     };
+
+    static constexpr double kWholeSongStopSeconds = 3.0;     // no audio for this long ends a whole-song listen
+    static constexpr double kWholeSongMaxSeconds = 20.0 * 60.0;
 
     explicit Assistant (AssistantHost&);
     ~Assistant();
@@ -92,6 +102,11 @@ public:
     void rebuild();                       // the same without changing the settings (no-op without kept audio)
 
     void startListening();
+    // (1.3) Ends a whole-song listen now and analyses the loudest part heard. False when there is nothing to finish
+    // (not listening, or a fixed-length listen: that one ends by itself).
+    bool finishListening();
+    bool isWholeSongListen() const noexcept { return capWhole.load(); }
+    double getHeardSeconds() const noexcept;   // audio heard by the current listen (silence left out)
     void cancel();                        // stops listening / analysing; keeps the cards
     bool analyseFile (const juce::File&); // false: unreadable
     Phase getPhase() const noexcept;
@@ -135,6 +150,8 @@ private:
     void publish (std::unique_ptr<Results>);
     void invalidateResults();
     void releaseCapture();
+    void analyseCapture (std::vector<float> left, std::vector<float> right);   // the heard audio -> the worker
+    void pushWhole (float* l, float* r, const float* left, const float* right, int numSamples) noexcept;
     void restoreNow (const juce::ValueTree&);
     bool referenceActive() const;   // the reference is loaded and selected as the target
     void changed();                      // rebuilds the cached state tree, notifies the host
@@ -149,6 +166,21 @@ private:
     std::atomic<bool> capArmed { false }, capBusy { false };
     std::atomic<double> sampleRate { 48000.0 };
     std::atomic<bool> stopRequested { false };   // prepare() from another thread while listening
+
+    // (1.3) Whole-song listen. capCapacity is one window; the capture vectors hold three. `whole` belongs to the audio
+    // thread while armed and to the message thread otherwise (the capture handover orders the two).
+    struct WholeCapture
+    {
+        int buffer[2] { 0, 1 };        // the window each of the two fills writes into
+        long long written[2] { 0, 0 }; // samples in it; the second starts half a window late (negative until then)
+        double energy[2] { 0.0, 0.0 };
+        int best = -1, spare = 2;      // the loudest finished window, and the one nobody uses yet
+        double bestEnergy = -1.0;
+    } whole;
+    std::atomic<bool> capWhole { false };
+    std::atomic<long long> capHeard { 0 };
+    long long heardSeen = 0;           // message thread: capHeard at the last tick, and when it last grew
+    double heardSeenMs = 0.0;
 
     // worker
     std::thread worker;

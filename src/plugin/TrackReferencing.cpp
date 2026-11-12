@@ -349,7 +349,7 @@ struct TrackReferencing::Impl
         // analysis. Hosts that never report playing (the Standalone app) and offline renders feed everything.
         audio.transportSeen = audio.transportSeen || host.playing;
         const bool nonRealtime = owner.isNonRealtime();
-        const bool feedAnalysis = feedMaster.load (std::memory_order_relaxed)
+        const bool feedAnalysis = (feedMaster.load (std::memory_order_relaxed) || masterWanted.load (std::memory_order_relaxed))
                                   && (nonRealtime || host.playing || ! audio.transportSeen);
 
         if (feedAnalysis)
@@ -2219,6 +2219,7 @@ struct TrackReferencing::Impl
     // ---- settings read by other threads ------------------------------------------------------------------------
     std::atomic<bool> listen { false };
     std::atomic<bool> feedMaster { false };
+    std::atomic<bool> masterWanted { false };   // (1.3) analyse the master with an empty list too
     std::atomic<int> levelMatchSetting { (int) ps::LevelMatch::Integrated };
     std::atomic<int> averagingSetting { (int) ps::Averaging::Recent };
     std::atomic<int> audioSettings { 3 };   // bit 0 sync, bit 1 play when stopped
@@ -2444,6 +2445,17 @@ ps::Comparison TrackReferencing::getComparison() const
 
 int TrackReferencing::getAnalysisVersion() const noexcept { return impl->analysisVersion.load(); }
 void TrackReferencing::resetMixAnalysis() { impl->resetMix(); }
+
+void TrackReferencing::setMasterAnalysisWanted (bool wanted)
+{
+    if (wanted == impl->masterWanted.load())
+        return;
+    if (wanted && ! impl->feedMaster.load())
+        impl->resetMix();   // nothing was fed since the list emptied: start from now
+    impl->masterWanted.store (wanted);
+}
+
+bool TrackReferencing::isMasterAnalysisWanted() const noexcept { return impl->masterWanted.load(); }
 
 ps::assist::ReferenceTarget TrackReferencing::getAssistantTarget (int id) const
 {

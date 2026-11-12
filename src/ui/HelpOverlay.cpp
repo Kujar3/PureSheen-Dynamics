@@ -74,7 +74,11 @@ struct HelpOverlay::Impl
 
         tips = {
             "**Assistant** - the sparkle switch in the header. It listens to your track, builds a complete chain and gives "
-            "you a few macros (tone, dynamics, width, loudness) that keep the loudness steady while you move them.",
+            "you a few macros (tone, dynamics, width, loudness) that keep the loudness steady while you move them. "
+            "**Equal loudness** plays every suggestion at the same level, so the loudest one does not win by default. "
+            "**Whole song** (under Custom) listens while the song plays and uses its loudest part.",
+            "**Exporting** - Gain Match, solo and Delta are for listening: when your DAW renders the song they are left "
+            "out, so a switch you forgot cannot spoil the file. Bypass, Mono and Swap do apply.",
             "**Reference** - drop songs you like on PureSheen. **REF** plays one at your master's loudness, the "
             "Reference page shows where they differ and loops A - E pick the part to compare.",
             "**Claude** - Options > Claude lets Claude Desktop read the meters and adjust PureSheen for you. It is off until "

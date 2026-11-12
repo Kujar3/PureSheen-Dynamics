@@ -28,7 +28,8 @@
 //   never changed in level; with Listen settled on the master the buffer is left untouched (bit-exact). Mono and Swap
 //   of the I/O panel apply to the reference too, so the comparison stays fair. Offline renders always pass the master.
 //   Analysis thread: a TrackAnalyser on the master (the output after every module), the Comparison against the active
-//   region, and the level-match target. The master is fed only while at least one reference is in the list.
+//   region, and the level-match target. The master is fed only while at least one reference is in the list, or while
+//   setMasterAnalysisWanted is on (1.3: the connector).
 //
 // Threading: the list, settings and state are message thread unless noted. process() is the audio thread: no
 // allocation, no locks (one try-locked slot, as in RefMatch). Getters marked "any thread" are atomics or copies under
@@ -182,6 +183,10 @@ public:
     ps::Comparison getComparison() const;
     int getAnalysisVersion() const noexcept;
     void resetMixAnalysis();
+    // (1.3) Analyse the master with no reference in the list too (the connector's get_meters reads the master's bands
+    // from getMixProfile()). Turning it on with an empty list starts the analysis over: what it held is old.
+    void setMasterAnalysisWanted (bool);
+    bool isMasterAnalysisWanted() const noexcept;
 
     // The Assistant's view of a reference (valid once it is analysed); `path` names the file.
     ps::assist::ReferenceTarget getAssistantTarget (int id) const;

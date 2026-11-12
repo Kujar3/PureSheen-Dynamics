@@ -2,10 +2,18 @@
 
 #include <cstring>
 
-// Usage: CoreTests [substring-filter]
+// Usage: CoreTests [--speed] [substring-filter]
+//   --speed   count the speed checks (CHECK_SPEED) as failures too. Run it alone on an idle machine.
 int main (int argc, char** argv)
 {
-    const char* filter = argc > 1 ? argv[1] : nullptr;
+    const char* filter = nullptr;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp (argv[i], "--speed") == 0)
+            pstest::speedChecksRequested() = true;
+        else if (filter == nullptr)
+            filter = argv[i];
+    }
     int run = 0, failedCases = 0;
 
     for (auto& t : pstest::registry())
@@ -34,5 +42,7 @@ int main (int argc, char** argv)
     }
 
     std::cout << "\n" << run << " test cases, " << failedCases << " failed, " << pstest::failureCount() << " failed checks\n";
+    if (pstest::speedMissCount() > 0)
+        std::cout << pstest::speedMissCount() << " speed checks missed, not counted (CoreTests --speed counts them)\n";
     return failedCases == 0 ? 0 : 1;
 }

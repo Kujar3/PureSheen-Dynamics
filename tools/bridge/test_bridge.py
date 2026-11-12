@@ -250,6 +250,14 @@ def main():
             lufs = meters["output"]["momentary_lufs"]
             time.sleep(0.25)
         check(lufs is not None and -60 < lufs < 0, f"the meters see the tone: {lufs}")
+        # The master's bands fill in with no reference in the list (the analysis starts with the first command).
+        deadline = time.time() + 20
+        master_bands = None
+        while master_bands is None and time.time() < deadline:
+            master_bands = helper.tool_json("get_meters").get("master_bands")
+            time.sleep(0.5)
+        check(master_bands is not None and len(master_bands["bands"]) >= 1 and "dynamic_range_db" in master_bands["bands"][0]
+              and master_bands["bands"][0]["low_hz"] is not None, f"the master's bands in get_meters: {master_bands}")
         check(helper.tool_json("get_meters")["host_playing"] in (True, False), "host_playing")
         monitoring = helper.tool_json("get_meters")
         check(monitoring["solo"] is None and monitoring["solo_keeps_maximizer"] is False, f"solo state: {monitoring.get('solo')}")
@@ -404,9 +412,11 @@ def main():
             check(helper.tool_json("assistant_settings", {"rebuild": True})["rebuilt"] is True, "a rebuild is reported")
             check(wait_for(lambda: helper.tool_json("get_assistant"), lambda a: a["applied"] >= 0, 60) is not None, "a rebuild brings suggestions")
 
-        # Comparing without a reference: no placeholder numbers.
+        # Comparing without a reference: nothing to compare and no placeholder numbers for the reference. The master
+        # is analysed while the connector is in use (get_meters' master_bands), so its own numbers are real.
         empty = helper.tool_json("get_comparison")
-        check(empty["ready"] is False and empty["master"] == {"valid": False}, f"no master numbers without a reference: {empty['master']}")
+        check(empty["ready"] is False and empty["reference"] == {"valid": False}, f"no reference numbers without a reference: {empty['reference']}")
+        check(empty["master"]["valid"] is True and empty["master"]["analysed_seconds"] > 0, f"the master's own numbers are there: {empty['master']}")
 
         # References: load, compare, loop, remove. The file stays on disk.
         added = helper.tool_json("add_reference", {"path": str(wav)})

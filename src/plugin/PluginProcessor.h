@@ -270,6 +270,10 @@ public:
     AnalysisFreshness getAnalysisFreshness() const;
     // Seconds since the last call (< 0 on the first): what the peaks get_meters reads and clears cover.
     double takeSecondsSinceMeterRead();
+    // (1.3) A connector command arrived (message thread). The master's analysis then runs with no reference in the
+    // list too, so get_meters has the master's bands, and stops kConnectorAnalysisMinutes after the last command.
+    void noteConnectorActivity();
+    static constexpr double kConnectorAnalysisMinutes = 10.0;
     // The track the host says this instance is on, when it says (any thread).
     juce::String getTrackName() const;
     void updateTrackProperties (const TrackProperties&) override;
